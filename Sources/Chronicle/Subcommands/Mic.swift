@@ -73,15 +73,8 @@ struct Mic: AsyncParsableCommand {
 
     let analyzer = SpeechAnalyzer(modules: [transcriber])
 
-    let engine = AVAudioEngine()
-    let inputNode = engine.inputNode
-    let inputFormat = inputNode.outputFormat(forBus: 0)
-    FileHandle.standardError.write(Data("[mic] mic format=\(inputFormat)\n".utf8))
-
-    let converter = AVAudioConverter(from: inputFormat, to: analyzerFormat)
-    guard converter != nil else {
-      throw ValidationError("Could not build AVAudioConverter from mic format to analyzer format.")
-    }
+    let micSource = try MicAudioSource(analyzerFormat: analyzerFormat)
+    FileHandle.standardError.write(Data("[mic] mic format=\(micSource.micFormat)\n".utf8))
 
     // Optional raw-audio sidecar.
     var audioFile: AVAudioFile? = nil
@@ -92,8 +85,6 @@ struct Mic: AsyncParsableCommand {
       FileHandle.standardError.write(Data("[mic] saving audio to \(url.path) (\(analyzerFormat))\n".utf8))
     }
     let audioFileBox = AudioFileBox(file: audioFile)
-
-    let (input, builder) = AsyncStream.makeStream(of: AnalyzerInput.self)
 
     struct TraceEvent: Codable, Sendable {
       let wallclockOffsetMs: Double
@@ -190,36 +181,21 @@ struct Mic: AsyncParsableCommand {
       }
     }
 
-    // Wire the engine tap. Use the mic's native format on the tap, convert on push.
-    inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [analyzerFormat, audioFileBox] buffer, _ in
-      guard let convertedFrameCapacity = AVAudioFrameCount(
-        Double(buffer.frameLength) * analyzerFormat.sampleRate / inputFormat.sampleRate
-      ) as AVAudioFrameCount?,
-            convertedFrameCapacity > 0,
-            let converted = AVAudioPCMBuffer(pcmFormat: analyzerFormat, frameCapacity: convertedFrameCapacity)
-      else { return }
-
-      let conv = AVAudioConverter(from: inputFormat, to: analyzerFormat)
-      var error: NSError?
-      let status = conv?.convert(to: converted, error: &error) { _, outStatus in
-        outStatus.pointee = .haveData
-        return buffer
-      }
-      if status == .haveData {
-        builder.yield(AnalyzerInput(buffer: converted))
-        // Sidecar audio write (lossless 16kHz Float32).
+    // Drain PCM buffers into the optional WAV sidecar concurrently with
+    // analyzer consumption. MicAudioSource already converts to analyzerFormat.
+    let pcmTask = Task {
+      for await ref in micSource.pcmBuffers {
         if let file = audioFileBox.file {
-          try? file.write(from: converted)
+          try? file.write(from: ref.buffer)
         }
       }
     }
 
-    engine.prepare()
-    try engine.start()
+    try micSource.start()
     FileHandle.standardError.write(Data("[mic] engine started; speak into the mic. Ctrl-C to stop.\n".utf8))
 
     // Kick off the analyzer over our input sequence.
-    try await analyzer.start(inputSequence: input)
+    try await analyzer.start(inputSequence: micSource.analyzerInputs)
 
     // Stop trigger: time limit OR SIGINT/SIGTERM.
     if seconds > 0 {
@@ -230,11 +206,10 @@ struct Mic: AsyncParsableCommand {
     }
 
     FileHandle.standardError.write(Data("\n[mic] stopping...\n".utf8))
-    engine.stop()
-    inputNode.removeTap(onBus: 0)
-    builder.finish()
+    micSource.stop()
     try await analyzer.finalizeAndFinishThroughEndOfInput()
     try await consumeTask.value
+    _ = await pcmTask.value
 
     let events = await trace.events
     let volatileCount = events.filter { !$0.isFinal }.count
