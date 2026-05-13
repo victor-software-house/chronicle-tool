@@ -16,6 +16,7 @@ struct Chronicle: AsyncParsableCommand {
       Summarize.self,
       Translate.self,
       OCR.self,
+      Describe.self,
       Diarize.self
     ],
     defaultSubcommand: nil
