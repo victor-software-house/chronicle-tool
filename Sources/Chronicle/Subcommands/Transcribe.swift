@@ -39,22 +39,14 @@ struct Transcribe: AsyncParsableCommand {
     }
 
     let requestedLocale = Locale(identifier: locale ?? Locale.current.identifier)
-    guard let supportedLocale = await SpeechTranscriber.supportedLocale(equivalentTo: requestedLocale) else {
-      throw ValidationError("Locale \(requestedLocale.identifier) is not supported by SpeechTranscriber. Try DictationTranscriber.")
-    }
-
-    FileHandle.standardError.write(Data("[transcribe] locale=\(supportedLocale.identifier) preset=transcription\n".utf8))
-
-    let transcriber = SpeechTranscriber(locale: supportedLocale, preset: .transcription)
-
-    if !(await SpeechTranscriber.installedLocales).contains(supportedLocale) {
-      FileHandle.standardError.write(Data("[transcribe] downloading model for \(supportedLocale.identifier)...\n".utf8))
-      if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
-        try await request.downloadAndInstall()
-      }
-    }
-
-    let analyzer = SpeechAnalyzer(modules: [transcriber])
+    let engine = try await TranscriptionEngine.make(
+      locale: requestedLocale,
+      preset: .transcription,
+      tag: "transcribe"
+    )
+    let supportedLocale = engine.locale
+    let transcriber = engine.transcriber
+    let analyzer = engine.analyzer
 
     // Collect finalized segments with their attributed timing if available.
     struct Segment: Codable {

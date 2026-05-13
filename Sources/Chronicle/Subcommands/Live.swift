@@ -46,20 +46,14 @@ struct Live: AsyncParsableCommand {
     }
 
     let requestedLocale = Locale(identifier: locale ?? Locale.current.identifier)
-    guard let supported = await SpeechTranscriber.supportedLocale(equivalentTo: requestedLocale) else {
-      throw ValidationError("Locale \(requestedLocale.identifier) is not supported by SpeechTranscriber.")
-    }
-
-    let transcriber = SpeechTranscriber(locale: supported, preset: .progressiveTranscription)
-    if !(await SpeechTranscriber.installedLocales).contains(supported) {
-      FileHandle.standardError.write(Data("[live] downloading model for \(supported.identifier)...\n".utf8))
-      if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
-        try await request.downloadAndInstall()
-      }
-    }
-    FileHandle.standardError.write(Data("[live] locale=\(supported.identifier) preset=progressiveTranscription\n".utf8))
-
-    let analyzer = SpeechAnalyzer(modules: [transcriber])
+    let engine = try await TranscriptionEngine.make(
+      locale: requestedLocale,
+      preset: .progressiveTranscription,
+      tag: "live"
+    )
+    let supported = engine.locale
+    let transcriber = engine.transcriber
+    let analyzer = engine.analyzer
 
     struct TraceEvent: Codable {
       let wallclockOffsetMs: Double

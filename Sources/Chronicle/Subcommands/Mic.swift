@@ -52,26 +52,18 @@ struct Mic: AsyncParsableCommand {
     }
 
     let requestedLocale = Locale(identifier: locale ?? Locale.current.identifier)
-    guard let supported = await SpeechTranscriber.supportedLocale(equivalentTo: requestedLocale) else {
-      throw ValidationError("Locale \(requestedLocale.identifier) is not supported by SpeechTranscriber.")
-    }
-
-    let transcriber = SpeechTranscriber(locale: supported, preset: .progressiveTranscription)
-    if !(await SpeechTranscriber.installedLocales).contains(supported) {
-      FileHandle.standardError.write(Data("[mic] downloading model for \(supported.identifier)...\n".utf8))
-      if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
-        try await request.downloadAndInstall()
-      }
-    }
-    FileHandle.standardError.write(Data("[mic] locale=\(supported.identifier) preset=progressiveTranscription\n".utf8))
-
-    // Pick the analyzer's preferred audio format and force the engine into it.
-    guard let analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else {
+    let engine = try await TranscriptionEngine.make(
+      locale: requestedLocale,
+      preset: .progressiveTranscription,
+      tag: "mic"
+    )
+    let supported = engine.locale
+    let transcriber = engine.transcriber
+    let analyzer = engine.analyzer
+    guard let analyzerFormat = engine.analyzerFormat else {
       throw ValidationError("Could not resolve a compatible audio format for SpeechAnalyzer.")
     }
     FileHandle.standardError.write(Data("[mic] analyzerFormat=\(analyzerFormat)\n".utf8))
-
-    let analyzer = SpeechAnalyzer(modules: [transcriber])
 
     let micSource = try MicAudioSource(analyzerFormat: analyzerFormat)
     FileHandle.standardError.write(Data("[mic] mic format=\(micSource.micFormat)\n".utf8))
