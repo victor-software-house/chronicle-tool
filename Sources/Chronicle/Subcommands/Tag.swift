@@ -1,18 +1,11 @@
 import ArgumentParser
 import Foundation
-import FoundationModels
 
 /// Content tagging via Apple's on-device Foundation Models framework using
-/// the built-in `.contentTagging` adapter. Outputs topic tags, entities,
-/// and actions for a given text blob with guided generation.
+/// the built-in `.contentTagging` adapter. Thin CLI veneer over
+/// `Core/LLM/ContentTagger`.
 ///
-/// Requires:
-/// - Apple Intelligence enabled in System Settings.
-/// - macOS 26 / Tahoe + Apple Silicon (M1+).
-///
-/// References:
-/// - https://developer.apple.com/documentation/FoundationModels
-/// - WWDC25 session 286, "Meet the Foundation Models framework"
+/// Requires Apple Intelligence enabled (macOS 26 + M1+).
 struct Tag: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
     commandName: "tag",
@@ -42,42 +35,17 @@ struct Tag: AsyncParsableCommand {
       throw ValidationError("No input text provided (use --input <file> or pipe via stdin).")
     }
 
-    let model = SystemLanguageModel(useCase: .contentTagging)
-    switch model.availability {
-    case .available:
-      break
-    case .unavailable(let reason):
-      FileHandle.standardError.write(Data("[tag] error: Foundation Models unavailable: \(reason)\n".utf8))
-      switch reason {
-      case .appleIntelligenceNotEnabled:
-        FileHandle.standardError.write(Data("[tag] Enable Apple Intelligence in System Settings → Apple Intelligence & Siri.\n".utf8))
-      case .deviceNotEligible:
-        FileHandle.standardError.write(Data("[tag] This Mac is not eligible for Apple Intelligence.\n".utf8))
-      case .modelNotReady:
-        FileHandle.standardError.write(Data("[tag] Model not yet downloaded; try again shortly.\n".utf8))
-      @unknown default:
-        break
-      }
-      throw ExitCode(2)
-    @unknown default:
+    let started = Date()
+    let tags: ChronicleTagSet
+    do {
+      tags = try await ContentTagger.tagText(text, limit: limit)
+    } catch let e as ModelHostError {
+      FileHandle.standardError.write(Data("[tag] error: \(e.description)\n".utf8))
+      let r = e.remediation
+      if !r.isEmpty { FileHandle.standardError.write(Data("[tag] \(r)\n".utf8)) }
       throw ExitCode(2)
     }
-
-    let session = LanguageModelSession(model: model)
-
-    let prompt = """
-      Tag the following text. Return at most \(limit) items per category.
-      Be specific and concrete; prefer multi-word topics ("speech recognition" over "speech").
-      Text:
-      ---
-      \(text.prefix(20_000))
-      ---
-      """
-
-    let started = Date()
-    let response = try await session.respond(to: prompt, generating: ChronicleTagSet.self)
     let elapsed = Date().timeIntervalSince(started)
-    let tags = response.content
 
     struct Doc: Codable {
       let elapsedSeconds: Double
@@ -105,14 +73,4 @@ struct Tag: AsyncParsableCommand {
       print()
     }
   }
-}
-
-@Generable
-struct ChronicleTagSet {
-  @Guide(description: "Topic tags identifying the subject matter of the text.")
-  var topics: [String]
-  @Guide(description: "Named entities (people, products, organisations, places).")
-  var entities: [String]
-  @Guide(description: "Actions or verbs that summarise what happened in the text.")
-  var actions: [String]
 }

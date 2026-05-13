@@ -1,16 +1,10 @@
 import ArgumentParser
 import Foundation
-import FoundationModels
 
 /// Transcript / text summarization via Apple's on-device Foundation Models.
-/// Uses guided generation with a `Summary` struct so the output is always
-/// structured (tl;dr, bullet points, decisions, action items).
+/// Thin CLI veneer over `Core/LLM/Summarizer`.
 ///
-/// Requires Apple Intelligence enabled.
-///
-/// References:
-/// - https://developer.apple.com/documentation/FoundationModels
-/// - WWDC25 session 286, "Meet the Foundation Models framework"
+/// Requires Apple Intelligence enabled (macOS 26 + M1+).
 struct Summarize: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
     commandName: "summarize",
@@ -40,49 +34,17 @@ struct Summarize: AsyncParsableCommand {
       throw ValidationError("No input text provided (use --input <file> or pipe via stdin).")
     }
 
-    let model = SystemLanguageModel.default
-    switch model.availability {
-    case .available:
-      break
-    case .unavailable(let reason):
-      FileHandle.standardError.write(Data("[summarize] error: Foundation Models unavailable: \(reason)\n".utf8))
-      switch reason {
-      case .appleIntelligenceNotEnabled:
-        FileHandle.standardError.write(Data("[summarize] Enable Apple Intelligence in System Settings → Apple Intelligence & Siri.\n".utf8))
-      case .deviceNotEligible:
-        FileHandle.standardError.write(Data("[summarize] This Mac is not eligible for Apple Intelligence.\n".utf8))
-      case .modelNotReady:
-        FileHandle.standardError.write(Data("[summarize] Model not yet downloaded; try again shortly.\n".utf8))
-      @unknown default:
-        break
-      }
-      throw ExitCode(2)
-    @unknown default:
+    let started = Date()
+    let s: ChronicleSummary
+    do {
+      s = try await Summarizer.summarizeText(text, bullets: bullets)
+    } catch let e as ModelHostError {
+      FileHandle.standardError.write(Data("[summarize] error: \(e.description)\n".utf8))
+      let r = e.remediation
+      if !r.isEmpty { FileHandle.standardError.write(Data("[summarize] \(r)\n".utf8)) }
       throw ExitCode(2)
     }
-
-    let session = LanguageModelSession(
-      model: model,
-      instructions: """
-        You summarize transcripts of meetings, calls, and presentations.
-        Be faithful: do not invent facts the text does not state.
-        Prefer concrete nouns; avoid vague hedges.
-        """
-    )
-
-    let prompt = """
-      Produce a structured summary of the following text.
-      Aim for at most \(bullets) bullets.
-      Text:
-      ---
-      \(text.prefix(30_000))
-      ---
-      """
-
-    let started = Date()
-    let response = try await session.respond(to: prompt, generating: ChronicleSummary.self)
     let elapsed = Date().timeIntervalSince(started)
-    let s = response.content
 
     struct Doc: Codable {
       let elapsedSeconds: Double
@@ -114,16 +76,4 @@ struct Summarize: AsyncParsableCommand {
       print()
     }
   }
-}
-
-@Generable
-struct ChronicleSummary {
-  @Guide(description: "One-sentence high-level summary of the content.")
-  var tldr: String
-  @Guide(description: "Short bullet list of the key points.")
-  var bullets: [String]
-  @Guide(description: "Concrete decisions reached or claims made.")
-  var decisions: [String]
-  @Guide(description: "Action items, follow-ups, or open questions.")
-  var actionItems: [String]
 }
