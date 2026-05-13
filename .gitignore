@@ -1,0 +1,11 @@
+.build/
+.swiftpm/
+DerivedData/
+*.xcodeproj/
+Package.resolved
+.DS_Store
+out/
+*.wav
+*.txt
+*.json
+!Package.resolved
