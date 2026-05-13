@@ -91,39 +91,20 @@ struct Mic: AsyncParsableCommand {
     let startWall = Date()
 
     let inline = self.inline
-    let appendPath = self.append.map { ($0 as NSString).expandingTildeInPath }
-    let appendURL = appendPath.map { URL(fileURLWithPath: $0) }
-    if let url = appendURL {
-      AtomicFile.ensureExists(url)
-      FileHandle.standardError.write(Data("[mic] appending finals to \(url.path)\n".utf8))
-    }
-    let livePath = self.live.map { ($0 as NSString).expandingTildeInPath }
-    let liveURL = livePath.map { URL(fileURLWithPath: $0) }
-    if let url = liveURL {
-      FileHandle.standardError.write(Data("[mic] live transcript file: \(url.path)\n".utf8))
-    }
-    let isoFormatter = ISO8601DateFormatter()
-    isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
 
-    // Rolling buffers for live-file rendering.
-    actor LiveState {
-      var finals: [String] = []
-      var currentVolatile: String = ""
-      func addFinal(_ s: String) {
-        finals.append(s)
-        currentVolatile = ""
-      }
-      func setVolatile(_ s: String) {
-        currentVolatile = s
-      }
-      func snapshot() -> String {
-        let finalBlock = finals.joined(separator: "\n")
-        if currentVolatile.isEmpty { return finalBlock }
-        if finalBlock.isEmpty { return "→ \(currentVolatile)" }
-        return finalBlock + "\n→ " + currentVolatile
-      }
+    // Compose sidecar sinks.
+    var sinks: [TranscriptionSink] = []
+    if let path = self.live {
+      let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+      FileHandle.standardError.write(Data("[mic] live transcript file: \(url.path)\n".utf8))
+      sinks.append(LiveFileSink(url: url))
     }
-    let liveState = LiveState()
+    if let path = self.append {
+      let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+      FileHandle.standardError.write(Data("[mic] appending finals to \(url.path)\n".utf8))
+      sinks.append(FinalsAppendSink(url: url))
+    }
+    let composedSinks = sinks
 
     let consumeTask = Task {
       var lastVolatileLineLength = 0
@@ -131,23 +112,20 @@ struct Mic: AsyncParsableCommand {
         let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty { continue }
         let offsetMs = Date().timeIntervalSince(startWall) * 1000.0
+        let wallclock = Date()
         await trace.append(TraceEvent(
           wallclockOffsetMs: offsetMs,
           isFinal: result.isFinal,
           text: text
         ))
         if result.isFinal {
-          await liveState.addFinal(text)
-          if let url = appendURL {
-            let line = "[\(isoFormatter.string(from: Date()))] \(text)"
-            try? AtomicFile.appendLine(line, to: url)
+          for sink in composedSinks {
+            await sink.didReceiveFinal(text, wallclockOffsetMs: offsetMs, wallclock: wallclock)
           }
         } else {
-          await liveState.setVolatile(text)
-        }
-        if let url = liveURL {
-          let snapshot = await liveState.snapshot()
-          try? AtomicFile.atomicWrite(snapshot, to: url)
+          for sink in composedSinks {
+            await sink.didReceiveVolatile(text, wallclockOffsetMs: offsetMs)
+          }
         }
         if inline {
           if result.isFinal {
@@ -202,6 +180,9 @@ struct Mic: AsyncParsableCommand {
     try await analyzer.finalizeAndFinishThroughEndOfInput()
     try await consumeTask.value
     _ = await pcmTask.value
+    for sink in composedSinks {
+      await sink.finish()
+    }
 
     let events = await trace.events
     let volatileCount = events.filter { !$0.isFinal }.count
