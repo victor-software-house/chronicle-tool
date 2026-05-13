@@ -39,8 +39,10 @@ public protocol AudioSource: AnyObject, Sendable {
   /// reads are safe, concurrent writes are not.
   var pcmBuffers: AsyncStream<PCMBufferRef> { get }
 
-  /// Begin capture. Idempotent: calling twice is a no-op.
-  func start() throws
+  /// Begin capture. Idempotent: calling twice is a no-op. `async` so
+  /// sources that wrap async-throwing APIs (`SCStream.startCapture`) can
+  /// conform; sync sources (`AVAudioEngine.start`) simply don't await.
+  func start() async throws
 
   /// End capture. Idempotent. Closes the underlying streams so async
   /// consumers terminate.

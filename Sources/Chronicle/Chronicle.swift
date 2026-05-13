@@ -11,6 +11,7 @@ struct Chronicle: AsyncParsableCommand {
       Transcribe.self,
       Live.self,
       Mic.self,
+      SysAudio.self,
       Classify.self,
       Tag.self,
       Summarize.self,

@@ -161,7 +161,7 @@ struct Mic: AsyncParsableCommand {
       }
     }
 
-    try micSource.start()
+    try await micSource.start()
     FileHandle.standardError.write(Data("[mic] engine started; speak into the mic. Ctrl-C to stop.\n".utf8))
 
     // Kick off the analyzer over our input sequence.

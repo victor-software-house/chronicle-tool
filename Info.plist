@@ -16,5 +16,7 @@
   <string>chronicle needs the microphone to transcribe audio live, on-device, via Apple SpeechAnalyzer.</string>
   <key>NSSpeechRecognitionUsageDescription</key>
   <string>chronicle uses on-device speech recognition to produce live transcripts.</string>
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>chronicle captures system audio via ScreenCaptureKit to transcribe what is playing through your speakers, on-device, via Apple SpeechAnalyzer.</string>
 </dict>
 </plist>

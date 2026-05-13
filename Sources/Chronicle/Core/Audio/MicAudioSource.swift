@@ -48,7 +48,7 @@ public final class MicAudioSource: AudioSource, @unchecked Sendable {
     self.pcmBuilder = pBuilder
   }
 
-  public func start() throws {
+  public func start() async throws {
     guard !started else { return }
     started = true
 
