@@ -416,7 +416,7 @@ And `chronicle transcribe -i session-003.wav -o out` succeeds without errors
 
 **Decision:** **In-process fan-out.**
 
-**Rationale:** Diarization needs to align with transcript by audio range. Same buffers in both consumers makes the alignment trivial (both work on the same `CMTimeRange` axis). No IPC, no serialisation, no clock drift.
+**Rationale:** Diarization needs to align with transcript by audio range. Same buffers in both consumers makes the alignment trivial (both work on the same `CMTimeRange` axis). No IPC, no serialisation, no clock drift. Generalised into a reusable `BufferMulticast` primitive — see [ADR-0001](../adr/ADR-0001-modular-pipeline-architecture.md).
 
 **Future path:** when chronicle moves to a service-oriented architecture, expose the buffer stream over Unix sockets / gRPC for out-of-process consumers.
 
@@ -440,24 +440,67 @@ And `chronicle transcribe -i session-003.wav -o out` succeeds without errors
 
 ## 9. File Breakdown
 
+The codebase is being restructured into a protocol-oriented core with thin
+CLI veneers per [ADR-0001](../adr/ADR-0001-modular-pipeline-architecture.md).
+FR-by-FR file mapping below reflects the post-refactor layout.
+
 | File | Change type | FR | Description |
 |------|-------------|-----|-------------|
-| `Sources/Chronicle/Mic.swift` | Modify | FR-1, FR-2, FR-4, FR-5, FR-6 | Add rotation, JSONL trace, diarizer fan-out, tagger debounce, locale auto-detect |
-| `Sources/Chronicle/Live.swift` | Modify | FR-2 | JSONL trace replacement |
-| `Sources/Chronicle/Diarize.swift` | Modify | FR-4 | Extract streaming Sortformer helper |
-| `Sources/Chronicle/Tag.swift` | Modify | FR-5 | Expose `tagText(_:)` callable from other subcommands |
-| `Sources/Chronicle/SysAudio.swift` | New | FR-3 | New subcommand: `SCStream` audio capture + sidecar pipeline |
-| `Sources/Chronicle/Merge.swift` | New | FR-7 | New subcommand: cross-stream merge |
-| `Sources/Chronicle/Repair.swift` | New | FR-1, FR-8 | New subcommand: WAV header repair |
-| `Sources/Chronicle/AudioSidecar.swift` | New | FR-1, FR-3 | Shared WAV writer with `rotate()` API |
-| `Sources/Chronicle/BufferMulticast.swift` | New | FR-4 | Multicast helper to fan a single buffer to N consumers |
-| `Sources/Chronicle/Chronicle.swift` | Modify | FR-3, FR-7, FR-8 | Register new subcommands |
+| `Sources/Chronicle/Chronicle.swift` | Modify | FR-3, FR-7, FR-8 | Register `sysaudio`, `merge`, `repair` |
+| `Sources/Chronicle/Subcommands/Mic.swift` | Refactor + extend | FR-1, FR-2, FR-4, FR-5, FR-6 | Becomes a ~60-line orchestration of `Core/` protocols |
+| `Sources/Chronicle/Subcommands/SysAudio.swift` | New | FR-3, FR-4, FR-5 | New CLI veneer; reuses the same pipeline as `Mic` |
+| `Sources/Chronicle/Subcommands/Live.swift` | Refactor + modify | FR-2 | File-driven veneer reusing `Core/Speech` |
+| `Sources/Chronicle/Subcommands/Transcribe.swift` | Refactor | n/a | Uses `Core/Speech.TranscriptionEngine` |
+| `Sources/Chronicle/Subcommands/Diarize.swift` | Refactor | n/a | Uses `Core/Diarize.OfflineDiarizer` |
+| `Sources/Chronicle/Subcommands/Tag.swift` | Refactor | FR-5 | Delegates to `Core/LLM.ContentTagger.tagText` |
+| `Sources/Chronicle/Subcommands/Summarize.swift` | Refactor | n/a | Delegates to `Core/LLM.Summarizer` |
+| `Sources/Chronicle/Subcommands/Translate.swift` | Refactor | FR-6 | Uses `Core/Speech.LocaleResolver` |
+| `Sources/Chronicle/Subcommands/OCR.swift` | Refactor | n/a | Unchanged behaviour, moved into Subcommands/ |
+| `Sources/Chronicle/Subcommands/Describe.swift` | Refactor | n/a | Reuses `Core/LLM.ModelHost` |
+| `Sources/Chronicle/Subcommands/Merge.swift` | New | FR-7 | Cross-stream merge of finals/jsonl |
+| `Sources/Chronicle/Subcommands/Repair.swift` | New | FR-1, FR-8 | WAV header repair |
+| `Sources/Chronicle/Core/Audio/AudioSource.swift` | New | FR-3, FR-4 | Protocol: yields `AnalyzerInput` + raw PCM |
+| `Sources/Chronicle/Core/Audio/MicAudioSource.swift` | New | FR-1 | `AVAudioEngine` impl |
+| `Sources/Chronicle/Core/Audio/SysAudioSource.swift` | New | FR-3 | `SCStream` impl |
+| `Sources/Chronicle/Core/Audio/FileAudioSource.swift` | New | n/a | `AVAudioFile` impl for file-driven runs |
+| `Sources/Chronicle/Core/Audio/BufferMulticast.swift` | New | FR-4, FR-5 | Lock-free SPMC fan-out, audio-thread safe |
+| `Sources/Chronicle/Core/Audio/BufferConverter.swift` | New | n/a | `AVAudioConverter` wrapper |
+| `Sources/Chronicle/Core/Speech/TranscriptionEngine.swift` | New | FR-2, FR-6 | Preset-agnostic `SpeechAnalyzer` wrapper |
+| `Sources/Chronicle/Core/Speech/LocaleResolver.swift` | New | FR-6 | `NLLanguageRecognizer` auto-detect |
+| `Sources/Chronicle/Core/Diarize/Diarizer.swift` | New | FR-4 | Protocol |
+| `Sources/Chronicle/Core/Diarize/OfflineDiarizer.swift` | New | n/a | FluidAudio batch impl |
+| `Sources/Chronicle/Core/Diarize/StreamingDiarizer.swift` | New | FR-4 | FluidAudio Sortformer impl |
+| `Sources/Chronicle/Core/LLM/ModelHost.swift` | New | FR-5 | Cached `LanguageModelSession` |
+| `Sources/Chronicle/Core/LLM/ContentTagger.swift` | New | FR-5 | `@Generable` + `tagText()` |
+| `Sources/Chronicle/Core/LLM/Summarizer.swift` | New | n/a | `@Generable` + `summarizeText()` |
+| `Sources/Chronicle/Core/LLM/ImageDescriber.swift` | New | n/a | Vision multi-request + FM narration |
+| `Sources/Chronicle/Core/Sinks/TranscriptionSink.swift` | New | FR-2, FR-4, FR-5 | Protocol: `didReceive(volatile|final)` |
+| `Sources/Chronicle/Core/Sinks/LiveFileSink.swift` | New | n/a | Atomic-rewrite `live.md` |
+| `Sources/Chronicle/Core/Sinks/FinalsAppendSink.swift` | New | n/a | Append-per-final timestamped log |
+| `Sources/Chronicle/Core/Sinks/JSONLTraceSink.swift` | New | FR-2 | Incremental JSONL trace |
+| `Sources/Chronicle/Core/Sinks/TagsJSONLSink.swift` | New | FR-5 | Tags every N finals |
+| `Sources/Chronicle/Core/Sinks/WAVSegmentSink.swift` | New | FR-1 | Rotating WAV writer with `rotate()` API |
+| `Sources/Chronicle/Core/Runtime/SignalHandler.swift` | New | n/a | `SIGINT`/`SIGTERM` one-shot helper |
+| `Sources/Chronicle/Core/Runtime/AtomicFile.swift` | New | FR-2 | Atomic-write + JSONL append primitives |
+| `Sources/Chronicle/Core/Runtime/LivePipeline.swift` | New | FR-1…FR-5 | Orchestrator: source → [consumers] → [sinks] |
+| `Tests/ChronicleTests/Audio/BufferMulticastTests.swift` | New | FR-4 | SPMC fan-out unit tests |
+| `Tests/ChronicleTests/Sinks/JSONLTraceSinkTests.swift` | New | FR-2 | Crash-recovery (kill mid-write) tests |
+| `Tests/ChronicleTests/Sinks/WAVSegmentSinkTests.swift` | New | FR-1 | Rotation timing + header validity tests |
+| `Tests/ChronicleTests/Subcommands/RepairTests.swift` | New | FR-8 | Repairs canned malformed WAVs |
+| `Tests/ChronicleTests/Subcommands/MergeTests.swift` | New | FR-7 | Chronological merge with canned finals files |
+| `Tests/ChronicleTests/Speech/LocaleResolverTests.swift` | New | FR-6 | Auto-detect convergence on synthetic inputs |
+| `Tests/ChronicleTests/Helpers/MockAudioSource.swift` | New | testing | Plays canned WAVs through the live pipeline for E2E coverage |
+| `Package.swift` | Modify | testing | Add `ChronicleTests` test target |
 | `Info.plist` | Modify | FR-3 | Add `NSScreenCaptureUsageDescription` |
-| `README.md` | Modify | all | Document new flags, daemon model, recovery story |
+| `README.md` | Modify | all | Document new flags, layout, daemon model, recovery story |
 | `docs/prd/PRD-001-resilient-multi-source-daemon.md` | New | n/a | This document |
+| `docs/adr/ADR-0001-modular-pipeline-architecture.md` | New | n/a | Sister ADR for the structural decision |
 | `spikes/2026-05-13-daemon-live-mic.md` | Modify (later) | all | Add post-implementation receipts |
 
-Every file traces to at least one FR. Every FR has at least one file.
+Every production file traces to at least one FR. Every FR has at least one
+production file and at least one test target. The refactor (P0) lands
+*before* the FR implementations so that each FR is built directly into the
+new structure with its tests.
 
 ---
 
@@ -479,14 +522,16 @@ Every file traces to at least one FR. Every FR has at least one file.
 
 Order each step so the previous one's receipts feed the next.
 
-1. **FR-1 + FR-2: resilience first.** Audio rotation + JSONL trace. Lowest blast radius; both are pure refactors of existing `mic` paths. Validate on a fresh 5-min session, then kill -9 mid-stream and verify recovery.
-2. **FR-8: WAV repair helper.** Build it during FR-1 because rotation requires it for the tail segment.
-3. **FR-6: locale auto-detect.** Self-contained; useful immediately.
-4. **FR-4: live diarization.** Reuses the existing FluidAudio dep. Multicast helper is a one-file addition. Test against the same 2026-05-13 Zoom session offline, then live.
-5. **FR-5: live tagging.** Once FR-4 lands, tagging is the smallest layer on top.
-6. **FR-3: `sysaudio` subcommand.** Largest single addition because it's a new audio source. Reuses the sidecar surface FR-1/FR-2 already built.
-7. **FR-7: `merge` subcommand.** Easiest to leave for last because it operates entirely on already-produced sidecars.
-8. **Documentation pass.** Update README + research-notes + a new spike doc with end-to-end receipts.
+1. **P0 — Modular refactor + test target.** Implement [ADR-0001](../adr/ADR-0001-modular-pipeline-architecture.md): extract `Core/Audio`, `Core/Speech`, `Core/Diarize`, `Core/LLM`, `Core/Sinks`, `Core/Runtime`; convert each subcommand to a thin veneer; add a `ChronicleTests` Swift Package test target; port every existing subcommand into the new structure and verify behaviour parity against the 2026-05-13 Zoom session receipts. Land *before* any FR.
+2. **FR-1 + FR-2: resilience first.** Audio rotation via `WAVSegmentSink` + JSONL trace via `JSONLTraceSink`. Build with unit + crash-recovery tests (`kill -9` simulation). Validate on a fresh 5-min session.
+3. **FR-8: `chronicle repair`.** Built alongside FR-1 because rotation needs it for the tail segment. Tests use a canned corpus of malformed WAVs.
+4. **FR-6: locale auto-detect.** Self-contained `LocaleResolver` with unit tests on synthetic NL inputs.
+5. **FR-4: live diarization.** Reuses the existing FluidAudio dep. `BufferMulticast` + `StreamingDiarizer` are unit-testable with `MockAudioSource`. Test against the 2026-05-13 Zoom session offline first, then live.
+6. **FR-5: live tagging.** Once FR-4 lands, tagging is the smallest layer on top via `ModelHost` + `TagsJSONLSink`.
+7. **FR-3: `sysaudio` subcommand.** Largest single addition because it's a new audio source. Reuses the sidecar surface FR-1/FR-2 already built; only `SysAudioSource` is new.
+8. **FR-7: `merge` subcommand.** Pure-function; easy to leave for last and unit-test exhaustively.
+9. **Verification pass.** Run the §15 appendix end-to-end on a fresh session. Capture receipts.
+10. **Documentation pass.** Update README + research-notes + spike doc with the final source code + final numbers.
 
 ---
 
@@ -507,6 +552,7 @@ Order each step so the previous one's receipts feed the next.
 
 | Issue | Relationship |
 |-------|-------------|
+| [`docs/adr/ADR-0001-modular-pipeline-architecture.md`](../adr/ADR-0001-modular-pipeline-architecture.md) | structural ADR; constrains every FR in this PRD |
 | chronicle-tool 0.1.0 (current spike state) | this PRD extends |
 | `chronicle/notes/research-notes.md` Tahoe surface map | this PRD operationalises |
 | Future PRD: chronicle storage tiers | depends on this PRD's segmented audio output |
