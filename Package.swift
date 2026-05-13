@@ -29,6 +29,11 @@ let package = Package(
           "-Xlinker", "Info.plist"
         ])
       ]
+    ),
+    .testTarget(
+      name: "ChronicleTests",
+      dependencies: ["Chronicle"],
+      path: "Tests/ChronicleTests"
     )
   ]
 )
