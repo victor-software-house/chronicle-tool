@@ -37,6 +37,15 @@ struct Mic: AsyncParsableCommand {
   @Flag(name: .long, help: "Render volatile updates inline (TTY repaint) instead of one line each.")
   var inline: Bool = false
 
+  @Option(name: .long, help: "Append each finalized segment (with timestamp) to this file. Survives kill / SIGTERM.")
+  var append: String?
+
+  @Option(name: .long, help: "Rewrite this file on every event with the rolling live transcript (finals + current volatile). Updates every ~150 ms.")
+  var live: String?
+
+  @Option(name: .long, help: "Also save the raw microphone audio to this WAV file (16 kHz mono Float32, lossless).")
+  var saveAudio: String?
+
   func run() async throws {
     guard #available(macOS 26.0, *) else {
       throw ValidationError("Requires macOS 26.0+.")
@@ -74,6 +83,16 @@ struct Mic: AsyncParsableCommand {
       throw ValidationError("Could not build AVAudioConverter from mic format to analyzer format.")
     }
 
+    // Optional raw-audio sidecar.
+    var audioFile: AVAudioFile? = nil
+    if let saveAudio {
+      let url = URL(fileURLWithPath: (saveAudio as NSString).expandingTildeInPath)
+      let settings = analyzerFormat.settings
+      audioFile = try AVAudioFile(forWriting: url, settings: settings, commonFormat: analyzerFormat.commonFormat, interleaved: analyzerFormat.isInterleaved)
+      FileHandle.standardError.write(Data("[mic] saving audio to \(url.path) (\(analyzerFormat))\n".utf8))
+    }
+    let audioFileBox = AudioFileBox(file: audioFile)
+
     let (input, builder) = AsyncStream.makeStream(of: AnalyzerInput.self)
 
     struct TraceEvent: Codable, Sendable {
@@ -89,6 +108,40 @@ struct Mic: AsyncParsableCommand {
     let startWall = Date()
 
     let inline = self.inline
+    let appendPath = self.append.map { ($0 as NSString).expandingTildeInPath }
+    let appendURL = appendPath.map { URL(fileURLWithPath: $0) }
+    if let url = appendURL, !FileManager.default.fileExists(atPath: url.path) {
+      FileManager.default.createFile(atPath: url.path, contents: nil)
+      FileHandle.standardError.write(Data("[mic] appending finals to \(url.path)\n".utf8))
+    }
+    let livePath = self.live.map { ($0 as NSString).expandingTildeInPath }
+    let liveURL = livePath.map { URL(fileURLWithPath: $0) }
+    if let url = liveURL {
+      FileHandle.standardError.write(Data("[mic] live transcript file: \(url.path)\n".utf8))
+    }
+    let isoFormatter = ISO8601DateFormatter()
+    isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+
+    // Rolling buffers for live-file rendering.
+    actor LiveState {
+      var finals: [String] = []
+      var currentVolatile: String = ""
+      func addFinal(_ s: String) {
+        finals.append(s)
+        currentVolatile = ""
+      }
+      func setVolatile(_ s: String) {
+        currentVolatile = s
+      }
+      func snapshot() -> String {
+        let finalBlock = finals.joined(separator: "\n")
+        if currentVolatile.isEmpty { return finalBlock }
+        if finalBlock.isEmpty { return "→ \(currentVolatile)" }
+        return finalBlock + "\n→ " + currentVolatile
+      }
+    }
+    let liveState = LiveState()
+
     let consumeTask = Task {
       var lastVolatileLineLength = 0
       for try await result in transcriber.results {
@@ -100,6 +153,23 @@ struct Mic: AsyncParsableCommand {
           isFinal: result.isFinal,
           text: text
         ))
+        if result.isFinal {
+          await liveState.addFinal(text)
+          if let url = appendURL {
+            let line = "[\(isoFormatter.string(from: Date()))] \(text)\n"
+            if let handle = try? FileHandle(forWritingTo: url) {
+              try? handle.seekToEnd()
+              try? handle.write(contentsOf: Data(line.utf8))
+              try? handle.close()
+            }
+          }
+        } else {
+          await liveState.setVolatile(text)
+        }
+        if let url = liveURL {
+          let snapshot = await liveState.snapshot()
+          try? snapshot.write(to: url, atomically: true, encoding: .utf8)
+        }
         if inline {
           if result.isFinal {
             // Clear any in-progress volatile line then print final on its own line.
@@ -125,7 +195,7 @@ struct Mic: AsyncParsableCommand {
     }
 
     // Wire the engine tap. Use the mic's native format on the tap, convert on push.
-    inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [analyzerFormat] buffer, _ in
+    inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [analyzerFormat, audioFileBox] buffer, _ in
       guard let convertedFrameCapacity = AVAudioFrameCount(
         Double(buffer.frameLength) * analyzerFormat.sampleRate / inputFormat.sampleRate
       ) as AVAudioFrameCount?,
@@ -141,6 +211,10 @@ struct Mic: AsyncParsableCommand {
       }
       if status == .haveData {
         builder.yield(AnalyzerInput(buffer: converted))
+        // Sidecar audio write (lossless 16kHz Float32).
+        if let file = audioFileBox.file {
+          try? file.write(from: converted)
+        }
       }
     }
 
@@ -156,18 +230,22 @@ struct Mic: AsyncParsableCommand {
       FileHandle.standardError.write(Data("[mic] will auto-stop after \(seconds)s\n".utf8))
       try? await Task.sleep(nanoseconds: UInt64(seconds) * 1_000_000_000)
     } else {
-      let signalSource = DispatchSource.makeSignalSource(signal: SIGINT)
+      let intSource = DispatchSource.makeSignalSource(signal: SIGINT)
+      let termSource = DispatchSource.makeSignalSource(signal: SIGTERM)
       signal(SIGINT, SIG_IGN)
+      signal(SIGTERM, SIG_IGN)
       let waitOnSignal = Task {
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-          signalSource.setEventHandler {
-            cont.resume()
-          }
-          signalSource.resume()
+          let resumeOnce = OneShotResume(continuation: cont)
+          intSource.setEventHandler { resumeOnce.fire() }
+          termSource.setEventHandler { resumeOnce.fire() }
+          intSource.resume()
+          termSource.resume()
         }
       }
       _ = await waitOnSignal.value
-      signalSource.cancel()
+      intSource.cancel()
+      termSource.cancel()
     }
 
     FileHandle.standardError.write(Data("\n[mic] stopping...\n".utf8))
@@ -207,4 +285,28 @@ struct Mic: AsyncParsableCommand {
       FileHandle.standardError.write(Data("[mic] wrote \(output)\n".utf8))
     }
   }
+}
+
+/// One-shot wrapper so SIGINT and SIGTERM both call resume() at most once
+/// without crashing on the second signal.
+private final class OneShotResume: @unchecked Sendable {
+  private let lock = NSLock()
+  private var fired = false
+  private let continuation: CheckedContinuation<Void, Never>
+  init(continuation: CheckedContinuation<Void, Never>) {
+    self.continuation = continuation
+  }
+  func fire() {
+    lock.lock(); defer { lock.unlock() }
+    guard !fired else { return }
+    fired = true
+    continuation.resume()
+  }
+}
+
+/// Sendable wrapper so the audio-tap closure can hold a reference to an
+/// AVAudioFile without a Sendable warning.
+private final class AudioFileBox: @unchecked Sendable {
+  let file: AVAudioFile?
+  init(file: AVAudioFile?) { self.file = file }
 }

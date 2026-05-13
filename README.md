@@ -64,6 +64,14 @@ swift build -c release
 # Live microphone (Ctrl-C to stop, or --seconds N to auto-stop).
 .build/release/chronicle mic --locale en-US --seconds 30 -o out/mic.json
 
+# Live mic as a daemon: lossless audio + rolling live snapshot + final-only log + JSON trace.
+.build/release/chronicle mic \
+  --locale pt-BR \
+  --live out/live.md \
+  --append out/finals.md \
+  --save-audio out/audio.wav \
+  -o out/trace.json
+
 # Speech pre-gate over a long session.
 .build/release/chronicle classify \
   -i mic-master.wav \
@@ -93,6 +101,54 @@ A five-stage pipeline (classify → transcribe → diarize → tag → summarize
 exists at `spikes/scripts/run-pipeline.sh`. It chains the subcommands and
 produces a single output directory per session. Total wall-clock for the
 2026-05-13 6870 s Zoom session: **57 s**.
+
+## Live mic daemon (real-time, multi-sidecar)
+
+`chronicle mic` runs as a long-lived daemon with multiple sidecar outputs
+from one audio tap:
+
+```text
+AVAudioEngine tap (mic, 48 kHz Float32)
+  → AVAudioConverter (→ 16 kHz Int16 mono)
+  → fan-out:
+      ├─ AsyncStream<AnalyzerInput>      → SpeechAnalyzer + .progressiveTranscription [ANE]
+      │    → volatile / final events
+      │        ├─ live.md     (atomic rewrite per event, ~150 ms cadence)
+      │        ├─ finals.md   (timestamped append per phrase)
+      │        └─ trace.json  (full event trace, flushed on graceful stop)
+      └─ AVAudioFile                     → audio/session.wav  (lossless 16 kHz Int16)
+```
+
+Resource cost per daemon: **~0.5–0.8 % CPU, ~30 MB RSS, ~115 MB/h of
+lossless WAV, ~10 KB/s of text sidecars, ~150 ms volatile latency,
+5–30 s final latency.** The model runs off-process on the ANE; the daemon
+just does the tap + convert + fan-out + file writes. On M4 Pro / 48 GB the
+ANE + RAM headroom supports ~100–200 parallel real-time streams — the
+actual bottleneck is the audio-device count.
+
+Full receipts: [`spikes/2026-05-13-daemon-live-mic.md`](spikes/2026-05-13-daemon-live-mic.md).
+
+## Running it under the Pi process tool
+
+For a chronicle-style 24/7 setup, run as a background process:
+
+```sh
+# via pi process tool (preferred — captures stdout/stderr, alerts on failure):
+process action=start name=chronicle-mic-live \
+  command='cd <repo> && exec .build/release/chronicle mic --locale pt-BR --live <vault>/live.md --append <vault>/finals.md --save-audio <vault>/audio.wav -o <vault>/trace.json'
+
+# or raw nohup if you prefer:
+nohup .build/release/chronicle mic --locale pt-BR \
+  --live  ~/chronicle/live.md \
+  --append ~/chronicle/finals.md \
+  --save-audio ~/chronicle/audio.wav \
+  -o ~/chronicle/trace.json &> ~/chronicle/daemon.log &
+```
+
+The daemon handles `SIGTERM` cleanly —
+`finalizeAndFinishThroughEndOfInput()` flushes the last in-flight volatile
+into a final before closing, so `finals.md` and the JSON trace stay
+consistent.
 
 ## Architecture
 
