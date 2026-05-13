@@ -1,0 +1,536 @@
+---
+title: "Resilient multi-source chronicle daemon"
+prd: PRD-001
+status: Draft
+owner: "Victor"
+issue: "N/A"
+date: 2026-05-13
+version: "1.0"
+---
+
+# PRD: Resilient multi-source chronicle daemon
+
+---
+
+## 1. Problem & Context
+
+The current `chronicle mic` binary is a working real-time daemon: it taps the
+microphone via `AVAudioEngine`, feeds buffers into Apple's `SpeechAnalyzer`
+on the Neural Engine, and writes four sidecar streams (`audio.wav`,
+`live.md`, `finals.md`, `trace.json`). Measured cost is 0.5-0.8% of one
+core, 30 MB RSS, ~150 ms volatile latency.
+
+For chronicle's 24/7 use-case, three structural gaps remain:
+
+1. **Audio recording is fragile.** `AVAudioFile` writes a WAV header with a
+   placeholder data-chunk size at open and patches the real size in on
+   `close()`. A crash, OS shutdown, or power loss mid-stream leaves a file
+   with a stale or zero size field — bytes are on disk but most players
+   reject the file. The current daemon produces **one big WAV per run**,
+   so any incident can corrupt the entire session.
+2. **Transcript trace is fragile.** `trace.json` is written only at
+   graceful shutdown. A crash loses the entire JSON event trace. `finals.md`
+   and `live.md` remain intact, but the rich per-event timing data is
+   gone.
+3. **Single audio source only.** Chronicle wants both microphone **and**
+   system audio captured simultaneously, with a unified speaker-labeled
+   transcript. The mic side is wired; system audio (ScreenCaptureKit) is
+   not, and there is no diarization in the live path.
+
+This PRD scopes the daemon's evolution from "single-mic working spike" to
+"24/7-grade chronicle capture surface with crash-resistant audio,
+incremental trace persistence, dual-source capture, live diarization, and
+opportunistic live tagging".
+
+The implementation already validated on this machine (10 working
+subcommands, all on-device, all $0) is the foundation; this PRD turns it
+into a system the operator can leave running.
+
+---
+
+## 2. Goals & Success Metrics
+
+| Goal | Metric | Target |
+|------|--------|--------|
+| **Crash-resistant audio** | Worst-case audio data loss after an unclean termination | ≤ 60 s of audio (vs current "entire session unplayable") |
+| **Crash-resistant trace** | Worst-case event-trace loss after unclean termination | ≤ 5 s of events (vs current "entire trace lost") |
+| **Dual-source live capture** | Concurrent mic + system audio with one unified transcript | Mic + sysaudio daemons run side by side, finals merge by wall-clock with speaker tags |
+| **Live diarization** | Speaker label attached to each finalized transcript line | ≥ 80% of finals carry a `speakerId` within 1 s of the line being committed |
+| **Live tagging** | Topic / entity tags computed on each new final | ≤ 8 s from final commit to tags landing in a sidecar JSON |
+| **Resource ceiling** | Aggregate cost of all live daemons on M4 Pro | ≤ 5% CPU, ≤ 200 MB RSS for the full mic + sysaudio + tagger + diarizer setup |
+
+**Guardrails (must not regress):**
+
+- Current single-daemon footprint stays under 1% CPU, 50 MB RSS.
+- Volatile latency must not regress beyond ~200 ms.
+- All sidecars stay on-device. No cloud calls. No network. No paid APIs.
+- The atomic-rewrite contract on `live.md` is preserved (readers never see
+  a partial file).
+
+---
+
+## 3. Users & Use Cases
+
+### Primary: chronicle operator (the human running this Mac 24/7)
+
+> As the operator, I want every spoken word to be captured to a recoverable
+> audio file and a live transcript even if my Mac crashes, sleeps badly,
+> or runs out of battery, so that I never lose a meaningful moment to a
+> brittle recorder.
+
+**Preconditions:** the daemon is launched at login; TCC permissions for
+Microphone and Screen Recording are granted; Apple Intelligence is
+enabled.
+
+### Primary: chronicle daemon supervisor (Pi `process` tool or `launchd`)
+
+> As the supervisor, I want clean termination on `SIGTERM`, fast restart,
+> and per-segment rotation so that I can swap out daemons, rotate logs,
+> and audit running state without losing audio or transcripts.
+
+### Secondary: chronicle review tooling
+
+> As the downstream offline batch (`transcribe`, `diarize`, `tag`,
+> `summarize`, premium STT), I want stable, valid WAV segments and a
+> per-event timing trace so that I can re-process the chronicle without
+> the original daemon being involved.
+
+### Future: chronicle search / agent layer (enabled by this work)
+
+> As an LLM agent reading chronicle history, I want speaker-labeled,
+> timestamped, taggable finals available within seconds of being spoken
+> so that I can answer "what did Victor decide in the last hour?" from
+> live memory.
+
+---
+
+## 4. Scope
+
+### In scope
+
+1. **Segmented audio capture** — rotate the WAV output every N seconds (default 60 s) into `audio/session-<index>.wav`. Each segment closes cleanly before the next opens; worst-case loss = current segment.
+2. **Incremental trace persistence** — flush a rolling JSONL trace (`trace.jsonl`) every K events (default every 1 s or 50 events, whichever is sooner). The legacy `trace.json` becomes a final snapshot, but JSONL is the durable source.
+3. **System audio capture subcommand** — new `chronicle sysaudio` using `ScreenCaptureKit`'s `SCStream` audio-only tap. Same sidecar surface as `chronicle mic` (`--live`, `--append`, `--save-audio`, `-o`).
+4. **Live diarization** — extend `chronicle mic` (and `chronicle sysaudio`) with `--diarize` flag that fans the same audio buffers into FluidAudio's `SortformerDiarizer`. Speaker labels are merged into the transcript finals (`speakerId` field in the JSONL trace, `[S2] <text>` prefix in `finals.md`).
+5. **Live content tagging** — extend `mic` / `sysaudio` with `--tag-every <N>` flag. Every Nth final triggers a `FoundationModels` `.contentTagging` pass on the rolling transcript window; results are emitted into a `tags.jsonl` sidecar.
+6. **Language auto-detect** — when `--locale auto` is passed, run `NLLanguageRecognizer` on the first 5 finalized segments and switch the transcriber locale once a dominant language is detected with confidence > 0.7. Re-evaluate every 5 minutes for code-switching.
+7. **Cross-stream merge** — new `chronicle merge` subcommand that takes two or more `finals.md` files and produces one chronological speaker-labeled transcript. Source-stream prefix (`[mic|sys] [S2] …`) is preserved.
+8. **Crash recovery helper** — `chronicle repair <wav>` that takes a malformed WAV (bad header), inspects the raw byte stream, and writes a fixed WAV with the correct size fields based on file length. For older incidents.
+
+### Out of scope / later
+
+| What | Why | Tracked in |
+|------|-----|------------|
+| Whisper-style hallucination filter | The Tahoe `SpeechTranscriber` does not exhibit the silence-hallucination problem we hit with Whisper. Premature optimisation. | future PRD |
+| Continuous diarizer-only output | `SortformerDiarizer` is fast enough to run inline; standalone path unnecessary. | future PRD |
+| Direct push to Obsidian vault | Out-of-process; better solved by a chronicle → vault watcher. | future PRD |
+| Encrypted at-rest sidecars | The full chronicle privacy story is its own PRD. | future PRD |
+| launchd plist / login item | Operator currently uses Pi `process` tool. launchd is the right answer post-MVP. | future PRD |
+
+### Design for future (build with awareness)
+
+- All subcommands share a common `Sidecar` protocol (a struct that owns a
+  rolling `LiveState`, optional `append` path, optional `live` path, and
+  optional `audio` writer). This makes adding `sysaudio` mechanical: same
+  protocol, different audio source.
+- The diarizer is a *consumer* of the same buffer stream the analyzer
+  uses. Build the fan-out as a multicast `AsyncStream`-style helper rather
+  than wiring two taps. Future consumers (sound classifier, biometric
+  signal extractor, whatever) hook into the same fan-out.
+- Tagger output is a JSON-Lines sidecar, one tag-set per line. Easy to
+  tail, easy to merge, easy to consume downstream. No DB lock-in.
+
+---
+
+## 5. Functional Requirements
+
+### FR-1: Segmented audio capture (`--rotate-audio <seconds>`)
+
+The mic and sysaudio daemons rotate the WAV output every N seconds
+(default 60). When the rotation timer fires, the current `AVAudioFile`
+is `close()`d (which patches the header), then a new file is opened.
+
+**Acceptance criteria:**
+
+```gherkin
+Given the daemon is running with --save-audio session.wav --rotate-audio 60
+When 130 seconds of audio have streamed and the daemon is killed with SIGKILL
+Then audio/session-000001.wav and audio/session-000002.wav are valid WAVs
+And audio/session-000003.wav contains the last ~10 seconds and may have a stale header
+And running `chronicle repair audio/session-000003.wav` produces a valid WAV
+And concatenating all three reconstructs the full session
+```
+
+**Files:**
+- `Sources/Chronicle/Mic.swift` — add rotation timer + file swap.
+- `Sources/Chronicle/AudioSidecar.swift` — extract the WAV writer into a shared component with explicit `rotate()` API.
+- `Sources/Chronicle/Repair.swift` — new subcommand that fixes WAV headers in-place by reading file length and patching size fields.
+
+---
+
+### FR-2: Incremental JSONL trace (`-o trace.jsonl` overrides `trace.json`)
+
+Every event is appended as one JSON object on its own line, flushed every
+K events. The legacy `trace.json` snapshot is still written on graceful
+shutdown but the JSONL is the source of truth.
+
+**Acceptance criteria:**
+
+```gherkin
+Given the daemon is running with -o trace.jsonl
+When the operator kills -9 the process after 30 seconds
+Then trace.jsonl is well-formed JSON-Lines (one event per line)
+And at most one trailing line is partially written
+And `jq -c . trace.jsonl 2>/dev/null | wc -l` is within 5 events of the true count
+```
+
+**Files:**
+- `Sources/Chronicle/Mic.swift` — replace `trace.json` writer with JSONL appender.
+- `Sources/Chronicle/Live.swift` — same pattern.
+
+---
+
+### FR-3: System audio subcommand (`chronicle sysaudio`)
+
+A new subcommand that captures system audio via `ScreenCaptureKit`'s
+`SCStream` (macOS 14.2+) and runs it through the same SpeechAnalyzer
+pipeline. Identical sidecar surface to `mic`.
+
+**Acceptance criteria:**
+
+```gherkin
+Given Apple Intelligence is enabled and Screen Recording TCC is granted
+When `chronicle sysaudio --locale en-US --live live.md` is launched
+And a YouTube video is played in Safari
+Then live.md updates within ~150 ms of speech in the video being audible
+And finals.md captures the spoken content with locale-appropriate accuracy
+```
+
+**Files:**
+- `Sources/Chronicle/SysAudio.swift` — new subcommand using `SCStream` audio-only configuration.
+- `Info.plist` — add `NSScreenCaptureUsageDescription`.
+
+---
+
+### FR-4: Live diarization (`--diarize`)
+
+`mic` and `sysaudio` accept `--diarize`. When set, the same buffers fed
+into the analyzer are also fed into FluidAudio's `SortformerDiarizer`.
+Speaker IDs are merged into each final by aligning audio ranges.
+
+**Acceptance criteria:**
+
+```gherkin
+Given chronicle mic --locale pt-BR --diarize is running
+And two speakers (A, B) take turns speaking for 60 seconds
+When the daemon emits finals
+Then each final in finals.md is prefixed with the speakerId, e.g. "[S1] olá" / "[S2] tudo bem"
+And the JSONL trace event objects carry a "speakerId" field
+And the speaker count converges to 2 within the first ~10 seconds
+```
+
+**Files:**
+- `Sources/Chronicle/Mic.swift` — add buffer multicast; spawn diarizer task.
+- `Sources/Chronicle/Diarize.swift` — extract `SortformerDiarizer` setup into a shared streaming helper.
+- `Sources/Chronicle/SysAudio.swift` — same flag.
+
+---
+
+### FR-5: Live content tagging (`--tag-every <N>`)
+
+Every N finals trigger a `FoundationModels` `.contentTagging` pass over
+the rolling cumulative transcript (most recent ~5000 chars). Results are
+appended to `tags.jsonl` as one JSON record per pass.
+
+**Acceptance criteria:**
+
+```gherkin
+Given chronicle mic --tag-every 3 is running on a fresh session
+When the model emits the 3rd, 6th, and 9th finals
+Then tags.jsonl has 3 entries
+And each entry includes elapsedSeconds, topics, entities, actions, and the cumulative text size at trigger
+And the latency between the 3rd final and its tag entry is < 8 seconds
+```
+
+**Files:**
+- `Sources/Chronicle/Mic.swift` — debounce tagger triggers on each final.
+- `Sources/Chronicle/Tag.swift` — extract a reusable `tagText(_:)` function that does not require CLI args.
+
+---
+
+### FR-6: Language auto-detect (`--locale auto`)
+
+When `--locale auto` is set, the daemon launches with a permissive locale
+(default `en-US`) and runs `NLLanguageRecognizer` on every final.
+After the first 3 finals with detected language confidence > 0.7, the
+daemon stops, closes the analyzer, and relaunches it with the detected
+locale.
+
+**Acceptance criteria:**
+
+```gherkin
+Given chronicle mic --locale auto is running
+And the operator speaks Portuguese
+When the third final arrives
+Then stderr logs "[mic] auto-detected locale=pt-BR, restarting transcriber"
+And subsequent finals are coherent Portuguese (no English-misinterpretation)
+```
+
+**Files:**
+- `Sources/Chronicle/Mic.swift` — locale resolver runs after first 3 finals.
+
+---
+
+### FR-7: Cross-stream merge (`chronicle merge`)
+
+A standalone subcommand that takes ≥2 `finals.md` files (or JSONL traces)
+and emits one chronological, source-prefixed, speaker-labeled markdown
+log on stdout.
+
+**Acceptance criteria:**
+
+```gherkin
+Given finals-mic.md and finals-sys.md both exist with interleaved timestamps
+When `chronicle merge finals-mic.md finals-sys.md` is run
+Then stdout is a chronological markdown table sorted by ISO timestamp
+And each line is prefixed with its source ("[mic]" / "[sys]")
+And speaker labels (if present) are preserved
+```
+
+**Files:**
+- `Sources/Chronicle/Merge.swift` — new subcommand.
+
+---
+
+### FR-8: Crash recovery for WAV (`chronicle repair`)
+
+A standalone subcommand that takes a WAV file with a malformed header
+and rewrites the header based on the actual file size on disk.
+
+**Acceptance criteria:**
+
+```gherkin
+Given a WAV file produced by an interrupted recording (header data-chunk size = 0)
+When `chronicle repair session-003.wav` is run
+Then the file's header is rewritten with the correct size fields
+And the file plays correctly in `afplay` and `ffmpeg`
+And `chronicle transcribe -i session-003.wav -o out` succeeds without errors
+```
+
+**Files:**
+- `Sources/Chronicle/Repair.swift` — new subcommand.
+
+---
+
+## 6. Non-Functional Requirements
+
+| Category | Requirement |
+|----------|-------------|
+| **Performance** | Single daemon: ≤ 1% CPU, ≤ 50 MB RSS. Full mic + sysaudio + diarize + tag stack: ≤ 5% CPU, ≤ 200 MB RSS. |
+| **Latency** | Volatile transcript updates: ≤ 200 ms. Final commit: ≤ 30 s. Live diarization: ≤ 1 s after final. Live tagging: ≤ 8 s after triggering final. |
+| **Resilience** | After `SIGKILL` or power loss: audio loss ≤ 60 s, trace event loss ≤ 5 s. All other previously-committed events recoverable from disk. |
+| **Privacy** | All processing on-device. No network calls. No telemetry. No paid APIs. |
+| **Portability** | macOS 26+ only. Apple Silicon only. No fallback path for older OS / Intel. |
+| **File compatibility** | Audio sidecars must be readable by `ffmpeg`, `afplay`, and our own offline `transcribe` without modification (except for repair-needing tail segments). |
+
+---
+
+## 7. Risks & Assumptions
+
+### Risks
+
+| Risk | Severity | Likelihood | Mitigation |
+|------|----------|------------|------------|
+| `SCStream` audio capture requires entitlement we can't easily provide for an unsigned binary | Medium | Medium | First implementation attempt validates with TCC prompt for Screen Recording; document the friction; provide ad-hoc signing instructions if needed. |
+| `SortformerDiarizer` adds per-buffer latency that pushes volatile updates beyond the 200 ms NFR | Medium | Low | Run the diarizer in a separate `Task` reading from the multicast stream; do not let it block the analyzer's stream. Measure on the 6870 s reference session. |
+| Foundation Models live tagging trips the safety guardrail (`Detected content likely to be unsafe`) on certain transcript chunks | Low | Medium | Catch the error, skip the chunk, log a warning to stderr, continue. Already seen on the mic JSON test. |
+| Audio rotation creates "gaps" between segments because `installTap` keeps delivering buffers during file swap | Medium | Medium | Lock the rotation in a serial queue; buffer the in-flight buffer until the new file is ready (≤ 50 ms swap). Worst case: one buffer (~85 ms) overlap, never a gap. |
+| Cross-process file races (two daemons writing the same sidecar file) | Low | Low | Each daemon writes its own sidecar set under a distinct subdirectory; `merge` does the unification offline. Document the convention. |
+| Language auto-detect false-flip mid-conversation due to a single foreign word | Low | Medium | Require 3 consecutive finals with detected language >0.7 before switching. Re-evaluate every 5 minutes, not continuously. |
+
+### Assumptions
+
+- The operator runs the daemon under the Pi `process` tool (which sends `SIGTERM` on stop) or launchd; raw `kill -9` is the worst case to design for.
+- The Mac's clock is monotonic enough that ISO timestamps from two daemons can be ordered correctly by `merge`. (NTP-synced macOS clocks are.)
+- The `SystemLanguageModel` 23-locale set is sufficient for now; minority languages fall back to whisper.cpp via the offline `transcribe` path.
+- FluidAudio's `SortformerDiarizer` actually works as documented (up to 4 speakers, 480 ms latency). The offline `DiarizerManager` working is good evidence but we haven't validated streaming yet.
+- The disk has space. 24/7 capture at 32 KB/s = 2.6 GB/day of audio. We do not auto-prune; that is the storage-tier PRD's job.
+
+---
+
+## 8. Design Decisions
+
+### D1: WAV segmentation vs single-file recorder
+
+**Options considered:**
+
+1. **Single growing WAV with periodic header patch.** Continuously re-`close()` and re-open with `O_APPEND`, patch the size every N seconds. Complex, error-prone, easy to introduce subtle corruption.
+2. **Segmented WAVs (`session-NNNNNN.wav`).** Standard pattern, used by every long-running recorder. Trivial to reason about. Concatenate with `ffmpeg -f concat` later.
+3. **Raw PCM stream with JSON sidecar header.** No WAV header at all; every byte is recoverable. Requires custom tooling to play / process. Maximally robust but ugliest.
+
+**Decision:** **Segmented WAVs**, default 60 s per segment, 6-digit zero-padded index.
+
+**Rationale:** WAV remains the standard format every macOS tool reads. 60 s is short enough that any one incident loses at most a minute. Segments concatenate trivially via `ffmpeg -f concat`. The crash-recovery helper (FR-8) handles the tail segment if needed.
+
+**Future path:** when chronicle moves to fragmented MP4 + Opus audio for storage efficiency, swap `AVAudioFile` for `AVAssetWriter` with `movFragmentInterval` ≈ 1 s. Same segmentation principle, different container.
+
+---
+
+### D2: Trace persistence — JSONL vs JSON snapshot
+
+**Options considered:**
+
+1. **Keep `trace.json` (snapshot at shutdown).** Crash loses everything. Current state.
+2. **Switch to `trace.jsonl` (one event per line, append-only).** Append is atomic up to `PIPE_BUF`. Lose at most the trailing line.
+3. **Write a SQLite WAL.** Overkill for this volume; introduces a dependency for tooling that needs to read the trace.
+
+**Decision:** **JSONL append-only**, flushed every 50 events or every 1 s, whichever is sooner.
+
+**Rationale:** Standard, language-agnostic, jq-friendly. Append is atomic enough at this byte count (~200 bytes/event ≪ PIPE_BUF 4096). Recovery is `jq -c . trace.jsonl 2>/dev/null` (jq silently drops the trailing malformed line if any).
+
+**Future path:** if multiple daemons share a trace surface (unlikely), upgrade to a single-writer ingestion service that owns the JSONL file.
+
+---
+
+### D3: System audio — virtual loopback vs ScreenCaptureKit
+
+**Options considered:**
+
+1. **CoreAudio aggregate device + BlackHole loopback.** Works today, no entitlement needed. Requires installing a kext-like virtual driver. Operator burden.
+2. **ScreenCaptureKit `SCStream` audio-only tap.** Native Apple API. Requires `NSScreenCaptureUsageDescription` and TCC for Screen Recording.
+
+**Decision:** **`ScreenCaptureKit` `SCStream`**.
+
+**Rationale:** Apple-official, no third-party driver, integrates with the same Info.plist + TCC story as `mic`. The Screen Recording prompt is a one-time toggle for the operator.
+
+**Future path:** if a future macOS removes `SCStream` audio mode, fall back to the BlackHole pattern. Design `SysAudio.swift` to depend on a `SystemAudioSource` protocol so the implementation is swappable.
+
+---
+
+### D4: Diarization — fan-out vs pipeline
+
+**Options considered:**
+
+1. **Pipeline (`mic | diarizer`).** Two processes, pipe between them. Loses tight timing alignment.
+2. **In-process fan-out via multicast `AsyncStream`.** Same buffers feed both consumers. Tight timing, shared format conversion.
+
+**Decision:** **In-process fan-out.**
+
+**Rationale:** Diarization needs to align with transcript by audio range. Same buffers in both consumers makes the alignment trivial (both work on the same `CMTimeRange` axis). No IPC, no serialisation, no clock drift.
+
+**Future path:** when chronicle moves to a service-oriented architecture, expose the buffer stream over Unix sockets / gRPC for out-of-process consumers.
+
+---
+
+### D5: Live tagging cadence
+
+**Options considered:**
+
+1. **Tag on every final.** Each final is short; tagging cost per call is ~5 s. Latency stack-up if speech is fast.
+2. **Tag every N finals (debounced).** Reasonable middle ground; debounces but stays current.
+3. **Tag on a wall-clock interval (every 60 s).** Decouples from speech rate.
+
+**Decision:** **Every N finals (configurable, default N=3).**
+
+**Rationale:** N=3 gives ~30-90 s of new context per tagger call, which is the right granularity for human-readable tag drift. Wall-clock cadence sleeps when no one is talking, which is wasteful.
+
+**Future path:** add a `--tag-every-seconds` flag for environments where speech rate is variable. Keep `--tag-every <N>` as the default behaviour.
+
+---
+
+## 9. File Breakdown
+
+| File | Change type | FR | Description |
+|------|-------------|-----|-------------|
+| `Sources/Chronicle/Mic.swift` | Modify | FR-1, FR-2, FR-4, FR-5, FR-6 | Add rotation, JSONL trace, diarizer fan-out, tagger debounce, locale auto-detect |
+| `Sources/Chronicle/Live.swift` | Modify | FR-2 | JSONL trace replacement |
+| `Sources/Chronicle/Diarize.swift` | Modify | FR-4 | Extract streaming Sortformer helper |
+| `Sources/Chronicle/Tag.swift` | Modify | FR-5 | Expose `tagText(_:)` callable from other subcommands |
+| `Sources/Chronicle/SysAudio.swift` | New | FR-3 | New subcommand: `SCStream` audio capture + sidecar pipeline |
+| `Sources/Chronicle/Merge.swift` | New | FR-7 | New subcommand: cross-stream merge |
+| `Sources/Chronicle/Repair.swift` | New | FR-1, FR-8 | New subcommand: WAV header repair |
+| `Sources/Chronicle/AudioSidecar.swift` | New | FR-1, FR-3 | Shared WAV writer with `rotate()` API |
+| `Sources/Chronicle/BufferMulticast.swift` | New | FR-4 | Multicast helper to fan a single buffer to N consumers |
+| `Sources/Chronicle/Chronicle.swift` | Modify | FR-3, FR-7, FR-8 | Register new subcommands |
+| `Info.plist` | Modify | FR-3 | Add `NSScreenCaptureUsageDescription` |
+| `README.md` | Modify | all | Document new flags, daemon model, recovery story |
+| `docs/prd/PRD-001-resilient-multi-source-daemon.md` | New | n/a | This document |
+| `spikes/2026-05-13-daemon-live-mic.md` | Modify (later) | all | Add post-implementation receipts |
+
+Every file traces to at least one FR. Every FR has at least one file.
+
+---
+
+## 10. Dependencies & Constraints
+
+- **macOS 26+** for `SpeechAnalyzer` (`Speech` framework new API).
+- **Apple Silicon** for ANE acceleration; no Intel fallback.
+- **Apple Intelligence enabled** for FoundationModels (`tag`, `summarize`, `describe`).
+- **Translation language packs** pre-installed for `translate`.
+- **Microphone TCC** for `mic` (already wired).
+- **Screen Recording TCC** for `sysaudio` (new).
+- **FluidAudio 0.14.5+** for `SortformerDiarizer` (Swift Package).
+- **Xcode 26 / Swift 6.2+** for the build.
+- **`Info.plist` embedded via `-sectcreate`** (Package.swift already does this for Microphone; add Screen Recording).
+
+---
+
+## 11. Rollout Plan
+
+Order each step so the previous one's receipts feed the next.
+
+1. **FR-1 + FR-2: resilience first.** Audio rotation + JSONL trace. Lowest blast radius; both are pure refactors of existing `mic` paths. Validate on a fresh 5-min session, then kill -9 mid-stream and verify recovery.
+2. **FR-8: WAV repair helper.** Build it during FR-1 because rotation requires it for the tail segment.
+3. **FR-6: locale auto-detect.** Self-contained; useful immediately.
+4. **FR-4: live diarization.** Reuses the existing FluidAudio dep. Multicast helper is a one-file addition. Test against the same 2026-05-13 Zoom session offline, then live.
+5. **FR-5: live tagging.** Once FR-4 lands, tagging is the smallest layer on top.
+6. **FR-3: `sysaudio` subcommand.** Largest single addition because it's a new audio source. Reuses the sidecar surface FR-1/FR-2 already built.
+7. **FR-7: `merge` subcommand.** Easiest to leave for last because it operates entirely on already-produced sidecars.
+8. **Documentation pass.** Update README + research-notes + a new spike doc with end-to-end receipts.
+
+---
+
+## 12. Open Questions
+
+| # | Question | Owner | Due | Status |
+|---|----------|-------|-----|--------|
+| Q1 | Does the `SCStream` audio tap work for unsigned `swift build -c release` binaries, or do we need ad-hoc codesigning? | Victor | 2026-05-15 | Open |
+| Q2 | Does `SortformerDiarizer` actually meet its 480 ms latency claim on M4 Pro Tahoe, or does it backpressure on the buffer queue? | Victor | 2026-05-16 | Open |
+| Q3 | What's the right way to express "speaker 2" in `finals.md` while keeping the file diff-friendly when reprocessing? `[S2]` prefix or YAML frontmatter per line? | Victor | 2026-05-15 | **Resolved:** `[S<N>]` inline prefix, no frontmatter; keeps grep/jq-friendly and Obsidian-readable. |
+| Q4 | Should `chronicle merge` also produce a unified JSONL trace, or just the markdown? | Victor | 2026-05-17 | Open |
+| Q5 | If Foundation Models live tagging trips the unsafe-content guardrail repeatedly on a transcript, should we degrade to keyword extraction via `NaturalLanguage` instead of silently dropping? | Victor | 2026-05-18 | Open |
+| Q6 | Should the rotation timer be a wall-clock deadline or a per-segment audio-duration accumulator? Audio duration is more accurate; wall-clock is simpler. | Victor | 2026-05-15 | **Resolved:** Audio-duration accumulator. Wall-clock drifts if the engine briefly stalls; audio duration is what `AVAudioFile.length / sampleRate` gives us directly. |
+
+---
+
+## 13. Related
+
+| Issue | Relationship |
+|-------|-------------|
+| chronicle-tool 0.1.0 (current spike state) | this PRD extends |
+| `chronicle/notes/research-notes.md` Tahoe surface map | this PRD operationalises |
+| Future PRD: chronicle storage tiers | depends on this PRD's segmented audio output |
+| Future PRD: chronicle agent / search layer | enabled by this PRD's resilient trace JSONL |
+
+---
+
+## 14. Changelog
+
+| Date | Change | Author |
+|------|--------|--------|
+| 2026-05-13 | Initial draft | Victor (drafted via the chronicle agent) |
+
+---
+
+## 15. Verification (Appendix)
+
+After implementation, run these manual checks against a real session:
+
+1. Launch `chronicle mic --locale pt-BR --diarize --tag-every 3 --rotate-audio 60 --live live.md --append finals.md --save-audio audio/session.wav -o trace.jsonl` for 5 minutes; speak with at least 2 voices.
+2. Verify `audio/` contains 5+ valid WAV segments; concatenate via `ffmpeg -f concat` and re-transcribe with offline `chronicle transcribe`; verify the result matches `finals.md`.
+3. Kill -9 the daemon mid-stream; verify the trailing audio segment is malformed; run `chronicle repair` on it; verify it now plays in `afplay`.
+4. Inspect `finals.md`: every line is prefixed with `[S<N>]`; speaker labels are stable across the session.
+5. Inspect `tags.jsonl`: one entry per `--tag-every` interval; each entry's `topics` array is non-empty and grounded in the surrounding transcript window.
+6. Launch a second daemon `chronicle sysaudio --locale en-US --diarize --live live-sys.md --append finals-sys.md --save-audio audio-sys/session.wav -o trace-sys.jsonl` in parallel; play a YouTube video; verify both daemons run side-by-side under 5% combined CPU.
+7. Run `chronicle merge finals.md finals-sys.md > merged.md`; verify chronological order, source prefixes preserved, speaker labels preserved.
+8. Compare resource usage in `htop` to the NFR ceiling (≤ 5% CPU, ≤ 200 MB RSS combined).
