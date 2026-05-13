@@ -1,13 +1,10 @@
 import ArgumentParser
 import Foundation
-import FluidAudio
 
-/// Speaker diarization via FluidAudio's offline VBx pipeline (CoreML, Neural
-/// Engine). Apple ships no diarization API on macOS 26; FluidAudio is the
-/// production-quality option for "who spoke when".
+/// Speaker diarization CLI veneer over `Core/Diarize/OfflineDiarizer`.
 ///
-/// Models are downloaded into the user's caches on first run. All inference
-/// runs on the ANE.
+/// Streaming variant (FR-4) is `StreamingDiarizer` and is wired into the
+/// `mic` / `sysaudio` daemons rather than exposed as a standalone subcommand.
 struct Diarize: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
     commandName: "diarize",
@@ -29,28 +26,9 @@ struct Diarize: AsyncParsableCommand {
       throw ValidationError("Input file does not exist: \(inputURL.path)")
     }
 
-    FileHandle.standardError.write(Data("[diarize] downloading or loading FluidAudio diarizer models...\n".utf8))
-    let models = try await DiarizerModels.downloadIfNeeded()
-    FileHandle.standardError.write(Data("[diarize] models ready\n".utf8))
+    let diarizer = OfflineDiarizer(logTag: "diarize")
+    let result = try await diarizer.diarizeFile(inputURL)
 
-    let diarizer = DiarizerManager()
-    diarizer.initialize(models: models)
-
-    let converter = AudioConverter()
-    let samples = try converter.resampleAudioFile(inputURL)
-    let sampleCount = samples.count
-    let durationSec = Double(sampleCount) / 16_000.0
-    FileHandle.standardError.write(Data("[diarize] audio=\(String(format: "%.2f", durationSec))s samples=\(sampleCount) @ 16kHz mono float32\n".utf8))
-
-    let started = Date()
-    let result = try await diarizer.performCompleteDiarization(samples)
-    let elapsed = Date().timeIntervalSince(started)
-
-    struct Segment: Codable {
-      let speakerId: String
-      let startSeconds: Double
-      let endSeconds: Double
-    }
     struct Doc: Codable {
       let inputPath: String
       let audioDurationSeconds: Double
@@ -58,24 +36,17 @@ struct Diarize: AsyncParsableCommand {
       let realtimeFactor: Double
       let speakerCount: Int
       let segmentCount: Int
-      let segments: [Segment]
+      let segments: [DiarizationSegment]
     }
-
-    let segs = result.segments.map { Segment(
-      speakerId: $0.speakerId,
-      startSeconds: Double($0.startTimeSeconds),
-      endSeconds: Double($0.endTimeSeconds)
-    ) }
-    let speakers = Set(segs.map(\.speakerId))
 
     let doc = Doc(
       inputPath: inputURL.path,
-      audioDurationSeconds: durationSec,
-      elapsedSeconds: elapsed,
-      realtimeFactor: durationSec > 0 ? durationSec / elapsed : 0,
-      speakerCount: speakers.count,
-      segmentCount: segs.count,
-      segments: segs
+      audioDurationSeconds: result.audioDurationSeconds,
+      elapsedSeconds: result.elapsedSeconds,
+      realtimeFactor: result.realtimeFactor,
+      speakerCount: result.speakerIds.count,
+      segmentCount: result.segments.count,
+      segments: result.segments
     )
 
     let encoder = JSONEncoder()
@@ -84,12 +55,12 @@ struct Diarize: AsyncParsableCommand {
     try encoder.encode(doc).write(to: outURL)
 
     FileHandle.standardError.write(Data(
-      "[diarize] speakers=\(speakers.count) segments=\(segs.count) elapsed=\(String(format: "%.2f", elapsed))s rtf=\(String(format: "%.1f", doc.realtimeFactor))x\n".utf8
+      "[diarize] speakers=\(result.speakerIds.count) segments=\(result.segments.count) elapsed=\(String(format: "%.2f", result.elapsedSeconds))s rtf=\(String(format: "%.1f", result.realtimeFactor))x\n".utf8
     ))
     FileHandle.standardError.write(Data("[diarize] wrote \(outURL.path)\n".utf8))
 
     if stdout {
-      for s in segs {
+      for s in result.segments {
         print("\(s.speakerId)\t\(String(format: "%.2f", s.startSeconds))\t\(String(format: "%.2f", s.endSeconds))")
       }
     }
