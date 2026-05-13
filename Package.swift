@@ -18,7 +18,17 @@ let package = Package(
         .product(name: "ArgumentParser", package: "swift-argument-parser"),
         .product(name: "FluidAudio", package: "FluidAudio")
       ],
-      path: "Sources/Chronicle"
+      path: "Sources/Chronicle",
+      linkerSettings: [
+        // Embed Info.plist so the OS treats us as a real app for TCC dialogs.
+        // Required for NSMicrophoneUsageDescription to be presented.
+        .unsafeFlags([
+          "-Xlinker", "-sectcreate",
+          "-Xlinker", "__TEXT",
+          "-Xlinker", "__info_plist",
+          "-Xlinker", "Info.plist"
+        ])
+      ]
     )
   ]
 )

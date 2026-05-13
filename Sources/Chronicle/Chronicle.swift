@@ -10,6 +10,7 @@ struct Chronicle: AsyncParsableCommand {
     subcommands: [
       Transcribe.self,
       Live.self,
+      Mic.self,
       Classify.self,
       Tag.self,
       Summarize.self,
