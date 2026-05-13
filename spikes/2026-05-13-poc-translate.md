@@ -72,3 +72,47 @@ changes.
 translation. We already invoke it before `TranslationSession`, so the same
 machinery powers a future `chronicle detect-language` subcommand. No
 network calls, no entitlements, no cost.
+
+---
+
+## Update — runtime validated 2026-05-13 (language packs installed)
+
+Operator installed the relevant pairs via System Settings → Language & Region
+→ Translation Languages. Re-ran:
+
+**PT-BR → EN (explicit source)**
+
+```text
+input  (92 ch): Olá, hoje eu vou explicar como funciona o sistema de transcrição em tempo real no chronicle.
+elapsed: 1.05 s
+output (86 ch): Hello, today I will explain how the real-time transcription system works in chronicle.
+```
+
+**ES → EN (auto-detected via NLLanguageRecognizer)**
+
+```text
+[translate] source=es (auto-detected)
+input  (95 ch): Hola, hoy voy a explicar cómo funciona el sistema de transcripción en tiempo real en chronicle.
+elapsed: 0.87 s
+output (93 ch): Hello, today I am going to explain how the real-time transcription system works in chronicle.
+```
+
+**EN → PT-BR — full 5-min Zoom transcript**
+
+```text
+input:  3387 chars (out/speech-only.txt)
+elapsed: 17.33 s
+output: 3612 chars (out/speech-only.pt-BR.txt)
+
+Sample (head): "Sim, então, uh, basicamente, uh, eu tenho trabalhado no, oh,
+desculpe. Sim, então basicamente na segunda-feira, eu falei com o David
+sobre o segundo, a semente aleatória fixa para a atribuição de controle de
+teste de oportunidades..."
+```
+
+Throughput: ~195 chars/s on the full transcript, ~80-100 chars/s on the
+shorter strings (warmup amortises on the longer run). All on-device, $0.
+
+**Decision unchanged:** `translate` is wired as the opportunistic post-pass
+for any non-English transcript chunk; runs after `transcribe` and before
+`tag`/`summarize` so the downstream LLM always sees English.
