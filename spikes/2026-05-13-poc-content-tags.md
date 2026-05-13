@@ -110,3 +110,41 @@ Summarize:
 - WWDC25 session 286, "Meet the Foundation Models framework"
 - WWDC25 session 259, "Code-along: Bring on-device AI to your app using the
   Foundation Models framework"
+
+---
+
+## Update — runtime validated 2026-05-13 (Apple Intelligence enabled)
+
+Issue: Apple Intelligence appeared not-enabled because Siri language was set
+to `en-GB`; switching to `en-US` (or any of the 23 supported locales) flipped
+`SystemLanguageModel.availability` to `.available`. Re-ran:
+
+**`chronicle tag`**
+
+- Input: 3387-char Zoom transcript (`out/speech-only.txt`)
+- Elapsed: **5.04 s** on the on-device 3B model
+- Topics (7): text analysis, code review, software development, task management,
+  communication, documentation, time management.
+- Entities (25): "fixed random seed", "opportunity test control assignment",
+  "hash", "memory address", "merge request", "co rabbit" (CodeRabbit, STT
+  artefact, not LLM hallucination), "config", "documentation", "guideline",
+  "rule", "ticket", "package", "skill", etc.
+- Actions (9): generate, analyze, generate hash, share, install, talk,
+  set up, reach out, finish.
+
+**`chronicle summarize`**
+
+- Same input.
+- Elapsed: **4.58 s**.
+- TL;DR: "The speaker discussed several projects, including a fixed random
+  seed for an opportunity test control assignment, the introduction of the
+  Rabbit team for a review, and plans for upgrading stale packages."
+- 6 bullets, 5 decisions, 5 action items — all grounded in actual content.
+
+**Supported languages:** en-US, en-AU, en-GB, fr-CA, fr-FR, es-US, es-ES,
+es-419, it-IT, pt-PT, pt-BR, vi-VN, zh-HK, zh-CN, zh-TW, tr-TR, ko-KR, sv-SE,
+de-DE, nb-NO, nl-NL, ja-JP, da-DK (23 locales).
+
+**Decision unchanged:** Foundation Models is the default LLM layer for
+chronicle. Free, on-device, fast enough for real-time summarisation of
+chunks, multilingual, structured via `@Generable`.
