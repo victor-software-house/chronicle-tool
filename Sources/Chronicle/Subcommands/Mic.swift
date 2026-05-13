@@ -110,8 +110,8 @@ struct Mic: AsyncParsableCommand {
     let inline = self.inline
     let appendPath = self.append.map { ($0 as NSString).expandingTildeInPath }
     let appendURL = appendPath.map { URL(fileURLWithPath: $0) }
-    if let url = appendURL, !FileManager.default.fileExists(atPath: url.path) {
-      FileManager.default.createFile(atPath: url.path, contents: nil)
+    if let url = appendURL {
+      AtomicFile.ensureExists(url)
       FileHandle.standardError.write(Data("[mic] appending finals to \(url.path)\n".utf8))
     }
     let livePath = self.live.map { ($0 as NSString).expandingTildeInPath }
@@ -156,19 +156,15 @@ struct Mic: AsyncParsableCommand {
         if result.isFinal {
           await liveState.addFinal(text)
           if let url = appendURL {
-            let line = "[\(isoFormatter.string(from: Date()))] \(text)\n"
-            if let handle = try? FileHandle(forWritingTo: url) {
-              try? handle.seekToEnd()
-              try? handle.write(contentsOf: Data(line.utf8))
-              try? handle.close()
-            }
+            let line = "[\(isoFormatter.string(from: Date()))] \(text)"
+            try? AtomicFile.appendLine(line, to: url)
           }
         } else {
           await liveState.setVolatile(text)
         }
         if let url = liveURL {
           let snapshot = await liveState.snapshot()
-          try? snapshot.write(to: url, atomically: true, encoding: .utf8)
+          try? AtomicFile.atomicWrite(snapshot, to: url)
         }
         if inline {
           if result.isFinal {
@@ -225,27 +221,12 @@ struct Mic: AsyncParsableCommand {
     // Kick off the analyzer over our input sequence.
     try await analyzer.start(inputSequence: input)
 
-    // Stop trigger: time limit OR SIGINT.
+    // Stop trigger: time limit OR SIGINT/SIGTERM.
     if seconds > 0 {
       FileHandle.standardError.write(Data("[mic] will auto-stop after \(seconds)s\n".utf8))
       try? await Task.sleep(nanoseconds: UInt64(seconds) * 1_000_000_000)
     } else {
-      let intSource = DispatchSource.makeSignalSource(signal: SIGINT)
-      let termSource = DispatchSource.makeSignalSource(signal: SIGTERM)
-      signal(SIGINT, SIG_IGN)
-      signal(SIGTERM, SIG_IGN)
-      let waitOnSignal = Task {
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-          let resumeOnce = OneShotResume(continuation: cont)
-          intSource.setEventHandler { resumeOnce.fire() }
-          termSource.setEventHandler { resumeOnce.fire() }
-          intSource.resume()
-          termSource.resume()
-        }
-      }
-      _ = await waitOnSignal.value
-      intSource.cancel()
-      termSource.cancel()
+      await SignalHandler.waitForTermination()
     }
 
     FileHandle.standardError.write(Data("\n[mic] stopping...\n".utf8))
@@ -284,23 +265,6 @@ struct Mic: AsyncParsableCommand {
       try encoder.encode(doc).write(to: URL(fileURLWithPath: (output as NSString).expandingTildeInPath))
       FileHandle.standardError.write(Data("[mic] wrote \(output)\n".utf8))
     }
-  }
-}
-
-/// One-shot wrapper so SIGINT and SIGTERM both call resume() at most once
-/// without crashing on the second signal.
-private final class OneShotResume: @unchecked Sendable {
-  private let lock = NSLock()
-  private var fired = false
-  private let continuation: CheckedContinuation<Void, Never>
-  init(continuation: CheckedContinuation<Void, Never>) {
-    self.continuation = continuation
-  }
-  func fire() {
-    lock.lock(); defer { lock.unlock() }
-    guard !fired else { return }
-    fired = true
-    continuation.resume()
   }
 }
 
