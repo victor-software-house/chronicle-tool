@@ -284,26 +284,61 @@ And the latency between the 3rd final and its tag entry is < 8 seconds
 
 ---
 
-### FR-6: Language auto-detect (`--locale auto`)
+### FR-6: Locale auto-detect (`--locale auto`) with candidate-set restriction
 
-When `--locale auto` is set, the daemon launches with a permissive locale
-(default `en-US`) and runs `NLLanguageRecognizer` on every final.
-After the first 3 finals with detected language confidence > 0.7, the
-daemon stops, closes the analyzer, and relaunches it with the detected
-locale.
+Locale resolution is governed by [ADR-0003](../adr/ADR-0003-locale-resolution-policy.md). Four modes:
+
+- **Pin** (`--locale en-US`): no detection runs; the transcriber stays at the pinned locale. **This is the operator's "disable auto" switch.**
+- **Auto with default safe set** (`--locale auto`): candidates = operator's configured primary languages (default `[en-US, pt-BR]`; overridable via `~/.config/chronicle/locales.json`). `NLLanguageRecognizer` is configured with `setLanguageConstraints([...])` so it can only return candidates from the safe set.
+- **Auto with explicit set** (`--locale auto:en-US,pt-BR,es-ES`): per-run candidate list.
+- **Auto with full supported set** (`--locale auto:*`): opt-in only; documented as research mode; never picked silently.
+
+Hysteresis (modes auto / auto:list / auto:*):
+
+- Detector runs on **finals only** (volatile is too noisy by an order of magnitude).
+- Switch requires **N consecutive finals** (`--locale-min-finals`, default 3) agreeing on the same candidate, **with confidence ≥ `--locale-confidence`** (default 0.70).
+- Switch **suppressed for `--locale-cooldown-sec`** (default 30 s) after the previous switch.
+- Switch **suppressed if fewer than `--locale-min-chars`** (default 30) total characters have been observed at the candidate locale across the consecutive-final window — single loanwords don't trigger a flip.
+- Initial locale = first candidate in the set (so the default `[en-US, pt-BR]` starts in `en-US`).
 
 **Acceptance criteria:**
 
 ```gherkin
-Given chronicle mic --locale auto is running
+Given chronicle mic --locale auto is running with the default safe set [en-US, pt-BR]
 And the operator speaks Portuguese
-When the third final arrives
-Then stderr logs "[mic] auto-detected locale=pt-BR, restarting transcriber"
-And subsequent finals are coherent Portuguese (no English-misinterpretation)
+When 3 consecutive finals are detected as pt-BR with confidence ≥ 0.70 and total ≥ 30 chars
+Then stderr logs "[mic] auto-detected locale=pt-BR (was en-US), restarting transcriber"
+And subsequent finals are coherent Portuguese (no English misinterpretation)
+```
+
+```gherkin
+Given chronicle mic --locale auto is running with the default safe set [en-US, pt-BR]
+When a stretch of audio contains noise + a single Russian-sounding loanword
+Then the transcriber locale does NOT switch to ru-RU
+And ru-RU is not even a candidate because it is not in the safe set
+And `live.md` stays in the current locale
+```
+
+```gherkin
+Given chronicle mic --locale en-US is running (pin mode)
+When Portuguese speech arrives
+Then no detection runs
+And the transcriber stays at en-US
+And this is the operator's explicit disable-auto switch
+```
+
+```gherkin
+Given chronicle mic --locale auto is running
+And a locale switch happened 5 seconds ago
+When 3 consecutive finals detect a different candidate at confidence ≥ 0.70
+Then the switch is suppressed because the 30 s cooldown has not elapsed
 ```
 
 **Files:**
-- `Sources/Chronicle/Mic.swift` — locale resolver runs after first 3 finals.
+- `Sources/Chronicle/Core/Speech/LocaleResolver.swift` — owns the candidate set, runs the hysteresis state machine, exposes `consider(final:) -> Locale?` returning a new locale only when all gates pass.
+- `Sources/Chronicle/Subcommands/Mic.swift` / `SysAudio.swift` / `Live.swift` — parse `--locale` grammar, build the resolver, swap transcribers on resolver output.
+- `~/.config/chronicle/locales.json` — optional operator-specific safe set; absence → built-in default `[en-US, pt-BR]`.
+- `Tests/ChronicleTests/Speech/LocaleResolverTests.swift` — unit tests covering in-set switch, out-of-set suppression, cooldown suppression, min-chars suppression, pin-mode bypass.
 
 ---
 
@@ -373,7 +408,7 @@ And `chronicle transcribe -i session-003.wav -o out` succeeds without errors
 | Foundation Models live tagging trips the safety guardrail (`Detected content likely to be unsafe`) on certain transcript chunks | Low | Medium | Catch the error, skip the chunk, log a warning to stderr, continue. Already seen on the mic JSON test. |
 | Audio rotation creates "gaps" between segments because `installTap` keeps delivering buffers during file swap | Medium | Medium | Lock the rotation in a serial queue; buffer the in-flight buffer until the new file is ready (≤ 50 ms swap). Worst case: one buffer (~85 ms) overlap, never a gap. Ogg page boundaries are already independent so the Opus sink doesn't see this risk; only `WAVSegmentSink` does. |
 | Cross-process file races (two daemons writing the same sidecar file) | Low | Low | Each daemon writes its own sidecar set under a distinct subdirectory; `merge` does the unification offline. Document the convention. |
-| Language auto-detect false-flip mid-conversation due to a single foreign word | Low | Medium | Require 3 consecutive finals with detected language >0.7 before switching. Re-evaluate every 5 minutes, not continuously. |
+| Language auto-detect false-flip mid-conversation due to a single foreign word | Medium | Medium | Mitigated by [ADR-0003](../adr/ADR-0003-locale-resolution-policy.md): mandatory candidate-set restriction (default `[en-US, pt-BR]`), 4-knob hysteresis (confidence ≥ 0.70, ≥ 3 consecutive finals, 30 s cooldown, ≥ 30 chars at new locale). Operator can disable detection entirely by pinning `--locale en-US`. |
 
 ### Assumptions
 
@@ -549,15 +584,15 @@ new structure with its tests.
 
 Order each step so the previous one's receipts feed the next.
 
-1. **P0 — Modular refactor + test target.** Implement [ADR-0001](../adr/ADR-0001-modular-pipeline-architecture.md): extract `Core/Audio`, `Core/Speech`, `Core/Diarize`, `Core/LLM`, `Core/Sinks`, `Core/Runtime`; convert each subcommand to a thin veneer; add a `ChronicleTests` Swift Package test target; port every existing subcommand into the new structure and verify behaviour parity against the 2026-05-13 Zoom session receipts. Land *before* any FR.
-2. **P1 — FR-1 (WAV path) + P3 FR-2 resilience first.** Audio rotation via `WAVSegmentSink` (transitional default, matches current behaviour) + JSONL trace via `JSONLTraceSink`. Unit + crash-recovery tests (`kill -9` simulation). Validate on a fresh 5-min session.
-3. **P2 — FR-8: `chronicle repair`.** Built alongside P1 because WAV rotation needs it for the tail segment. Tests use a canned corpus of malformed WAVs.
-4. **P4 — FR-6: locale auto-detect.** Self-contained `LocaleResolver` with unit tests on synthetic NL inputs.
-5. **P5 — FR-4: live diarization.** Reuses the existing FluidAudio dep. `BufferMulticast` + `StreamingDiarizer` are unit-testable with `MockAudioSource`. Test against the 2026-05-13 Zoom session offline first, then live.
-6. **P6 — FR-5: live tagging.** Once FR-4 lands, tagging is the smallest layer on top via `ModelHost` + `TagsJSONLSink`.
-7. **P7 — FR-3: `sysaudio` subcommand.** Largest single addition because it's a new audio source. Reuses the sidecar surface FR-1/FR-2 already built; only `SysAudioSource` is new.
+1. **P0 — Modular refactor + test target** [DONE 2026-05-13]. Implemented [ADR-0001](../adr/ADR-0001-modular-pipeline-architecture.md): extracted `Core/Audio`, `Core/Speech`, `Core/Diarize`, `Core/LLM`, `Core/Sinks`, `Core/Runtime`; converted each subcommand to a thin veneer; added `ChronicleTests` Swift Package test target; verified behaviour parity (byte-identical transcribe.txt + diarize segments) against the 2026-05-13 Zoom session receipts.
+2. **P7 — FR-3: `sysaudio` subcommand** (promoted). Validates the `AudioSource` protocol from ADR-0001 against a real second implementation before the rest of the FRs build on it. Only `SysAudioSource` is new; sidecar sinks reused. Catches TCC / signing friction early; lets the upcoming P11 Opus parity test validate against two real sources.
+3. **P11 — FR-1 (Opus production sink) per [ADR-0002](../adr/ADR-0002-audio-storage-format.md).** Implement `OpusOggSink` + `RollingPCMScratchSink`, wire `--audio-format opus|wav|pcm` to the audio sinks, run the accuracy-parity test against the 2026-05-13 reference session and assert WER delta ≤ 1 % vs the WAV baseline. Flip the default from WAV to Opus once parity is confirmed. **Skips the transitional WAV-rotation step** (formerly P1) since Opus + Ogg is crash-safe by construction.
+4. **P3 — FR-2: `JSONLTraceSink` resilience.** Incremental trace via `AtomicFile.appendJSONLine`. Unit + crash-recovery tests (`kill -9` simulation).
+5. **P4 — FR-6: locale auto-detect** per [ADR-0003](../adr/ADR-0003-locale-resolution-policy.md). `LocaleResolver` with candidate-set restriction + 4-knob hysteresis. Unit tests on synthetic NL inputs covering: correct in-set switch, suppression of out-of-set candidates, suppression during cooldown, suppression below min-chars, pin-mode bypass.
+6. **P5 — FR-4: live diarization.** Reuses the existing FluidAudio dep. `BufferMulticast` + `StreamingDiarizer` are unit-testable with `MockAudioSource`. Test against the 2026-05-13 Zoom session offline first, then live.
+7. **P6 — FR-5: live tagging.** Once FR-4 lands, tagging is the smallest layer on top via `ModelHost` + `TagsJSONLSink`.
 8. **P8 — FR-7: `merge` subcommand.** Pure-function; easy to leave for last and unit-test exhaustively.
-9. **P11 — FR-1 (Opus production sink) per [ADR-0002](../adr/ADR-0002-audio-storage-format.md).** Implement `OpusOggSink` + `RollingPCMScratchSink`, wire `--audio-format opus|wav|pcm` to the audio sinks, run the accuracy-parity test against the 2026-05-13 reference session and assert WER delta ≤ 1 % vs the WAV baseline. Flip the default from WAV to Opus once parity is confirmed.
+9. **P2 — FR-8: `chronicle repair`** (de-prioritised). Only needed for the `--audio-format wav` opt-in path; Opus + Ogg need no repair. Canned malformed-WAV corpus tests.
 10. **P9 — Verification pass.** Run the §15 appendix end-to-end on a fresh session. Capture receipts.
 11. **P10 — Documentation pass.** Update README + research-notes + spike doc with the final source code + final numbers.
 
@@ -582,6 +617,7 @@ Order each step so the previous one's receipts feed the next.
 |-------|-------------|
 | [`docs/adr/ADR-0001-modular-pipeline-architecture.md`](../adr/ADR-0001-modular-pipeline-architecture.md) | structural ADR; constrains every FR in this PRD |
 | [`docs/adr/ADR-0002-audio-storage-format.md`](../adr/ADR-0002-audio-storage-format.md) | codec/container ADR for FR-1 — default Opus/Ogg + raw-PCM scratch + ALAC export |
+| [`docs/adr/ADR-0003-locale-resolution-policy.md`](../adr/ADR-0003-locale-resolution-policy.md) | locale-policy ADR for FR-6 — candidate-set restriction + 4-knob hysteresis |
 | chronicle-tool 0.1.0 (current spike state) | this PRD extends |
 | `chronicle/notes/research-notes.md` Tahoe surface map | this PRD operationalises |
 | Future PRD: chronicle storage tiers | depends on this PRD's segmented audio output |
