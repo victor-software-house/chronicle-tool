@@ -40,6 +40,30 @@ phase done:
 6. Task marked `completed` via `TaskWrite` with the receipt summary in
    `metadata`.
 
+## Pending cleanup from 2026-05-14 live-capture incident
+
+A live call required immediate sys-audio recording. SCStream audio path on
+Tahoe 26.5 refused to deliver real buffers for `chronicle.app` even after
+manual TCC.db writes (both user + system). Fell back to an ad-hoc CoreAudio
+process tap binary at `/tmp/catap_record.swift` plus a bash supervisor at
+`/tmp/catap_supervisor.sh`. Recording worked. The bypass is **not**
+production-clean and must be folded back into the repo.
+
+| # | Cleanup item | Where |
+|---|---|---|
+| 1 | Productionise `/tmp/catap_record.swift` into `Core/Audio/CoreAudioTapSource` per ADR-0004 (replaces or co-exists with `SysAudioSource`) | `Sources/Chronicle/Core/Audio/` |
+| 2 | Resilient WAV writes: header repatch every N s + `fsync` for every audio sidecar (mic + sys). Current `mic.wav` only has correct header on clean exit; SIGKILL leaves header at size 0 | `Core/Sinks/WAVSidecarSink.swift` |
+| 3 | Segment rotation in supervisor / audio sink (currently one segment per process lifetime) — cuts crash window to ~1 segment | `Core/Sinks/` |
+| 4 | Default-output-device change listener (`kAudioHardwarePropertyDefaultOutputDevice`) — rebuild tap on switch (AirPods sleep/wake, Bluetooth swap) | `Core/Audio/CoreAudioTapSource` |
+| 5 | Remove the direct `tccd` TCC.db writes added during the incident; chronicle.app should be authorised through System Settings (or first-launch `CGRequestScreenCaptureAccess()` + CoreAudio tap permission prompt) | `~/Library/Application Support/com.apple.TCC/TCC.db`, `/Library/Application Support/com.apple.TCC/TCC.db` |
+| 6 | Live transcription for sys path: pipe CoreAudio tap PCM into `SpeechAnalyzer` the same way `Mic.swift` does, so `finals.sys.md` is no longer empty | `Subcommands/SysAudio.swift` |
+| 7 | Header-recovery helper for orphan WAVs (recovered the 200 MB `catap_sys.wav` by hand via Python; should be one of `chronicle repair` modes) | `Subcommands/Repair.swift` (FR-8) |
+| 8 | Remove `CGRequestScreenCaptureAccess()` call from `SysAudioSource.start()` once the new tap backend lands; it was added during the incident and is irrelevant to CoreAudio taps | `Core/Audio/SysAudioSource.swift` |
+| 9 | Garbage-collect `sys-HHMMSS.wav` 4 KB rejects from `~/Movies/pi-captures/sessions/20260514-112533-live/audio/` (already done locally, watch for regression once retry watchdog lands in repo) | session dir |
+
+Live session being captured during the incident lives at:
+`~/Movies/pi-captures/sessions/20260514-112533-live/`.
+
 ## Robustness layer (audio pipeline)
 
 Three defensive layers prevent the macOS-Tahoe SCStream + audio-TCC

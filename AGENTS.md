@@ -103,6 +103,24 @@ without replacing:
 | **L2.** `SysAudioSource.start()` first-valid-buffer watchdog (5 s) | Catches the case where preflight passed but SCStream silently delivers garbage-ASBD placeholder buffers (audio TCC denied for the binary identity). Throws `audioCaptureSilent`. |
 | **L3.** Bounded `analyzer.finalizeAndFinishThroughEndOfInput()` (5 s + 2 s) | If the analyzer received only degenerate input, finalize would otherwise hang; we time out and fall through to `cancelAndFinishNow`. |
 
+### Known cleanup debt from 2026-05-14 live-capture incident
+
+A live call forced an ad-hoc CoreAudio process tap binary at
+`/tmp/catap_record.swift` plus a bash supervisor at
+`/tmp/catap_supervisor.sh`. They are still running outside the repo as of
+the incident. **Do not merge that pattern in-place**; instead fold it into
+`Core/Audio/CoreAudioTapSource` per ADR-0004. Full numbered list in
+[`docs/STATUS.md`](docs/STATUS.md#pending-cleanup-from-2026-05-14-live-capture-incident).
+
+Also during the incident, `kTCCServiceScreenCapture`,
+`kTCCServiceAudioCapture`, and `kTCCServiceMicrophone` rows for
+`com.victor-software-house.chronicle` were inserted directly into both
+the user (`~/Library/Application Support/com.apple.TCC/TCC.db`) and
+system (`/Library/Application Support/com.apple.TCC/TCC.db`) TCC
+databases with `auth_value=2`. They did **not** make SCStream audio
+work; CoreAudio tap is what works. Remove the rows once chronicle.app
+is registered through System Settings.
+
 Verification expectations:
 
 - Every refactor that touches a hot path must reproduce **byte-identical**

@@ -38,6 +38,14 @@ public enum TCCPreflight {
     CGPreflightScreenCaptureAccess() ? .granted : .denied
   }
 
+  /// Trigger the macOS permission prompt for Screen & System Audio Recording.
+  /// Call once at first launch; the system shows a dialog asking the user to
+  /// allow the app. No-op if already granted.
+  @discardableResult
+  public static func requestScreenRecording() -> Bool {
+    CGRequestScreenCaptureAccess()
+  }
+
   /// Human-readable remediation message for `screenRecording() == .denied`.
   public static let screenRecordingRemediation: String = """
     Screen & System Audio Recording permission is required by `chronicle sysaudio` \

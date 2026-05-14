@@ -95,8 +95,9 @@ public final class SysAudioSource: NSObject, AudioSource, SCStreamOutput, @unche
     guard !started else { return }
     started = true
 
-    // Preflight TCC. Fails fast with an actionable error instead of
-    // letting SCStream.startCapture() hang on a leaked continuation.
+    // Request TCC if not yet granted — triggers the system dialog.
+    // Then preflight to check state immediately after.
+    TCCPreflight.requestScreenRecording()
     let preflight = TCCPreflight.screenRecording()
     FileHandle.standardError.write(Data(
       "[sysaudio.tcc] CGPreflightScreenCaptureAccess => \(preflight)\n".utf8
