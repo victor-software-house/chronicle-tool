@@ -2,8 +2,14 @@
 
 Date: 2026-05-13.
 Binary: `.build/release/chronicle mic`.
-Status: **running in production as a long-lived background process** under
-the Pi `process` tool (`proc_4` at time of writing).
+Status: **historical spike receipts**. The pipeline runs in production but
+the source-code layout described below is **superseded** by the P0
+modular refactor — see
+[`docs/adr/ADR-0001-modular-pipeline-architecture.md`](../docs/adr/ADR-0001-modular-pipeline-architecture.md)
+and [`docs/prd/PRD-001-resilient-multi-source-daemon.md`](../docs/prd/PRD-001-resilient-multi-source-daemon.md)
+for the current `Core/` + `Subcommands/` shape. Pipeline behaviour, ANE
+path, sidecar contracts, and resource numbers below are all still
+accurate; only the file layout changed.
 
 ## What it does
 

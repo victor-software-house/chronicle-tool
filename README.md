@@ -2,26 +2,43 @@
 
 Tahoe Neural Engine toolkit for the [chronicle](https://github.com/victor-software-house/research-chronicle) project.
 
-One Swift 6 binary, multiple subcommands, each exercising one Apple-official Tahoe / macOS 26 ML framework on-device. Free, private, ANE-accelerated. Whole stack validated end-to-end (see `spikes/`).
+One Swift 6 binary, multiple subcommands, each exercising one Apple-official Tahoe / macOS 26 ML framework on-device. Free, private, ANE-accelerated. Spike validated end-to-end (see [`spikes/`](spikes/)); production direction set by [PRD-001](docs/prd/PRD-001-resilient-multi-source-daemon.md) and three ADRs.
 
-## Subcommands — fully validated
+## Subcommands — all working
 
 | Subcommand | Apple framework / dep | Validated time | Cost |
 |---|---|---:|---|
-| `transcribe` | `Speech.SpeechAnalyzer` + `SpeechTranscriber(.transcription)` | **273 ×** rt on 6870 s WAV | $0 |
+| `transcribe` | `Speech.SpeechAnalyzer` + `SpeechTranscriber(.transcription)` | **273 ×** rt on 6870 s WAV (P0 parity: byte-identical) | $0 |
 | `live` | `Speech.SpeechAnalyzer` + `SpeechTranscriber(.progressiveTranscription)` (file) | **91 ×** rt, 856 volatile + 40 final events | $0 |
 | `mic` | `AVAudioEngine` input tap → `SpeechAnalyzer.start(inputSequence:)` | real-time mic stream | $0 |
+| `sysaudio` | `ScreenCaptureKit.SCStream` (audio-only) → `SpeechAnalyzer.start(inputSequence:)` | real-time system audio mix | $0 |
 | `classify` | `SoundAnalysis.SNClassifyImageRequest` (built-in classifier v1) | **584 ×** rt | $0 |
-| `diarize` | FluidAudio (CoreML, Neural Engine) — only non-Apple dep | **787 ×** rt, 5 speakers / 91 segments on full session | $0 |
+| `diarize` | FluidAudio (CoreML, Neural Engine) — only non-Apple dep | **787 ×** rt (post-refactor 872 ×), 5 speakers / 91 segments, byte-identical to spike | $0 |
 | `ocr` | `Vision.RecognizeDocumentsRequest` (Tahoe) / `RecognizeTextRequest` | 0.5 – 4 s per 2992×1934 image | $0 |
-| `tag` | `FoundationModels.SystemLanguageModel(useCase: .contentTagging)` | 5 – 7 s for 3-4 k char transcript | $0 |
-| `summarize` | `FoundationModels.SystemLanguageModel.default` + `@Generable` | 4 – 6 s for 3-4 k char transcript | $0 |
+| `tag` | `FoundationModels.SystemLanguageModel(useCase: .contentTagging)` | 2 – 7 s for 0.3-4 k char transcript (session cached via `ModelHost`) | $0 |
+| `summarize` | `FoundationModels.SystemLanguageModel.default` + `@Generable` | 2 – 6 s for 0.3-4 k char transcript (session cached via `ModelHost`) | $0 |
 | `translate` | `Translation.TranslationSession` + `NaturalLanguage.NLLanguageRecognizer` | 1 – 22 s | $0 (after one-time language-pack install) |
 | `describe` | `Vision` 7-request fan-out + `FoundationModels` `@Generable` narration | 1 – 2.5 s per image | $0 |
 
-All ten subcommands run on the Neural Engine, all are validated against real
-chronicle data captured during the 2026-05-13 Zoom spike. See the per-POC
-receipts under `spikes/` for exact numbers.
+All eleven subcommands run on the Neural Engine, all are validated against
+real chronicle data captured during the 2026-05-13 Zoom spike. See the
+per-POC receipts under [`spikes/`](spikes/) for the spike-era exact numbers; the
+P0 modular refactor preserved byte-identical outputs for `transcribe`
+and `diarize` against those receipts.
+
+## Spec, ADRs, and rollout
+
+The project is moving from a 10-subcommand spike (above) to a resilient
+multi-source chronicle daemon. The spec set lives under [`docs/`](docs/):
+
+- [`docs/prd/PRD-001-resilient-multi-source-daemon.md`](docs/prd/PRD-001-resilient-multi-source-daemon.md) — the master PRD (FRs, NFRs, rollout plan, verification appendix).
+- [`docs/adr/ADR-0001-modular-pipeline-architecture.md`](docs/adr/ADR-0001-modular-pipeline-architecture.md) — protocol-oriented core with subcommands as thin CLI veneers. **Implemented (P0).**
+- [`docs/adr/ADR-0002-audio-storage-format.md`](docs/adr/ADR-0002-audio-storage-format.md) — Opus 24 kbps / Ogg as default audio codec + raw-PCM rolling scratch + ALAC export. **Pending (P11).**
+- [`docs/adr/ADR-0003-locale-resolution-policy.md`](docs/adr/ADR-0003-locale-resolution-policy.md) — candidate-set restriction + 4-knob hysteresis for `--locale auto`. **Pending (P4).**
+
+Current state vs PRD-001 rollout: **P0 (modular refactor) done; P7
+(sysaudio) done. Next: P11 (Opus production sink) + parity test against the
+WAV baseline.**
 
 ## Requirements
 
@@ -41,6 +58,13 @@ receipts under `spikes/` for exact numbers.
   embedded Info.plist (`NSMicrophoneUsageDescription`) triggers the
   first-run prompt; grant it once via System Settings → Privacy & Security
   → Microphone.
+- **Screen Recording TCC permission** — `sysaudio` requires Screen Recording
+  permission (`ScreenCaptureKit` audio capture piggy-backs on this
+  entitlement). Unsigned dev binaries inherit the grant from the **parent
+  app** (cmux, Terminal, iTerm, etc.). Grant it once at that parent via
+  System Settings → Privacy & Security → Screen Recording. Without the
+  grant, `sysaudio` runs without erroring but produces silent buffers —
+  use `--verbose` to diagnose.
 - **Xcode 26 or Swift 6.2+**.
 
 ## Install / build
@@ -72,6 +96,13 @@ swift build -c release
   --save-audio out/audio.wav \
   -o out/trace.json
 
+# Live system-audio capture (everything playing through the default output device).
+.build/release/chronicle sysaudio \
+  --locale en-US \
+  --live out/sys-live.md \
+  --append out/sys-finals.md \
+  --save-audio out/sys-audio.wav
+
 # Speech pre-gate over a long session.
 .build/release/chronicle classify \
   -i mic-master.wav \
@@ -102,31 +133,47 @@ exists at `spikes/scripts/run-pipeline.sh`. It chains the subcommands and
 produces a single output directory per session. Total wall-clock for the
 2026-05-13 6870 s Zoom session: **57 s**.
 
-## Live mic daemon (real-time, multi-sidecar)
+## Live capture daemons (real-time, multi-sidecar)
 
-`chronicle mic` runs as a long-lived daemon with multiple sidecar outputs
-from one audio tap:
+Both `mic` and `sysaudio` are long-lived daemons that share the same
+pipeline shape. They differ only in the `AudioSource` implementation:
+`mic` taps `AVAudioEngine.inputNode`, `sysaudio` taps `SCStream` for the
+system default-output mix.
 
 ```text
-AVAudioEngine tap (mic, 48 kHz Float32)
-  → AVAudioConverter (→ 16 kHz Int16 mono)
-  → fan-out:
-      ├─ AsyncStream<AnalyzerInput>      → SpeechAnalyzer + .progressiveTranscription [ANE]
-      │    → volatile / final events
-      │        ├─ live.md     (atomic rewrite per event, ~150 ms cadence)
-      │        ├─ finals.md   (timestamped append per phrase)
-      │        └─ trace.json  (full event trace, flushed on graceful stop)
-      └─ AVAudioFile                     → audio/session.wav  (lossless 16 kHz Int16)
+AudioSource (MicAudioSource | SysAudioSource)
+  → BufferConverter (→ 16 kHz Int16 mono)
+  → fan-out via two AsyncStreams:
+      ├─ AsyncStream<AnalyzerInput> → SpeechAnalyzer + .progressiveTranscription [ANE]
+      │    → volatile / final events → TranscriptionSink fan-out:
+      │        ├─ LiveFileSink     → live.md     (atomic rewrite per event, ~150 ms cadence)
+      │        ├─ FinalsAppendSink → finals.md   (timestamped append per phrase)
+      │        └─ [JSONLTraceSink — P3]
+      └─ AsyncStream<PCMBufferRef>  → audio sidecar sinks (today: WAV; P11: Opus + scratch).
 ```
 
 Resource cost per daemon: **~0.5–0.8 % CPU, ~30 MB RSS, ~115 MB/h of
-lossless WAV, ~10 KB/s of text sidecars, ~150 ms volatile latency,
-5–30 s final latency.** The model runs off-process on the ANE; the daemon
-just does the tap + convert + fan-out + file writes. On M4 Pro / 48 GB the
-ANE + RAM headroom supports ~100–200 parallel real-time streams — the
-actual bottleneck is the audio-device count.
+lossless WAV (Opus drops this to ~12 MB/h once P11 lands), ~10 KB/s of
+text sidecars, ~150 ms volatile latency, 5–30 s final latency.** The model
+runs off-process on the ANE; the daemon just does the tap + convert +
+fan-out + file writes. On M4 Pro / 48 GB the ANE + RAM headroom supports
+~100–200 parallel real-time streams — the actual bottleneck is the audio
+device / TCC ceiling.
 
-Full receipts: [`spikes/2026-05-13-daemon-live-mic.md`](spikes/2026-05-13-daemon-live-mic.md).
+Full receipts (spike-era):
+[`spikes/2026-05-13-daemon-live-mic.md`](spikes/2026-05-13-daemon-live-mic.md).
+Note: that spike's source-code layout is now historical; the production
+shape follows [ADR-0001](docs/adr/ADR-0001-modular-pipeline-architecture.md).
+
+### `sysaudio` capture scope
+
+`SCStream` captures the mix going to the macOS **default audio output
+device** at the time of capture. Apps routing audio to other devices (a
+specific HDMI out, an audio interface bypass, etc.) **bypass** capture.
+`--include-self-audio` opts chronicle's own audio back in (default is
+excluded to prevent feedback loops). When the captured WAV is silent but
+the daemon is otherwise healthy, run with `--verbose` to see per-buffer
+amplitude diagnostics every ~1.2 s.
 
 ## Running it under the Pi process tool
 
@@ -152,39 +199,87 @@ consistent.
 
 ## Architecture
 
-Single executable target `Chronicle` under `Sources/Chronicle/`. Each
-subcommand lives in its own file:
+Single executable target `Chronicle` plus a `ChronicleTests` Swift Testing
+target. Subcommands are thin CLI veneers; reusable logic lives in
+`Core/<area>/` per [ADR-0001](docs/adr/ADR-0001-modular-pipeline-architecture.md):
 
-```
+```text
 Sources/Chronicle/
-├── Chronicle.swift     # @main + subcommand dispatch
-├── Transcribe.swift    # offline STT
-├── Live.swift          # progressive-preset STT, file-driven
-├── Mic.swift           # live mic + AVAudioEngine tap
-├── Classify.swift      # SoundAnalysis built-in classifier
-├── Diarize.swift       # FluidAudio diarization
-├── OCR.swift           # Vision document / text recognition
-├── Tag.swift           # FoundationModels content tagging
-├── Summarize.swift     # FoundationModels guided summary
-├── Translate.swift     # Apple Translation + NLLanguageRecognizer
-└── Describe.swift      # Vision multi-request + FoundationModels narration
+├── Chronicle.swift                @main + subcommand dispatch
+├── Subcommands/                   thin CLI veneers (one per command)
+│   ├── Mic.swift                  live mic capture
+│   ├── SysAudio.swift             live system-audio capture
+│   ├── Live.swift                 progressive-preset STT, file-driven
+│   ├── Transcribe.swift           offline STT
+│   ├── Diarize.swift              offline speaker diarization
+│   ├── Tag.swift / Summarize.swift / Translate.swift
+│   ├── Classify.swift             SoundAnalysis built-in classifier
+│   ├── OCR.swift                  Vision document / text recognition
+│   └── Describe.swift             Vision + FoundationModels narration
+└── Core/
+    ├── Audio/
+    │   ├── AudioSource.swift      protocol: AsyncStreams of AnalyzerInput + PCMBufferRef
+    │   ├── MicAudioSource.swift   AVAudioEngine impl
+    │   ├── SysAudioSource.swift   ScreenCaptureKit / SCStream impl
+    │   └── BufferConverter.swift  AVAudioConverter wrapper
+    ├── Speech/
+    │   └── TranscriptionEngine.swift  SpeechTranscriber + SpeechAnalyzer factory
+    ├── Diarize/
+    │   ├── Diarizer.swift             DiarizationSegment + OfflineDiarizing protocol
+    │   └── OfflineDiarizer.swift      FluidAudio VBx wrapper
+    ├── LLM/
+    │   ├── ModelHost.swift            cached LanguageModelSession
+    │   ├── ContentTagger.swift        tagText(_:limit:)
+    │   └── Summarizer.swift           summarizeText(_:bullets:)
+    ├── Sinks/
+    │   ├── TranscriptionSink.swift    protocol: didReceiveVolatile/Final/finish
+    │   ├── LiveFileSink.swift         atomic-rewrite live.md
+    │   └── FinalsAppendSink.swift     timestamped append finals.md
+    └── Runtime/
+        ├── SignalHandler.swift        SIGINT/SIGTERM one-shot wait
+        └── AtomicFile.swift           atomic-write + append-line primitives
 ```
 
 `Package.swift` embeds `Info.plist` via `-sectcreate` so the OS recognises
 the binary as a real app for TCC dialogs (required for the Microphone
-prompt on `mic`).
+prompt on `mic` and the Screen Recording attribution on `sysaudio`).
+
+Future phases plug into the existing protocols:
+
+- **P3 (FR-2) JSONL trace** — add `JSONLTraceSink: TranscriptionSink`.
+- **P4 (FR-6) locale auto-detect** — `Core/Speech/LocaleResolver.swift`.
+- **P5 (FR-4) live diarization** — `Core/Audio/BufferMulticast.swift` +
+  `Core/Diarize/StreamingDiarizer.swift` consuming `PCMBufferRef`.
+- **P6 (FR-5) live tagging** — `Core/Sinks/TagsJSONLSink.swift` calling
+  the existing `ContentTagger.tagText`.
+- **P11 (FR-1 production) Opus codec** — `Core/Sinks/OpusOggSink.swift`
+  + `Core/Sinks/RollingPCMScratchSink.swift`.
 
 Diarization is the only non-Apple dependency:
 [FluidAudio](https://github.com/FluidInference/FluidAudio) — Apple ships no
 public diarizer on Tahoe 26.
 
+## Tests
+
+```sh
+swift test
+```
+
+`Tests/ChronicleTests/` uses Swift Testing (`@Test`). Currently a smoke
+placeholder; per-module tests land alongside each FR per the PRD-001 file
+breakdown (`WAVSegmentSinkTests`, `JSONLTraceSinkTests`,
+`LocaleResolverTests`, `OpusAccuracyParityTests`, etc.).
+
 ## See also
 
-- `../notes/` — design + decisions for the broader chronicle project.
-- `../notes/research-notes.md` — Tahoe surface map, retention tiers, cost model.
-- `spikes/` — per-POC receipts (impl analysis, offline transcribe, live
+- [`docs/prd/PRD-001-resilient-multi-source-daemon.md`](docs/prd/PRD-001-resilient-multi-source-daemon.md) — master spec (FRs, NFRs, rollout, verification).
+- [`docs/adr/`](docs/adr/) — architecture decisions (modular pipeline, audio codec, locale policy).
+- [`../notes/`](../notes/) — design + decisions for the broader chronicle project.
+- [`../notes/research-notes.md`](../notes/research-notes.md) — Tahoe surface map, retention tiers, cost model.
+- [`spikes/`](spikes/) — per-POC receipts (impl analysis, offline transcribe, live
   preset, sound classify, vision OCR, content tags, summarise, translate,
-  diarize, screenpipe-defer, describe).
+  diarize, screenpipe-defer, describe). Source-code layout in those spikes
+  predates the P0 modular refactor; treat them as historical evidence.
 - Sibling repos under `..`: `apple-speechanalyzer-cli` (argmax demo, retired),
   `swift-scribe`, `fluidaudio`, `samscribe`, `ora`, `meetily`,
   `meeting-transcriber`, `speech-analyzer-dylib`.
