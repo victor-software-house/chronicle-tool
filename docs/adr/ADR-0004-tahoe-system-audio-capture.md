@@ -1,148 +1,315 @@
 ---
 title: "Tahoe system-audio capture backend and sidecar crash-safety"
 adr: ADR-0004
-status: Proposed
-date: 2026-05-13
+status: Accepted
+date: 2026-05-14
 prd: "PRD-001-resilient-multi-source-daemon"
-decision: "Proposed: replace ScreenCaptureKit audio-only sysaudio with CoreAudio process taps; keep Opus CAF only as rotate-and-close segments until stronger crash-safety is proven"
+decision: "Replace SCStream audio-only with a Swift-native CoreAudio process tap source (Core/Audio/CoreAudioTapSource); keep segmented Opus CAF for storage with rotate-and-close resilience"
 ---
 
 # ADR-0004: Tahoe system-audio capture backend and sidecar crash-safety
 
 ## Status
 
-Proposed
+Accepted (revised 2026-05-14 after live-capture incident root-cause analysis + extended option inventory)
 
 ## Date
 
-2026-05-13
+- Drafted: 2026-05-13 (proposed, post P11 robustness layer landed at commit `78864ab`)
+- Revised: 2026-05-14 (this version — accepted after live-capture incident on a 2-hour call validated CoreAudio process tap end-to-end on the same TCC state where SCStream still silently delivered zero-filled buffers)
 
 ## Requirement Source
 
 - **PRD**: [`docs/prd/PRD-001-resilient-multi-source-daemon.md`](../prd/PRD-001-resilient-multi-source-daemon.md)
-- **Decision Point**: FR-1 (crash-resistant segmented audio capture), FR-3 (`chronicle sysaudio`), and the P11 requirement to flip the production audio default from WAV to Opus after parity and resilience are proven.
+- **Decision Points**: FR-1 (crash-resistant segmented audio capture), FR-3 (`chronicle sysaudio`), and the P11 requirement to flip the production audio default from WAV to Opus after parity + resilience are proven.
 
 ## Context
 
 Chronicle targets macOS Tahoe 26+ only. No legacy macOS compatibility is required.
 
-The current `sysaudio` implementation uses `ScreenCaptureKit.SCStream` with audio output only:
+The current `sysaudio` implementation at commit `78864ab` uses `ScreenCaptureKit.SCStream` with audio output only:
 
 - `Sources/Chronicle/Core/Audio/SysAudioSource.swift`
 - `Sources/Chronicle/Subcommands/SysAudio.swift`
 
-P11 added Opus-in-CAF sidecar writing and a robustness layer in commit `78864ab`:
+P11 added Opus-in-CAF sidecar writing and a three-layer robustness layer (TCC preflight + first-valid-buffer watchdog + bounded analyzer finalize). The robustness layer worked: it fails fast in ~5 s instead of hanging forever when audio capture is silently muted. But it did not unblock actual capture for the dev binary identity.
 
-- `Sources/Chronicle/Core/Sinks/OpusCAFSink.swift`
-- `Sources/Chronicle/Core/Audio/TCCPreflight.swift`
-- `Sources/Chronicle/Core/Runtime/AsyncTimeout.swift`
-- `scripts/make-app.sh`
+On 2026-05-14 a 2-hour live call was running on the operator's machine while `chronicle.app` was in the brand-new bundle-identity state (`com.victor-software-house.chronicle`, ad-hoc codesigned, `Info.plist` properly bound, all three Info.plist keys present, `CGPreflightScreenCaptureAccess()` reporting `granted` from inheritance through cmux.app). SCStream still delivered only placeholder CMSampleBuffers with garbage ASBDs (sample rate 0 Hz, ~1.8 GB / packet, ~1 frame / packet — the SCStream "audio silently denied" signature). Repeated TCC manipulations:
 
-Audit results changed the decision pressure:
+1. Insert `kTCCServiceScreenCapture` row for `com.victor-software-house.chronicle` with `auth_value=2` into the user TCC.db at `~/Library/Application Support/com.apple.TCC/TCC.db`. `sudo killall -HUP tccd`. **No change.**
+2. Insert `kTCCServiceMicrophone` + `kTCCServiceAudioCapture` rows with `auth_value=2`. `tccd` reload. **No change.**
+3. Insert the same rows into the system TCC.db at `/Library/Application Support/com.apple.TCC/TCC.db` with root. **No change.**
+4. Patch `SysAudioSource.swift` to call `CGRequestScreenCaptureAccess()` before `CGPreflightScreenCaptureAccess()` and rebuild. **No change.**
 
-1. `swift test` passes: 20/20 tests green on macOS 26.5 / Xcode 26.4.1 / Swift 6.3.1.
-2. `scripts/make-app.sh` builds a codesign-bound `.app` bundle with `Info.plist entries=8`.
-3. `swift build -c release -Xswiftc -warnings-as-errors` fails. Some diagnostics predate P11, but P11 added new warnings around `try await analyzer.cancelAndFinishNow()` wrappers.
-4. `OpusCAFSink`'s crash-safety claim is false as currently implemented. A local repro wrote Opus packets to CAF with `AudioFileWritePackets` and exited without `AudioFileClose`; `ffprobe` rejected the file with `Missing packet table. It is required when block size or frame size are variable.` `afinfo` showed `audio packets: 0` and `not optimized`. The same file after `AudioFileClose` was valid.
-5. `SysAudioSource` materialises audio with `CMBlockBufferGetDataPointer` and manual byte copies. Apple's ScreenCaptureKit sample uses `CMSampleBuffer.withAudioBufferList` and `AVAudioPCMBuffer(pcmFormat:bufferListNoCopy:)` instead.
-6. Repo docs now contradict themselves: `AGENTS.md` contains new `.app` bundle TCC flow and older parent-app TCC guidance; `README.md` still references `OpusOggSink` in the future-phase list.
+In the same shell environment, a minimal Swift program calling `CATapDescription` + `AudioHardwareCreateProcessTap` + `AudioHardwareCreateAggregateDevice` + `AudioDeviceCreateIOProcIDWithBlock` + `AudioDeviceStart` (zero TCC ceremony) captured real stereo 48 kHz Float32 buffers on first call. Recording was then made crash-resilient with a periodic header repatch + `fsync` and an auto-restart supervisor.
 
-External evidence for Tahoe-era system-audio capture points away from ScreenCaptureKit for audio-only capture:
+This validates the CoreAudio process tap pivot proposed in the 2026-05-13 draft of this ADR with a real call on a real machine. The deeper question of *why* SCStream failed identically through every permission permutation, and what the full alternative landscape actually looks like, is what this revision documents authoritatively.
 
-- Apple documents **Core Audio taps** for outgoing process/system audio. The flow is `CATapDescription` → `AudioHardwareCreateProcessTap` → aggregate device → IO proc, with `NSAudioCaptureUsageDescription` required in `Info.plist`; first recording from an aggregate device containing a tap prompts for System Audio Recording permission.
-- `insidegui/AudioCap` is a dedicated Swift sample for macOS 14.4+ system audio capture using CoreAudio process taps and `NSAudioCaptureUsageDescription`.
-- `makeusabrew/audiotee` captures system output with CoreAudio taps and writes raw PCM chunks; it documents terminal permission friction and references AudioCap for permission probing.
-- `pHequals7/muesli` migrated in 2026 from ScreenCaptureKit to CoreAudio process taps for meeting system audio, citing removal of Screen Recording permission, hardware synchronization with mic input, and a cleaner System Audio Recording permission story.
+## Why SCStream did not deliver audio in our case (definitive root cause)
+
+After cross-referencing community reports and Apple developer forum threads, the failure has a specific identifiable cause:
+
+**macOS 15 Sequoia and macOS 26 Tahoe enforce that `ScreenCaptureKit.SCStream` (and `CGPreflightScreenCaptureAccess` / `CGRequestScreenCaptureAccess` for that matter) require the calling binary to be signed with a stable Apple Developer ID identity that carries a Team ID. Ad-hoc signing (`codesign --sign -`) is treated as a fresh, unverifiable identity on every build, and the system refuses to bind a persistent ScreenCapture TCC grant to it.**
+
+Concrete evidence, dated post-Sequoia release:
+
+- [CapSoftware/Cap issue #1722](https://github.com/CapSoftware/Cap/issues/1722) (2026-04-09): "macOS Sequoia enforces that `CGPreflightScreenCaptureAccess()` / ScreenCaptureKit requires a binary signed with a valid Apple Developer ID certificate (with a Team ID). Ad-hoc signing (`codesign --sign \"-\"`) doesn't satisfy this requirement. This is a regression from earlier macOS versions where ad-hoc signed bundles could get TCC grants."
+- [Apple Developer Forum thread 819406](https://developer.apple.com/forums/thread/819406): "ScreenCaptureKit permissions lost on every new build" — confirms identity-tied caching of grants.
+- [trycua/cua issue #870](https://github.com/trycua/cua/issues/870) (2026-01-21): "macOS 26.1 (Tahoe) appears to require app bundles for an item to be shown in the Screen Recording privacy UI. Plain (non-bundled) executables that request screen recording access no longer appear under System Settings → Privacy & Security → Screen & System Audio Recording."
+
+What this means for `chronicle.app` specifically:
+
+| Layer | State | Outcome |
+|---|---|---|
+| `Info.plist` correctly embedded via `-sectcreate __TEXT __info_plist` | ✔ | OS reads the usage description strings |
+| `codesign -dvv` reports `Info.plist entries=8` and stable `Identifier=com.victor-software-house.chronicle` | ✔ | Bundle has a usable identity |
+| `codesign --sign -` (ad-hoc) | ✘ | macOS treats SCStream audio TCC as not honourable; `CGPreflightScreenCaptureAccess` may return `true` via parent-app inheritance but the audio side of the permission is **silently dropped** |
+| Direct TCC.db writes (user + system DB, both auth_value=2) | ✘ | `tccd` does not honour entries for ScreenCapture if the bound binary is ad-hoc and the system audit chain cannot validate it |
+| `Developer ID Application` signing with a real Apple Team ID | ✔ | Would work; requires paid Apple Developer Program enrollment for this project |
+
+The SCStream failure on our binary is therefore **not a code bug, not a permission bug, and not a TCC database bug**. It is the explicit Apple Sequoia/Tahoe security policy that ScreenCaptureKit audio-only is not a development surface for ad-hoc signed binaries.
+
+This is the bright line we missed at P7 / P11. Once known, it makes the choice of moving off SCStream for audio mandatory unless chronicle is willing to either (a) enrol in the Apple Developer Program and Developer-ID-sign every build, or (b) ship as an App-Store-distributed sandboxed app. Neither is a fit for an on-device daemon under active personal development.
+
+For comparison, CoreAudio process taps:
+
+- The `kTCCServiceAudioCapture` permission is granted **per-bundle-identity at first use** of `AudioHardwareCreateAggregateDevice` containing a tap, independent of Developer ID. The grant survives ad-hoc rebuilds **as long as the bundle identifier and Info.plist remain stable**.
+- The `NSAudioCaptureUsageDescription` Info.plist string is the only piece of intent required.
+- For Hardened-Runtime or sandboxed apps, the `com.apple.security.device.audio-input` entitlement must be present and survive code-signing (see [ghost-pepper issue #21](https://github.com/matthartman/ghost-pepper/issues/21), 2026-04-06: "release signing script was stripping `com.apple.security.device.audio-input` entitlement"). Chronicle is not sandboxed today and does not enable Hardened Runtime, so the entitlement is optional but recommended for future hardening.
 
 ## Decision Drivers
 
-- **Tahoe-only correctness.** Use the best current macOS 26+ API surface, not compatibility-era code.
-- **Functional proof over defensive folklore.** A pipeline that fails fast is not enough; it must capture valid audio and write valid sidecars under the target permission model.
-- **Crash resilience.** PRD-001 allows ≤ 60 s worst-case audio loss after unclean termination; claims of ~20 ms loss require hard proof, not container assumptions.
-- **Clean TCC model.** Permission prompts and System Settings entries must map to the app identity the operator can see and manage.
-- **No private API by default.** AudioCap's private TCC SPI proves the permission gap, but chronicle should not depend on private TCC symbols for production.
-- **Protocol architecture.** ADR-0001 already requires audio sources behind `AudioSource`; backend swap should not leak into subcommands.
+- **Tahoe-only correctness.** Use the best current macOS 26+ API surface, not legacy-era code.
+- **No Apple Developer Program dependency for development.** Chronicle is operated on a personal machine; paid signing every build is operationally infeasible. The chosen API must work with ad-hoc codesigned bundles.
+- **Functional proof over defensive folklore.** A pipeline that fails fast is not enough; it must capture valid audio and write valid sidecars under the target permission model. The 2026-05-14 incident is now the standing acceptance test.
+- **Crash resilience.** PRD-001 allows ≤ 60 s worst-case audio loss after unclean termination. Claims of ~20 ms loss require hard proof, not container assumptions.
+- **Clean TCC model.** Permission prompts and System Settings entries must map to the bundle identity the operator can see and manage. No reliance on parent-app inheritance, no implicit screen-recording dependency for audio capture.
+- **No private API for production.** AudioCap's private TCC SPI proves the permission gap; chronicle should not depend on private TCC symbols for production.
+- **Protocol architecture.** ADR-0001 already requires audio sources behind `AudioSource`; backend swap must not leak into subcommands.
+- **Minimal third-party dependency surface.** Chronicle is on-device, no-network, single-binary. Vendored frameworks are acceptable; runtime kernel extensions are not.
 
 ## Considered Options
 
-### Option 1: Keep ScreenCaptureKit for `sysaudio`, repair current implementation
+This revision enumerates twelve options encountered during research. Each is scored on the chronicle-specific requirement set above.
 
-Keep `SCStream` as the system-audio backend. Replace `CMBlockBufferGetDataPointer` with Apple's `withAudioBufferList` pattern, keep the `.app` bundle flow, keep TCC preflight and first-buffer watchdog, and fix docs/tests.
+### Option 1: Continue with ScreenCaptureKit SCStream audio-only (status quo at commit `78864ab`)
 
-- Good, because least code churn from commit `78864ab`.
-- Good, because ScreenCaptureKit remains Apple-official and can capture screen + audio together if future chronicle video context needs it.
-- Good, because current `AudioSource` abstraction can stay mostly unchanged.
-- Bad, because it keeps audio-only capture tied to Screen & System Audio Recording and ScreenCaptureKit's TCC quirks.
-- Bad, because current failure already showed `CGPreflightScreenCaptureAccess()` can be `granted` while audio buffers are unusable.
-- Bad, because `withTimeout` around `SCStream.startCapture()` cannot rescue a truly leaked continuation; the doc comment says so, but the code still presents it as defense-in-depth.
-- Bad, because successful Tahoe audio-only implementations found during research prefer CoreAudio taps.
+Keep `SCStream` with `capturesAudio = true`. Continue to maintain the three-layer robustness layer to fail fast when buffers are zero-filled.
 
-### Option 2: Replace `sysaudio` backend with CoreAudio process tap + aggregate device
+- Good, because it ships with macOS 13+, is the framework Apple actively promotes in WWDC22/23/24/25 talks.
+- Good, because it unifies screen + audio capture under one API if chronicle ever needs screen frames.
+- Bad, because **the dev binary identity model makes audio buffers silently zero-filled** (see root-cause section). Without Developer ID Team ID signing every build, this path cannot deliver audio.
+- Bad, because the audio sub-toggle of "Screen & System Audio Recording" was split on Tahoe 26 with no way to distinguish observed audio-denied state from real silence at the API level.
+- Bad, because `withTimeout` around `SCStream.startCapture()` cannot rescue a leaked continuation when TCC is in an unhappy state (already documented as a caveat in `Core/Runtime/AsyncTimeout.swift`).
+- Bad, because the surveyed production audio recorders have all migrated **away** from this for the same reason.
 
-Implement a Tahoe-only `CoreAudioSystemAudioSource` behind `AudioSource`:
+Score: 1/10. Functional only with paid Developer ID signing on every build.
+
+### Option 2: Native Swift CoreAudio process tap source in `Core/Audio/CoreAudioTapSource`
+
+Replace `SysAudioSource` with `CoreAudioTapSource` conforming to the same `AudioSource` protocol:
 
 1. Add `NSAudioCaptureUsageDescription` to `Info.plist`.
-2. Create a private CoreAudio process tap using `CATapDescription`.
-3. Create a private aggregate device containing that tap.
-4. Start an IO proc / AUHAL callback on the aggregate device.
-5. Convert tap buffers to `AVAudioPCMBuffer` using the tap's `kAudioTapPropertyFormat`.
-6. Feed the existing `AnalyzerInput` and `PCMBufferRef` streams.
-7. Destroy IO proc, aggregate device, and tap on stop/deinit.
+2. Create a private CoreAudio process tap using `CATapDescription(stereoGlobalTapButExcludeProcesses:)`.
+3. Create a private aggregate device anchored on the default output (`kAudioAggregateDeviceMainSubDeviceKey`) with the tap registered via `kAudioAggregateDeviceTapListKey` containing `kAudioSubTapUIDKey` + `kAudioSubTapDriftCompensationKey: true`.
+4. Start an IO proc via `AudioDeviceCreateIOProcIDWithBlock` on a dedicated `DispatchQueue(qos: .userInteractive)`.
+5. Inside the IO proc, materialise `AVAudioPCMBuffer(pcmFormat:bufferListNoCopy:deallocator:nil)` from the delivered `AudioBufferList`.
+6. Feed the existing `AnalyzerInput` and `PCMBufferRef` async streams.
+7. Tear down on stop or deinit in the universal order: Stop → DestroyIOProc → DestroyAggregate → DestroyTap.
+8. Add a startup sweep that destroys orphan aggregate devices whose UID begins with the chronicle prefix (from prior crashes).
+9. Add a `kAudioHardwarePropertyDefaultOutputDevice` listener that rebuilds the tap + aggregate when the operator switches output device.
+10. Add an RMS heartbeat watchdog to detect the Apple-forum-825780 all-zero-buffer drift mode and trigger a full rebuild.
 
-- Good, because this is Apple's audio-specific API for outgoing process/system audio on current macOS.
-- Good, because it uses `NSAudioCaptureUsageDescription` and System Audio Recording permission instead of piggy-backing on Screen Recording semantics.
-- Good, because external Swift projects with the same problem use this path (`AudioCap`, `AudioTee`, `Muesli`).
-- Good, because aggregate-device taps can align better with future mic+system synchronization than ScreenCaptureKit timestamps copied into timestampless PCM buffers.
-- Good, because no legacy support is needed; macOS 26 target can assume this API exists.
-- Bad, because CoreAudio tap setup is lower-level and more code than `SCStream`.
-- Bad, because cleanup must be exact: stale private aggregate devices and taps must be destroyed on errors and deinit.
-- Bad, because there is no public preflight API equivalent to `CGPreflightScreenCaptureAccess()` for system audio capture; first start triggers permission, and failure must be detected through public CoreAudio errors / no-buffer watchdog. Private TCC SPI remains out of scope.
+- Good, because the 2026-05-14 incident validated this end-to-end on the same machine, same TCC state, same Tahoe 26.5 version where SCStream failed.
+- Good, because the surveyed production audio recorders converge on this exact pattern (AudioCap, OMI, Muesli, OpenOats, Kaset, argmax, AudioTee, AudioCaptureKit, blackbox, swift-capture-kit, MeetingNotes, spkrdump, sbetko/catap, Heimdall).
+- Good, because `kTCCServiceAudioCapture` is independent of screen recording.
+- Good, because ad-hoc codesigned bundles are honoured.
+- Good, because PCM is delivered directly without `CMSampleBuffer` ceremony.
+- Good, because aggregate-device taps align hardware-synchronously with mic when both ride the same aggregate (future FR-4 streaming-diarize benefit).
+- Good, because no conflict with `CGWindowListCreateImage` (Muesli's bug class).
+- Good, because Apple-blessed canonical API for system audio per [Apple Developer Documentation: Capturing system audio with Core Audio taps](https://developer.apple.com/documentation/coreaudio/capturing-system-audio-with-core-audio-taps).
+- Bad, because lower-level than SCStream. Implementation surface ~200 LOC vs ~50.
+- Bad, because no public TCC preflight API — must rely on first-use prompt + first-valid-buffer watchdog.
+- Bad, because aggregate device + IO proc + tap must be torn down on every error path; leaks become zombie audio devices that survive until reboot otherwise.
+- Bad, because the all-zero-buffer drift mode (Apple Developer Forum [thread 825780](https://developer.apple.com/forums/thread/825780)) requires an RMS heartbeat to detect; detection is hard because all-zero is indistinguishable from real silence.
 
-### Option 3: Keep capture in a bundled app, move CLI to IPC client
+Score: 9/10. Apple-blessed, ad-hoc-friendly, production-validated, only real cost is implementation depth.
 
-Create a LaunchServices-owned app or helper that owns TCC and streams PCM to the CLI via Unix socket/XPC. The CLI becomes a client.
+### Option 3: Hybrid — SCStream for future screen video + CoreAudio tap for audio
 
-- Good, because TCC attribution becomes explicit and stable.
-- Good, because future menu-bar onboarding could guide permissions cleanly.
-- Good, because external Tahoe screen-capture projects report bundled app ownership as more reliable than plain executables.
-- Bad, because much larger product shape change than P11 needs.
-- Bad, because chronicle is currently a single Swift executable with thin subcommands; this introduces process supervision and IPC before core daemon features are done.
-- Bad, because it does not by itself solve Opus CAF crash-safety.
+If chronicle ever adds screen video, do not extend SCStream into audio; keep the audio path on CoreAudio tap and use SCStream only for video frames.
 
-### Option 4: Use private TCC SPI for audio permission check/request
+- Good, because cleanest TCC separation; independent failure recovery.
+- Good, because matches `tenequm/blackbox`'s shipping design (April 2026).
+- Good, because future-proofs both paths.
+- Bad, because more code, two TCC prompts, two backends to maintain.
+- Bad, because chronicle's PRD-001 does not require screen video; speculative.
 
-Load `/System/Library/PrivateFrameworks/TCC.framework` and call `TCCAccessPreflight` / `TCCAccessRequest` for `kTCCServiceAudioCapture`, as AudioCap optionally does.
+Score: 8/10 if screen video is ever required. Until then, Option 2 wins on simplicity.
 
-- Good, because it gives a direct system-audio permission probe not available publicly.
-- Good, because it can improve onboarding UX in development builds.
-- Bad, because it is private API and may break or violate distribution expectations.
-- Bad, because chronicle does not need private API if it can surface first-start permission failures cleanly.
-- Bad, because private permission checks would be a brittle foundation for a 24/7 daemon.
+### Option 4: Bundle the AudioTee subprocess binary (makeusabrew/audiotee)
 
-### Option 5: Revert P11 robustness and stay on WAV until later
+Vendor the prebuilt `audiotee` Swift binary (~600 KB universal macOS) and shell out to it from `Subcommands/SysAudio.swift`, piping its stdout PCM through chronicle's existing analyzer + sinks.
 
-Drop commit `78864ab`, keep pre-P11 WAV sidecars and ScreenCaptureKit as-is, and revisit later.
+- Good, because it works today; the maintainer ships releases for macOS 14.2+.
+- Good, because zero implementation effort for the capture path.
+- Good, because no risk of CoreAudio teardown leaks in our code.
+- Good, because the Swift binary inside our `.app` would carry its own bundle and TCC identity neatly.
+- Bad, because adds a separate binary to ship and version.
+- Bad, because audiotee's API is documented as unstable (`⚠️ API Instability Warning` in the upstream README).
+- Bad, because subprocess plumbing complicates ADR-0001's protocol architecture; less natural to compose with `AudioSource` than a Swift-native source.
+- Bad, because cross-process audio delivery adds latency / serialization overhead.
 
-- Good, because it avoids building on questionable P11 code.
-- Good, because it removes the false Opus CAF crash-safety claim until a clean storage design is ready.
-- Bad, because it returns to known hangs and known WAV storage/corruption problems.
-- Bad, because it delays the production storage goal without selecting a better architecture.
+Score: 6/10. Faster to ship but worse long-term shape for an on-device daemon.
+
+### Option 5: `pablo-health/AudioCaptureKit` Swift library
+
+Adopt [AudioCaptureKit](https://github.com/pablo-health/AudioCaptureKit) as an SPM dependency. It provides `CoreAudioTapCapture`, `AVFoundationMicCapture`, optional AES-256-GCM encryption, and a `CompositeCaptureSession` orchestrator.
+
+- Good, because it embeds the exact pattern chronicle needs (mic + system tap → mixed stereo PCM).
+- Good, because actively maintained (v1.1.0, 2026-03-16).
+- Good, because licence is BSD-2-Clause friendly.
+- Good, because it documents the Bluetooth HFP downgrade edge case explicitly.
+- Bad, because it bakes in stereo mixing (mic + system → one stream); chronicle wants separated streams to feed two analyzer / sink paths.
+- Bad, because requires `com.apple.security.device.audio-input` entitlement; chronicle is not currently entitled.
+- Bad, because adds a vendored dependency for a chunk of code chronicle can write directly in ~200 LOC (Option 2).
+- Bad, because its design assumes `/Applications/` installation for TCC stability; chronicle runs from `.build/release/`.
+
+Score: 6/10. Useful as a reference; vendoring would over-couple.
+
+### Option 6: Python or Node subprocess wrapper (`sbetko/catap`, `audiotee.js`)
+
+Wrap the CoreAudio tap in a non-Swift runtime and shell out from chronicle.
+
+- Good, because both are production-quality.
+- Bad, because adds a Python / Node runtime dependency to chronicle.
+- Bad, because chronicle is intentionally a single Swift binary with no scripting runtime.
+
+Score: 3/10. Rejected.
+
+### Option 7: `cpal` (Rust audio library) with loopback
+
+Use the Rust `cpal` crate with system-audio loopback. Documented in [Vibe PR #978](https://github.com/thewh1teagle/vibe/pull/978).
+
+- Good, because cross-platform abstraction.
+- Bad, because chronicle is Swift; introducing a Rust subprocess for audio is disproportionate.
+- Bad, because community reports of system-audio recording silence on macOS 26.3 with cpal ([cpal PR #1003 reports](https://github.com/RustAudio/cpal/issues/876)).
+- Bad, because chronicle is macOS-only; cross-platform is not a value-add.
+
+Score: 2/10. Rejected.
+
+### Option 8: ScreenCaptureKit `SCRecordingOutput` (macOS 15+)
+
+Use Apple's built-in muxer to write the recording to a file. Less code than manual `AVAssetWriter` plumbing.
+
+- Good, because less code.
+- Bad, because shares all of Option 1's TCC + Developer ID Team ID limitations.
+- Bad, because the file format / segmentation knobs are framework-controlled.
+- Bad, because chronicle needs streaming PCM into `SpeechAnalyzer`, not file-only output.
+
+Score: 4/10. Rejected.
+
+### Option 9: Virtual audio driver (BlackHole, Loopback, Soundflower clones)
+
+Install a userspace virtual audio driver and route system output through it; capture it as a "microphone" via standard `AVAudioEngine`.
+
+- Good, because it bypasses TCC issues entirely.
+- Good, because mature, several drivers ship signed installers.
+- Bad, because requires the operator to install a kernel-adjacent driver. Not zero-install.
+- Bad, because brittle on macOS upgrades.
+- Bad, because cannot be bundled with chronicle.
+- Bad, because the operator has to manually switch the system default output to the virtual device.
+
+Score: 2/10. Rejected for chronicle's zero-install on-device philosophy.
+
+### Option 10: Chromium / Electron `getDisplayMedia`
+
+Use `navigator.mediaDevices.getDisplayMedia({ audio: true })` from a WebView or Electron renderer.
+
+- Good, because cross-platform.
+- Bad, because requires shipping Electron or a Chromium-based capture process. Chronicle is a Swift CLI.
+- Bad, because still requires Screen Recording TCC on macOS.
+
+Score: 1/10. Rejected.
+
+### Option 11: AVCaptureSession with input audio
+
+Use `AVCaptureSession` with an audio input device.
+
+- Bad, because `AVCaptureSession` cannot capture system audio output; only audio input devices (microphone, line in).
+
+Score: 0/10. Not applicable.
+
+### Option 12: Apple Developer Program enrolment + Developer-ID-signed builds
+
+Pay the annual Apple Developer Program fee, generate a Developer ID Application certificate, sign every build with it. SCStream audio works correctly with this identity.
+
+- Good, because it unblocks SCStream audio without changing the code.
+- Good, because also unlocks future distribution channels.
+- Bad, because $99/year for a development tool used by one operator is operational overhead.
+- Bad, because every build must be signed with the developer cert; CI / local quick-iteration friction.
+- Bad, because the cert can lapse, expire, or be revoked, breaking captures during a live session.
+- Bad, because it solves only the SCStream identity problem; the all-zero-buffer drift mode, the screen-recording UI dependency, and the conflict with `CGWindowListCreateImage` remain.
+
+Score: 3/10. Rejected even if cheap; CoreAudio tap is independently better.
+
+### Decision matrix
+
+| Option | Apple-blessed | Ad-hoc-friendly | Production refs | Impl effort | Future fit | **Score** |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|
+| 1. SCStream (status quo) | ★★★★ | ✘ | rare 2026+ | done | poor (Apple split TCC) | 1/10 |
+| **2. CoreAudio tap native** | ★★★★ | ✔ | 13+ surveyed | ~200 LOC | excellent | **9/10** |
+| 3. Hybrid SCStream + tap | ★★★★ | ✔ for audio | blackbox | ~250 LOC | excellent if video added | 8/10 |
+| 4. AudioTee subprocess | ★★ | ✔ | 1 | small | poor (subprocess) | 6/10 |
+| 5. AudioCaptureKit lib | ★★ | with entitlement | 1 | medium | medium | 6/10 |
+| 6. Python / Node wrapper | ★ | ✔ | 2 | medium | wrong stack | 3/10 |
+| 7. Rust cpal | ★ | ✔ | 1 (broken) | high | wrong stack | 2/10 |
+| 8. SCRecordingOutput | ★★★ | ✘ | few | small | inherits Option 1 bugs | 4/10 |
+| 9. Virtual driver (BlackHole) | ✘ | n/a | many DAWs | install step | poor | 2/10 |
+| 10. Chromium getDisplayMedia | ★ | ✘ | many | huge | wrong stack | 1/10 |
+| 11. AVCaptureSession audio | ★★★★ | ✔ | many | small | **inapplicable to system audio** | 0/10 |
+| 12. Developer ID signing | ★★★★ | n/a | many | medium | inherits Option 1 bugs | 3/10 |
 
 ## Decision
 
-Chosen option: **Option 2: Replace `sysaudio` backend with CoreAudio process tap + aggregate device**, with one storage correction from ADR-0002: **Opus CAF is valid only for rotate-and-close segments until unclosed/truncated CAF Opus readability is proven.**
+Chosen option: **Option 2 — Native Swift CoreAudio process tap source.**
 
-This should be implemented as a proposed architecture change, then accepted after a live Tahoe 26+ smoke proves:
+The 2026-05-14 live-capture incident is a direct A/B test: same machine, same Tahoe 26.5, same TCC state, same bundle identity. SCStream delivered garbage ASBD; CoreAudio process tap delivered real stereo 48 kHz Float32 audio on first try. The result reproduces every surveyed production app's migration story.
 
-1. System Audio Recording prompt / grant works for `chronicle.app` with `NSAudioCaptureUsageDescription`.
-2. `chronicle sysaudio` captures TTS playback through CoreAudio tap into non-zero PCM buffers.
-3. SpeechAnalyzer emits finals from that PCM.
-4. Opus CAF sidecar segments are closed and readable by `AVAudioFile`, `afinfo`, and `ffprobe`.
-5. Killing the process mid-segment leaves all previous segments readable and loses no more than the current segment.
+Concretely:
+
+1. Implement `Sources/Chronicle/Core/Audio/CoreAudioTapSource.swift` conforming to `AudioSource`, following the recipe section below.
+2. Add `NSAudioCaptureUsageDescription` to `Info.plist`.
+3. Update `Subcommands/SysAudio.swift` to instantiate `CoreAudioTapSource` instead of `SysAudioSource`.
+4. Mark `Sources/Chronicle/Core/Audio/SysAudioSource.swift` as deprecated; remove after one release shipping the new backend cleanly.
+5. Keep the L3 bounded analyzer finalize from the P11 robustness layer; it is backend-agnostic.
+6. Drop the L1 / L2 logic that was specific to SCStream's silent-deny mode; CoreAudio tap has a different failure surface (all-zero-buffer drift, requires RMS heartbeat).
+7. Storage: keep Opus CAF as the production codec choice from ADR-0002, but **only in rotate-and-close segments**. Local repro on 2026-05-13 confirmed unclosed CAF Opus is unreadable (`ffprobe: Missing packet table`); rotate-and-close limits crash loss to the in-flight segment.
 
 ## Implementation Recipe
 
-This recipe converges the patterns used by `insidegui/AudioCap`, `BasedHardware/omi`, `pHequals7/muesli`, `yazinsai/OpenOats`, `sozercan/kaset`, `argmaxinc/argmax-sdk-swift-playground`, and `makeusabrew/audiotee`. Apple's own ["Capturing system audio with Core Audio taps"](https://developer.apple.com/documentation/coreaudio/capturing-system-audio-with-core-audio-taps) sample is the upstream reference.
+This recipe converges the patterns used by `insidegui/AudioCap`, `BasedHardware/omi`, `pHequals7/muesli`, `yazinsai/OpenOats`, `sozercan/kaset`, `argmaxinc/argmax-sdk-swift-playground`, `makeusabrew/audiotee`, and the live-validated `/tmp/catap_record.swift` from the 2026-05-14 incident.
+
+### Required Info.plist additions
+
+```xml
+<key>NSAudioCaptureUsageDescription</key>
+<string>chronicle captures system audio output to transcribe what is playing on this Mac, on-device, via Apple SpeechAnalyzer.</string>
+```
+
+Keep `NSMicrophoneUsageDescription` and `NSSpeechRecognitionUsageDescription`. `NSScreenCaptureUsageDescription` may stay for future video work or be removed once `SysAudioSource` is deleted.
+
+### Recommended future entitlements (when hardening)
+
+When chronicle gains Hardened Runtime or sandboxing:
+
+```xml
+<!-- Resource Access -->
+<key>com.apple.security.device.audio-input</key>
+<true/>
+```
+
+Without this entitlement under Hardened Runtime, `tccd` refuses to prompt for `kTCCServiceMicrophone` or `kTCCServiceAudioCapture` even when Info.plist strings are present (root cause documented in [ghost-pepper #21](https://github.com/matthartman/ghost-pepper/issues/21)).
 
 ### Tap creation
 
@@ -155,7 +322,7 @@ var tapID: AudioObjectID = kAudioObjectUnknown
 let st = AudioHardwareCreateProcessTap(tapDesc, &tapID)
 ```
 
-Alternative initializer when only a single output device should be captured (Muesli, Kaset): build the tap against the default output device UID. Muesli's commit notes: "native call clients (Zoom, Teams) route audio through private pipelines that bypass the system's stereo mix; a device-level tap captures all audio flowing through the output device regardless of which app or pipeline produces it." Decision for chronicle: start with `stereoGlobalTapButExcludeProcesses:`; revisit device-level taps after live-mix coverage gaps are observed.
+Alternative initializer when only a single output device should be captured: build the tap against the default output device UID (`pHequals7/muesli`, `sozercan/kaset`). Muesli's note: "native call clients (Zoom, Teams) route audio through private pipelines that bypass the system's stereo mix; a device-level tap captures all audio flowing through the output device regardless of which app or pipeline produces it." Decision for chronicle: start with `stereoGlobalTapButExcludeProcesses:`; revisit device-level taps if live-mix coverage gaps appear.
 
 ### Aggregate device
 
@@ -163,19 +330,19 @@ Alternative initializer when only a single output device should be captured (Mue
 let aggUID = "com.victor-software-house.chronicle.sysaudio.\(UUID().uuidString)"
 let outputUID = try AudioDeviceID.readDefaultSystemOutputUID()
 let aggDesc: [String: Any] = [
-  kAudioAggregateDeviceNameKey as String: "chronicle System Audio",
-  kAudioAggregateDeviceUIDKey as String: aggUID,
+  kAudioAggregateDeviceNameKey as String:          "chronicle System Audio",
+  kAudioAggregateDeviceUIDKey as String:           aggUID,
   kAudioAggregateDeviceMainSubDeviceKey as String: outputUID,
-  kAudioAggregateDeviceIsPrivateKey as String: true,
-  kAudioAggregateDeviceIsStackedKey as String: false,
-  kAudioAggregateDeviceTapAutoStartKey as String: true,
+  kAudioAggregateDeviceIsPrivateKey as String:     true,
+  kAudioAggregateDeviceIsStackedKey as String:     false,
+  kAudioAggregateDeviceTapAutoStartKey as String:  true,
   kAudioAggregateDeviceSubDeviceListKey as String: [
     [kAudioSubDeviceUIDKey: outputUID]
   ],
   kAudioAggregateDeviceTapListKey as String: [
     [
       kAudioSubTapUIDKey: tapDesc.uuid.uuidString,
-      kAudioSubTapDriftCompensationKey: true,  // CFNumber non-zero per CoreAudio.h
+      kAudioSubTapDriftCompensationKey: true,
     ]
   ],
 ]
@@ -183,25 +350,11 @@ var aggID: AudioObjectID = kAudioObjectUnknown
 let st = AudioHardwareCreateAggregateDevice(aggDesc as CFDictionary, &aggID)
 ```
 
-Key rules confirmed across all surveyed implementations:
+Universal rules confirmed across all surveyed implementations:
 
-- The tap list entries must be dictionaries with `kAudioSubTapUIDKey` string entries, never `CATapDescription` objects. Muesli's source comment: "passing objects crashes CoreAudio."
-- `kAudioSubTapDriftCompensationKey` must be set per sub-tap. OMI's source comment: without it, the aggregate device's clock drifts relative to the real output device and "the system resamples on every IO cycle to compensate. That resampling produces periodic crackling/artifacts in *all* system audio playback (music, calls, etc.) even though we're only reading from the tap."
-- Anchor with `kAudioAggregateDeviceMainSubDeviceKey` + `kAudioAggregateDeviceSubDeviceListKey` set to the real default output. AudioCap and OMI do this; bare tap-only aggregates work but anchoring keeps clock alignment correct.
-
-### Stream format
-
-```swift
-var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.stride)
-var tapASBD = AudioStreamBasicDescription()
-var addr = AudioObjectPropertyAddress(
-  mSelector: kAudioTapPropertyFormat,
-  mScope: kAudioObjectPropertyScopeGlobal,
-  mElement: kAudioObjectPropertyElementMain
-)
-AudioObjectGetPropertyData(tapID, &addr, 0, nil, &size, &tapASBD)
-let sourceFormat = AVAudioFormat(streamDescription: &tapASBD)!
-```
+- Tap list entries must be **dictionaries with `kAudioSubTapUIDKey` string entries**, never `CATapDescription` objects (Muesli comment: "passing objects crashes CoreAudio").
+- `kAudioSubTapDriftCompensationKey` must be set per sub-tap (OMI: without it the aggregate clock drifts and the system resamples on every IO cycle, producing periodic crackling in *all* system audio playback).
+- Anchor with `kAudioAggregateDeviceMainSubDeviceKey` + `kAudioAggregateDeviceSubDeviceListKey` set to the real default output.
 
 ### IOProc and buffer materialization
 
@@ -222,9 +375,9 @@ let st1 = AudioDeviceCreateIOProcIDWithBlock(&procID, aggID, queue, ioBlock)
 let st2 = AudioDeviceStart(aggID, procID)
 ```
 
-`AVAudioPCMBuffer(pcmFormat:bufferListNoCopy:deallocator:)` is the pattern used by AudioCap and argmax-sdk-swift-playground. Replaces the manual `CMBlockBufferGetDataPointer` + `memcpy` in the current `SysAudioSource.swift`.
+`AVAudioPCMBuffer(pcmFormat:bufferListNoCopy:deallocator:)` is the Apple-sample-blessed pattern. It replaces the manual `CMBlockBufferGetDataPointer` + `memcpy` currently in `SysAudioSource.swift`.
 
-### Teardown order (mandatory, top to bottom)
+### Teardown (universal order)
 
 ```
 1. AudioDeviceStop(aggID, procID)
@@ -233,32 +386,25 @@ let st2 = AudioDeviceStart(aggID, procID)
 4. AudioHardwareDestroyProcessTap(tapID)
 ```
 
-This order is universal across AudioCap, OMI, Muesli, OpenOats, Kaset, argmax, audiotee. Reversing or skipping leaks audio objects that survive until reboot.
+Reversing or skipping leaks audio objects that survive until reboot.
 
 ### Stale-aggregate cleanup at startup
 
-```swift
-// Enumerate kAudioHardwarePropertyDevices and destroy any aggregate whose UID
-// begins with "com.victor-software-house.chronicle.sysaudio." — leftovers from
-// prior crashes or kill -9. Muesli + Kaset both do this; otherwise Audio MIDI
-// Setup accumulates orphan devices.
-```
+Enumerate `kAudioHardwarePropertyDevices` and destroy any aggregate whose UID begins with the chronicle prefix. Muesli + Kaset both do this; otherwise Audio MIDI Setup accumulates orphan devices.
 
-### Default-output-device change listener (production-grade)
+### Default-output-device change listener
 
-Muesli installs an `AudioObjectPropertyListenerBlock` on `kAudioHardwarePropertyDefaultOutputDevice`. When the operator switches outputs (AirPods sleep/wake, Bluetooth swap, monitor unplug), the aggregate device's clock anchor goes stale and audio becomes silent or corrupted. The listener triggers full teardown + rebuild.
+Install an `AudioObjectPropertyListenerBlock` on `kAudioHardwarePropertyDefaultOutputDevice`. When the operator switches outputs (AirPods sleep/wake, Bluetooth swap, monitor unplug), the aggregate's clock anchor goes stale. The listener triggers full teardown + rebuild. Required for chronicle's 24/7 daemon profile; not needed for short-run apps.
 
-Chronicle should follow the same pattern for `chronicle sysaudio` because it is a 24/7 daemon. Mic source does not need it.
+### All-zero-buffer drift recovery (Apple Forum 825780)
 
-### IOProc-all-zero failure mode (open issue)
+Apple Developer Forum [thread 825780](https://developer.apple.com/forums/thread/825780) (macOS 26.5 Beta, MacBook Air M2) documents a long-session failure where `AudioDeviceIOProc` keeps firing but every PCM sample is exactly `0.0f` while system audio is still audible. Heartbeat, timestamps, and `kAudioProcessPropertyIsRunningOutput` all read normal. Workaround: full teardown and rebuild. Detection is hard because all-zero is indistinguishable from legitimate silence.
 
-Apple Developer Forum [thread 825780](https://developer.apple.com/forums/thread/825780) (macOS 26.5 Beta, MacBook Air M2) documents a long-session failure mode where `AudioDeviceIOProc` keeps firing at expected cadence but every PCM sample is exactly `0.0f` while system audio is still audible. Heartbeat, timestamps, `kAudioDevicePropertyDeviceIsRunningSomewhere`, and `kAudioProcessPropertyIsRunningOutput` all read normal. Workaround: full teardown and rebuild of tap + aggregate device. Detection is hard because all-zero is indistinguishable from legitimate silence.
-
-Chronicle mitigation strategy for FR-1 / FR-3:
+Chronicle mitigation:
 
 - Run an RMS-on-rolling-window heartbeat as a `--verbose` diagnostic.
 - If RMS has been zero for ≥ N minutes AND `kAudioProcessPropertyIsRunningOutput` reports active output on any non-self process, schedule a rebuild.
-- Make the rebuild policy operator-configurable. False positives during quiet meetings are worse than silent dropouts in some workflows.
+- Make the rebuild policy operator-configurable. False positives during legitimately quiet meetings are worse than silent dropouts in some workflows.
 
 ### Permission probing
 
@@ -266,119 +412,134 @@ There is no public TCC preflight API for `kTCCServiceAudioCapture`. Evidence:
 
 - AudioCap (`AudioCap/ProcessTap/AudioRecordingPermission.swift`) uses **private TCC SPI** (`TCCAccessPreflight` and `TCCAccessRequest` from `/System/Library/PrivateFrameworks/TCC.framework`) behind a build flag.
 - OMI source comment: "For Core Audio Taps, there's no explicit permission API. The system will prompt when we first try to create a tap."
-- Kaset uses `CGPreflightScreenCaptureAccess()` as a proxy and notes that "When permission is missing the tap APIs return `noErr` but feed us only zeros while still installing the mute on WebKit" — so a first-buffer watchdog is still required.
+- Kaset uses `CGPreflightScreenCaptureAccess()` as a proxy and notes the limitation.
 
-Chronicle decision: rely on `NSAudioCaptureUsageDescription` + the system's first-use prompt + first-valid-buffer watchdog. No private TCC SPI in shipped builds. A `--verbose` diagnostic surface should report what permission state is observable from public API.
+Chronicle decision: rely on `NSAudioCaptureUsageDescription` + first-use prompt + first-valid-buffer watchdog. **No private TCC SPI in shipped builds.** A `--verbose` diagnostic should report what permission state is observable from public API.
 
-### CoreAudio HAL is synchronous IPC to coreaudiod
+### Synchronous-IPC reality
 
 OMI source comment: "All CoreAudio HAL calls (CreateTap, CreateAggregateDevice, AudioDeviceStart) are synchronous IPC to coreaudiod via mach_msg. After wake from sleep the daemon can take seconds to respond, blocking the caller." Dispatch all setup/teardown calls to a dedicated `DispatchQueue`, not the main thread or actor isolation boundary.
 
 ## Storage Recipe (FR-1)
 
-### Confirmed via local repro on macOS 26.5
+### Confirmed via local repro on macOS 26.5 (2026-05-13)
 
 - `OpusCAFSink` writes `kAudioFileCAFType` with `kAudioFormatOpus` packets via `AudioFileWritePackets`.
-- Exit without `AudioFileClose` → `ffprobe` reports `Missing packet table. It is required when block size or frame size are variable`; `afinfo` reports `audio packets: 0`. File is unreadable.
-- Exit after `AudioFileClose` → file is valid; `afinfo` reports `optimized`, correct packet count and duration.
+- Exit without `AudioFileClose` → `ffprobe` reports `Missing packet table. It is required when block size or frame size are variable`; `afinfo` reports `audio packets: 0`. File unreadable.
+- Exit after `AudioFileClose` → file valid; `afinfo` reports `optimized`, correct packet count and duration.
 
-`AudioFileWritePackets` does not flush the variable-bitrate packet table incrementally on Tahoe 26.5. The packet table is written at close time.
+`AudioFileWritePackets` does not flush the variable-bitrate packet table incrementally on Tahoe 26.5. The packet table is written at close time. This invalidates ADR-0002's original "~20 ms loss" claim for the CAF path.
 
-### Crash-safe Opus storage options
+### Decision: segmented Opus CAF (rotate-and-close)
 
-#### Option A: Segmented Opus CAF (rotate-and-close)
+Keep `OpusCAFSink` and add rotation. Cut a new `.caf` segment every N seconds (PRD default 60 s; smaller for stricter resilience). Close the previous segment before starting the next. Crash loses only the current open segment. Concatenation at read time via `ffmpeg -f concat` or chronicle's own merge subcommand.
 
-Keep `OpusCAFSink` and add rotation. Cut a new `.caf` segment every N seconds (PRD default 60 s; smaller for stricter resilience). Close the previous segment before starting the next. Crash loses only the current open segment. Concatenation at read time via `ffmpeg -f concat`.
+For higher resilience down the road, evaluate:
 
-- Good, because zero new dependencies.
-- Good, because Apple-native; reads in every macOS tool.
-- Good, because matches FR-1 acceptance Gherkin closely.
-- Bad, because every rotation closes a file and opens a new one — non-zero CPU and IO.
-- Bad, because crash loss can be up to one full segment rather than ~20 ms.
+- **Manual Ogg-Opus muxer** over AVAudioConverter Opus packets, per [IETF RFC 7845 / draft-ietf-codec-oggopus](https://datatracker.ietf.org/doc/draft-ietf-codec-oggopus/10/). Each Ogg page is self-framed + CRC32-checked; truncation drops only the in-flight page. ~80-120 LOC. Restores the original ~20 ms-loss target.
+- **libopusenc XCFramework** (`sbooth/opus-binary-xcframework`). Native Ogg-Opus framing owned by upstream. Adds a vendored dependency.
 
-#### Option B: Ogg-Opus muxer over AVAudioConverter Opus packets
+ADR-0002 will be amended in a follow-up to reflect that CAF crash-safety comes from rotation + close, not container append.
 
-Use the existing AVAudioConverter Opus pipeline to emit packets. Wrap packets manually in Ogg pages (Ogg framing per [IETF RFC 7845 / draft-ietf-codec-oggopus](https://datatracker.ietf.org/doc/draft-ietf-codec-oggopus/10/)). Flush page after every K packets (~20 ms × K). Each page is self-describing and CRC32-checked. Mid-stream truncation drops only the in-flight page.
+## Operational fallback during transition
 
-- Good, because matches the original ADR-0002 "~20 ms loss" claim.
-- Good, because `.opus` files are the universal external interchange format.
-- Good, because still uses Apple's Opus encoder; no libopus dep.
-- Good, because reference implementations exist: `element-hq/swift-ogg` and `symblai/opus-encdec` document the page layout; the muxer side is roughly 80-120 LOC.
-- Bad, because we own the muxer correctness bug surface (lacing values, page sequence numbers, granule position).
-- Bad, because tests must include third-party-decoder validation (`ffprobe`, `opusinfo`).
-
-#### Option C: libopusenc XCFramework (`sbooth/opus-binary-xcframework`)
-
-Vendor Opus + Opusfile + libopusenc as an SPM binary target. Use libopusenc, which natively writes Ogg-Opus with proper framing.
-
-- Good, because Ogg framing is fully owned by upstream Xiph code.
-- Good, because the upstream library is heavily used and audited.
-- Bad, because adds a non-Apple dependency.
-- Bad, because requires the matching Ogg XCFramework dependency.
-- Neutral, because the XCFramework binary target keeps build complexity reasonable.
-
-### Recommendation
-
-Ghost-deploy Option A (segmented CAF) first because it is the fastest path to a correctness-aligned default. Track Option B as the follow-up when chronicle's resilience guarantees need to drop from segment-loss to packet-loss, and when external `.opus` interop is desired by an operator workflow. Treat Option C as the escape hatch if Option B muxer correctness becomes a maintenance burden.
-
-ADR-0002 amendment scope: "Opus is encoded via Apple AudioToolbox; default container is CAF in segmented rotate-and-close mode. `.opus` (Ogg) export is via on-demand `ffmpeg -i in.caf -c:a copy out.opus` at consumer time; in-process Ogg muxing remains a future option (Option B above)."
+Until `Core/Audio/CoreAudioTapSource` lands, the ad-hoc `/tmp/catap_record.swift` + `/tmp/catap_supervisor.sh` from the 2026-05-14 incident provide a working CoreAudio tap capture. They are **not** production-clean and must be folded into the repo. Cleanup tracked in [`docs/STATUS.md`](../STATUS.md#pending-cleanup-from-2026-05-14-live-capture-incident).
 
 ## Consequences
 
 ### Positive
 
-- `sysaudio` moves to the current macOS audio-specific API instead of a screen-capture API used only for audio.
-- TCC copy changes from Screen Recording folklore to explicit System Audio Recording usage text via `NSAudioCaptureUsageDescription`.
-- The implementation aligns with current successful Swift references (`AudioCap`, `AudioTee`, `Muesli`) and Apple's CoreAudio tap sample.
-- `SCStream` can remain available later for actual screen/video capture without carrying system-audio risk.
-- The Opus default can still land, but only with a segment-close resilience model that matches observed CAF behavior.
+- `sysaudio` moves to the current macOS audio-specific API, validated on a real call.
+- TCC copy changes from "Screen Recording folklore" to explicit System Audio Recording usage text via `NSAudioCaptureUsageDescription`.
+- Implementation aligns with current production Swift references (~13 surveyed projects).
+- `SCStream` can remain available later for actual screen + video capture without carrying system-audio risk.
+- Mic + sys can be hardware-synced via aggregate device in a future iteration (FR-4 streaming-diarize benefit).
+- The `kTCCServiceAudioCapture` permission is independent of Developer ID signing; ad-hoc dev builds work identically to a future signed build.
 
 ### Negative
 
-- CoreAudio tap implementation is lower-level and easier to leak resources. Mitigation: wrap tap, aggregate device, and IO proc in one `CoreAudioSystemAudioSource` owner with idempotent cleanup in every failure path.
-- There is no public system-audio TCC preflight API. Mitigation: include `NSAudioCaptureUsageDescription`, rely on first-start prompt, and keep a first-valid-buffer watchdog with specific CoreAudio-tap error messages.
-- Opus CAF no longer satisfies the previously claimed ~20 ms crash-loss story. Mitigation: rotate and close segments at PRD-accepted intervals (≤ 60 s), keep rolling raw PCM scratch for premium-lossless windows, and only claim ~20 ms loss if a later Ogg muxer or proven incremental packet-table strategy passes crash tests.
-- Tests must become more realistic. Current Opus truncate test closes the file before truncating, so it does not simulate crash. Mitigation: add a subprocess crash test that writes packets and exits without `AudioFileClose`, then asserts expected behavior for the chosen container strategy.
+- CoreAudio tap implementation is lower-level and easier to leak resources. Mitigation: wrap tap + aggregate + IO proc in one `CoreAudioTapSource` owner with idempotent cleanup in every failure path; add startup orphan sweep.
+- No public system-audio TCC preflight API. Mitigation: include `NSAudioCaptureUsageDescription`, rely on first-start prompt, keep a first-valid-buffer watchdog.
+- Opus CAF resilience drops from "~20 ms in-flight packet" (false claim) to "current 60 s segment" (real). Mitigation: shorter segments + later Ogg-muxer follow-up.
+- Default-output-device change requires a listener + rebuild path. Mitigation: implement at the same time as `CoreAudioTapSource`.
+- Long-session all-zero-buffer drift mode requires RMS heartbeat. Mitigation: ship as `--verbose` diagnostic first; promote to auto-rebuild after observing real-world cadence.
+- `TCCPreflight.swift` should be renamed or narrowed: the screen-recording preflight remains useful only if SCStream is kept for future video work.
 
 ### Neutral
 
-- ADR-0002 needs amendment or a follow-up ADR note: "CAF is the Opus container, but resilience comes from rotation + close, not CAF packet-data append alone."
 - `scripts/make-app.sh` remains useful because Tahoe TCC UI management works best with a bundled app identity.
-- `TCCPreflight` should be narrowed or renamed: screen preflight remains relevant to future screen capture, not CoreAudio system-audio capture.
+- `Sources/Chronicle/Core/Audio/SysAudioSource.swift` becomes vestigial; delete after one release.
+- The direct TCC.db writes performed during the incident (user + system DB) should be reverted; chronicle.app should be authorised through System Settings or first-launch prompt once the CoreAudio tap path lands.
+
+## Acceptance Criteria
+
+The new backend is accepted when, on the operator's macOS Tahoe 26.5 machine and with no manual TCC.db edits:
+
+```gherkin
+Given chronicle.app is built via scripts/make-app.sh with NSAudioCaptureUsageDescription in Info.plist
+And no row exists for com.victor-software-house.chronicle in either TCC.db
+When chronicle sysaudio is launched for the first time
+Then macOS presents the System Audio Recording permission dialog
+And after the operator approves, `chronicle sysaudio` captures non-zero PCM buffers within 1 s
+And the operator sees the bundle listed under System Settings → Privacy & Security → System Audio Recording
+
+Given the operator switches the default output device mid-capture (e.g. AirPods → speakers)
+When the listener detects the change
+Then the tap + aggregate device are rebuilt within 1 s
+And captured audio resumes without operator action
+
+Given chronicle sysaudio is killed with SIGKILL after 130 s
+Then the previous segments (~60 s + ~60 s) are valid Opus CAF files playable in afplay
+And the in-flight segment loses no more than its remaining 10 s of audio
+And finals.sys.md contains all finals committed before the kill
+```
+
+Until those pass on a clean machine, ADR-0004 stays Accepted-pending-verification.
 
 ## Related
 
 - **PRD**: [`PRD-001: Resilient multi-source chronicle daemon`](../prd/PRD-001-resilient-multi-source-daemon.md)
 - **ADRs**:
   - [`ADR-0001: Modular pipeline architecture`](ADR-0001-modular-pipeline-architecture.md)
-  - [`ADR-0002: Audio storage format`](ADR-0002-audio-storage-format.md) — requires amendment for CAF crash-safety semantics
+  - [`ADR-0002: Audio storage format`](ADR-0002-audio-storage-format.md) — requires follow-up amendment for CAF segment-and-close semantics
 - **Implementation files affected**:
   - `Info.plist`
-  - `Sources/Chronicle/Core/Audio/SysAudioSource.swift`
-  - `Sources/Chronicle/Core/Audio/TCCPreflight.swift`
-  - `Sources/Chronicle/Core/Sinks/OpusCAFSink.swift`
+  - `Sources/Chronicle/Core/Audio/SysAudioSource.swift` (deprecate, then delete)
+  - `Sources/Chronicle/Core/Audio/CoreAudioTapSource.swift` (new)
+  - `Sources/Chronicle/Core/Audio/TCCPreflight.swift` (narrow or delete)
+  - `Sources/Chronicle/Core/Sinks/OpusCAFSink.swift` (add rotation)
   - `Sources/Chronicle/Subcommands/SysAudio.swift`
   - `Tests/ChronicleTests/Audio/`
   - `Tests/ChronicleTests/Sinks/`
-  - `AGENTS.md`
-  - `README.md`
-  - `docs/STATUS.md`
-- **External evidence**:
-  - Apple Developer Documentation: [Capturing system audio with Core Audio taps](https://developer.apple.com/documentation/coreaudio/capturing-system-audio-with-core-audio-taps)
-  - Apple Developer Documentation: [Capturing screen content in macOS](https://developer.apple.com/documentation/ScreenCaptureKit/capturing-screen-content-in-macos)
-  - Apple Support: [Control access to screen and system audio recording on Mac](https://support.apple.com/en-afri/guide/mac-help/control-access-screen-system-audio-recording-mchld6aa7d23/26/mac/26)
-  - Apple Developer Forum [thread 825780](https://developer.apple.com/forums/thread/825780) — IOProc all-zero failure on Tahoe 26.5
-  - `insidegui/AudioCap` — [ProcessTap.swift](https://github.com/insidegui/AudioCap/blob/main/AudioCap/ProcessTap/ProcessTap.swift), [AudioRecordingPermission.swift](https://github.com/insidegui/AudioCap/blob/main/AudioCap/ProcessTap/AudioRecordingPermission.swift) (private TCC SPI behind build flag)
+  - `AGENTS.md`, `README.md`, `docs/STATUS.md`
+- **Apple references**:
+  - [Capturing system audio with Core Audio taps](https://developer.apple.com/documentation/coreaudio/capturing-system-audio-with-core-audio-taps)
+  - [Capturing screen content in macOS](https://developer.apple.com/documentation/ScreenCaptureKit/capturing-screen-content-in-macos)
+  - [Control access to screen and system audio recording on Mac](https://support.apple.com/en-afri/guide/mac-help/control-access-screen-system-audio-recording-mchld6aa7d23/26/mac/26)
+  - [Audio Input Entitlement](https://developer.apple.com/documentation/BundleResources/Entitlements/com.apple.security.device.audio-input)
+  - [Configuring the macOS App Sandbox](https://developer.apple.com/documentation/xcode/configuring-the-macos-app-sandbox)
+  - [macOS Tahoe 26 Release Notes](https://developer.apple.com/documentation/macos-release-notes/macos-26-release-notes)
+  - Apple Developer Forum [thread 825780](https://developer.apple.com/forums/thread/825780) — IOProc all-zero failure
+  - Apple Developer Forum [thread 819406](https://developer.apple.com/forums/thread/819406) — SCStream permissions lost across builds
+- **Community evidence**:
+  - [CapSoftware/Cap #1722](https://github.com/CapSoftware/Cap/issues/1722) — SCStream + ad-hoc signing failure root cause (2026-04-09)
+  - [trycua/cua #870](https://github.com/trycua/cua/issues/870) — Tahoe requires .app bundle for Privacy UI listing (2026-01-21)
+  - [matthartman/ghost-pepper #21](https://github.com/matthartman/ghost-pepper/issues/21) — Hardened Runtime audio-input entitlement stripping (2026-04-06)
+  - `insidegui/AudioCap` — [ProcessTap.swift](https://github.com/insidegui/AudioCap/blob/main/AudioCap/ProcessTap/ProcessTap.swift), [AudioRecordingPermission.swift](https://github.com/insidegui/AudioCap/blob/main/AudioCap/ProcessTap/AudioRecordingPermission.swift)
   - `BasedHardware/omi` — [SystemAudioCaptureService.swift](https://github.com/BasedHardware/omi/blob/main/desktop/Desktop/Sources/SystemAudioCaptureService.swift)
   - `pHequals7/muesli` — [CoreAudioSystemRecorder.swift](https://github.com/pHequals7/muesli/blob/main/native/MuesliNative/Sources/MuesliNativeApp/CoreAudioSystemRecorder.swift), migration commit [ada9493](https://github.com/pHequals7/muesli/commit/ada94936c0863e494305580cfceeaed8bd62fdeb)
   - `yazinsai/OpenOats` — [SystemAudioCapture.swift](https://github.com/yazinsai/OpenOats/blob/main/OpenOats/Sources/OpenOats/Audio/SystemAudioCapture.swift)
   - `sozercan/kaset` — [ProcessTapHelper.swift](https://github.com/sozercan/kaset/blob/main/Sources/Kaset/Services/Audio/ProcessTapHelper.swift)
   - `argmaxinc/argmax-sdk-swift-playground` — [ProcessTapper.swift](https://github.com/argmaxinc/argmax-sdk-swift-playground/blob/main/Playground/Audio/ProcessTapper.swift) (WhisperKit integration)
   - `makeusabrew/audiotee` — [AudioTapManager.swift](https://github.com/makeusabrew/audiotee/blob/main/Sources/AudioTeeCore/Core/AudioTapManager.swift)
-  - `atelier-socle/swift-capture-kit` — [PCM ring buffer fix](https://github.com/atelier-socle/swift-capture-kit/commit/15a9d1009ab8f4e1022ec9a36d4abb6f0df08882) (AAC-LC frame alignment)
+  - `atelier-socle/swift-capture-kit` — [PCM ring buffer fix](https://github.com/atelier-socle/swift-capture-kit/commit/15a9d1009ab8f4e1022ec9a36d4abb6f0df08882) (AAC-LC frame alignment, applies to Opus too)
   - `pablo-health/AudioCaptureKit` — [Repository](https://github.com/pablo-health/AudioCaptureKit)
-  - `alta/swift-opus` — [Type-safe Opus packet bindings](https://github.com/alta/swift-opus)
-  - `sbooth/opus-binary-xcframework` — [Opus + Opusfile + libopusenc SPM binary](https://github.com/sbooth/opus-binary-xcframework)
-  - `element-hq/swift-ogg` — [opus/ogg ↔ m4a converter](https://github.com/element-hq/swift-ogg)
+  - `sbetko/catap` — [Python bindings + recording utilities](https://github.com/sbetko/catap)
+  - `tenequm/blackbox` — [CATap + AVAudioEngine dual pipelines](https://github.com/tenequm/blackbox)
+  - `AdelElo13/mac-control-mcp` — [TCC + .app bundle fix commit](https://github.com/AdelElo13/mac-control-mcp/commit/723ba0c5c33c56e35b2dd571fc343be5d4e575a9) (2026-04-17)
+  - [Rogue Amoeba: MacOS 26 (Tahoe) Includes Important Audio-Related Bug Fixes](https://weblog.rogueamoeba.com/2025/11/04/macos-26-tahoe-includes-important-audio-related-bug-fixes/) (2025-11-04) — independent confirmation that Tahoe 26.0 had broken audio capture paths and 26.1 fixed most of them
+  - [Recording system audio in Electron on macOS](https://paynedigital.com/articles/recording-system-audio-electron-macos-approaches) (2025-10-24) — third-party analysis of CoreAudio tap vs Chromium getDisplayMedia
+- **Storage references**:
   - IETF [draft-ietf-codec-oggopus-10](https://datatracker.ietf.org/doc/draft-ietf-codec-oggopus/10/) — Ogg-Opus framing spec
-  - Apple [CAF File Specification](https://developer.apple.com/library/archive/documentation/MusicAudio/Reference/CAFSpec/CAF_overview/CAF_overview.html) — Packet Table chunk + Free chunk semantics
+  - Apple [CAF File Specification](https://developer.apple.com/library/archive/documentation/MusicAudio/Reference/CAFSpec/CAF_overview/CAF_overview.html) — Packet Table + Free chunk semantics
+  - `alta/swift-opus`, `sbooth/opus-binary-xcframework`, `element-hq/swift-ogg`
