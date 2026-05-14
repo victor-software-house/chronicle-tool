@@ -40,6 +40,11 @@ Current state vs PRD-001 rollout: **P0 (modular refactor) done; P7
 (sysaudio) done. Next: P11 (Opus production sink) + parity test against the
 WAV baseline.**
 
+For a one-screen overview of every phase + current task state, see
+[`docs/STATUS.md`](docs/STATUS.md). For agent / contributor operational
+guidance (orientation order, hard rules for changes, parity reference
+data, commit style), see [`AGENTS.md`](AGENTS.md).
+
 ## Requirements
 
 - **macOS 26.0 (Tahoe) or later**
