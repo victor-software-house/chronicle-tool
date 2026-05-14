@@ -144,11 +144,11 @@ enabled.
 
 ## 5. Functional Requirements
 
-### FR-1: Segmented audio capture (`--rotate-audio <seconds>`, default codec = Opus)
+### FR-1: Segmented audio capture (`--rotate-audio <seconds>`, default codec = Opus-in-CAF)
 
 The mic and sysaudio daemons capture audio via a sink protocol
-(`AudioSegmentSink`). The **production default sink is `OpusOggSink`**
-(Opus 24 kbps mono in Ogg, per [ADR-0002](../adr/ADR-0002-audio-storage-format.md));
+(`AudioSidecarSink`). The **production default sink is `OpusCAFSink`**
+(Opus 24 kbps mono in CAF, per [ADR-0002](../adr/ADR-0002-audio-storage-format.md) amended 2026-05-13);
 `WAVSegmentSink` is retained as a transitional default during P0/P1
 refactor parity validation and long-term as an explicit-export sink.
 Rotation cuts a new file every N seconds (default 60).
@@ -160,11 +160,11 @@ on-demand lossless export.
 **Acceptance criteria:**
 
 ```gherkin
-Given the daemon is running with --save-audio session.opus --audio-format opus --rotate-audio 60
+Given the daemon is running with --save-audio session.caf --audio-format opus --rotate-audio 60
 When 130 seconds of audio have streamed and the daemon is killed with SIGKILL
-Then audio/session-000001.opus and audio/session-000002.opus play cleanly in afplay
-And audio/session-000003.opus loses at most the in-flight ~20 ms Ogg page
-And `chronicle transcribe -i audio/session-000003.opus` succeeds without repair
+Then audio/session-000001.caf and audio/session-000002.caf play cleanly in afplay
+And audio/session-000003.caf loses at most the in-flight ~20 ms Opus packet
+And `chronicle transcribe -i audio/session-000003.caf` succeeds without repair
 And concatenating all three through `ffmpeg -f concat` reconstructs the full session
 And the on-disk size of 60 s of speech is between 130 KB and 250 KB
 ```
@@ -186,7 +186,7 @@ And the daemon evicts scratch segments older than the configured TTL (default 30
 ```
 
 **Files:**
-- `Sources/Chronicle/Core/Sinks/OpusOggSink.swift` — production default, page-flush every ~20 ms.
+- `Sources/Chronicle/Core/Sinks/OpusCAFSink.swift` — production default, AVAudioConverter (PCM → Opus) + AudioFile (CAF write), packet flush every ~20 ms.
 - `Sources/Chronicle/Core/Sinks/WAVSegmentSink.swift` — transitional + export sink, explicit `rotate()` API.
 - `Sources/Chronicle/Core/Sinks/RollingPCMScratchSink.swift` — bounded-size append-only ring of raw PCM, auto-prunes past TTL.
 - `Sources/Chronicle/Subcommands/Mic.swift` / `Sources/Chronicle/Subcommands/SysAudio.swift` — wire `--audio-format`, `--rotate-audio`, `--scratch-ttl` flags into the pipeline.
@@ -402,11 +402,11 @@ And `chronicle transcribe -i session-003.wav -o out` succeeds without errors
 
 | Risk | Severity | Likelihood | Mitigation |
 |------|----------|------------|------------|
-| **R-A1: Opus 24 kbps decode degrades `SpeechAnalyzer` accuracy vs WAV reference** | Medium | Low | P11 acceptance test: re-transcribe the 2026-05-13 6870 s mic-master via Opus 24 kbps round-trip and assert WER delta ≤ 1 % vs WAV baseline. If exceeded, fall back to Opus 32 kbps mono or CAF + Opus per [ADR-0002](../adr/ADR-0002-audio-storage-format.md). |
+| **R-A1: Opus 24 kbps decode degrades `SpeechAnalyzer` accuracy vs WAV reference** | Medium | Low | P11 acceptance test: re-transcribe the 2026-05-13 6870 s mic-master via Opus 24 kbps round-trip and assert WER delta ≤ 1 % vs WAV baseline. If exceeded, fall back to Opus 32 kbps mono or raw-PCM scratch per [ADR-0002](../adr/ADR-0002-audio-storage-format.md). |
 | `SCStream` audio capture requires entitlement we can't easily provide for an unsigned binary | Medium | Medium | First implementation attempt validates with TCC prompt for Screen Recording; document the friction; provide ad-hoc signing instructions if needed. |
 | `SortformerDiarizer` adds per-buffer latency that pushes volatile updates beyond the 200 ms NFR | Medium | Low | Run the diarizer in a separate `Task` reading from the multicast stream; do not let it block the analyzer's stream. Measure on the 6870 s reference session. |
 | Foundation Models live tagging trips the safety guardrail (`Detected content likely to be unsafe`) on certain transcript chunks | Low | Medium | Catch the error, skip the chunk, log a warning to stderr, continue. Already seen on the mic JSON test. |
-| Audio rotation creates "gaps" between segments because `installTap` keeps delivering buffers during file swap | Medium | Medium | Lock the rotation in a serial queue; buffer the in-flight buffer until the new file is ready (≤ 50 ms swap). Worst case: one buffer (~85 ms) overlap, never a gap. Ogg page boundaries are already independent so the Opus sink doesn't see this risk; only `WAVSegmentSink` does. |
+| Audio rotation creates "gaps" between segments because `installTap` keeps delivering buffers during file swap | Medium | Medium | Lock the rotation in a serial queue; buffer the in-flight buffer until the new file is ready (≤ 50 ms swap). Worst case: one buffer (~85 ms) overlap, never a gap. CAF packet boundaries are independent so the Opus sink doesn't see this risk; only `WAVSidecarSink` (opt-in) does. |
 | Cross-process file races (two daemons writing the same sidecar file) | Low | Low | Each daemon writes its own sidecar set under a distinct subdirectory; `merge` does the unification offline. Document the convention. |
 | Language auto-detect false-flip mid-conversation due to a single foreign word | Medium | Medium | Mitigated by [ADR-0003](../adr/ADR-0003-locale-resolution-policy.md): mandatory candidate-set restriction (default `[en-US, pt-BR]`), 4-knob hysteresis (confidence ≥ 0.70, ≥ 3 consecutive finals, 30 s cooldown, ≥ 30 chars at new locale). Operator can disable detection entirely by pinning `--locale en-US`. |
 
@@ -586,13 +586,13 @@ Order each step so the previous one's receipts feed the next.
 
 1. **P0 — Modular refactor + test target** [DONE 2026-05-13]. Implemented [ADR-0001](../adr/ADR-0001-modular-pipeline-architecture.md): extracted `Core/Audio`, `Core/Speech`, `Core/Diarize`, `Core/LLM`, `Core/Sinks`, `Core/Runtime`; converted each subcommand to a thin veneer; added `ChronicleTests` Swift Package test target; verified behaviour parity (byte-identical transcribe.txt + diarize segments) against the 2026-05-13 Zoom session receipts.
 2. **P7 — FR-3: `sysaudio` subcommand** (promoted). Validates the `AudioSource` protocol from ADR-0001 against a real second implementation before the rest of the FRs build on it. Only `SysAudioSource` is new; sidecar sinks reused. Catches TCC / signing friction early; lets the upcoming P11 Opus parity test validate against two real sources.
-3. **P11 — FR-1 (Opus production sink) per [ADR-0002](../adr/ADR-0002-audio-storage-format.md).** Implement `OpusOggSink` + `RollingPCMScratchSink`, wire `--audio-format opus|wav|pcm` to the audio sinks, run the accuracy-parity test against the 2026-05-13 reference session and assert WER delta ≤ 1 % vs the WAV baseline. Flip the default from WAV to Opus once parity is confirmed. **Skips the transitional WAV-rotation step** (formerly P1) since Opus + Ogg is crash-safe by construction.
+3. **P11 — FR-1 (Opus production sink) per [ADR-0002](../adr/ADR-0002-audio-storage-format.md) (amended 2026-05-13).** Implement `OpusCAFSink` + `RollingPCMScratchSink`, wire `--audio-format opus|wav|pcm` to the audio sinks, run the accuracy-parity test against the 2026-05-13 reference session and assert WER delta ≤ 1 % vs the WAV baseline. Flip the default from WAV to Opus-in-CAF once parity is confirmed. **Skips the transitional WAV-rotation step** (formerly P1) since CAF + Opus is crash-safe by construction. `.opus` (Ogg) consumers, if ever needed, use one-line `ffmpeg -i in.caf -c:a copy out.opus` rewrap.
 4. **P3 — FR-2: `JSONLTraceSink` resilience.** Incremental trace via `AtomicFile.appendJSONLine`. Unit + crash-recovery tests (`kill -9` simulation).
 5. **P4 — FR-6: locale auto-detect** per [ADR-0003](../adr/ADR-0003-locale-resolution-policy.md). `LocaleResolver` with candidate-set restriction + 4-knob hysteresis. Unit tests on synthetic NL inputs covering: correct in-set switch, suppression of out-of-set candidates, suppression during cooldown, suppression below min-chars, pin-mode bypass.
 6. **P5 — FR-4: live diarization.** Reuses the existing FluidAudio dep. `BufferMulticast` + `StreamingDiarizer` are unit-testable with `MockAudioSource`. Test against the 2026-05-13 Zoom session offline first, then live.
 7. **P6 — FR-5: live tagging.** Once FR-4 lands, tagging is the smallest layer on top via `ModelHost` + `TagsJSONLSink`.
 8. **P8 — FR-7: `merge` subcommand.** Pure-function; easy to leave for last and unit-test exhaustively.
-9. **P2 — FR-8: `chronicle repair`** (de-prioritised). Only needed for the `--audio-format wav` opt-in path; Opus + Ogg need no repair. Canned malformed-WAV corpus tests.
+9. **P2 — FR-8: `chronicle repair`** (de-prioritised). Only needed for the `--audio-format wav` opt-in path; Opus-in-CAF needs no repair. Canned malformed-WAV corpus tests.
 10. **P9 — Verification pass.** Run the §15 appendix end-to-end on a fresh session. Capture receipts.
 11. **P10 — Documentation pass.** Update README + research-notes + spike doc with the final source code + final numbers.
 
@@ -616,7 +616,7 @@ Order each step so the previous one's receipts feed the next.
 | Issue | Relationship |
 |-------|-------------|
 | [`docs/adr/ADR-0001-modular-pipeline-architecture.md`](../adr/ADR-0001-modular-pipeline-architecture.md) | structural ADR; constrains every FR in this PRD |
-| [`docs/adr/ADR-0002-audio-storage-format.md`](../adr/ADR-0002-audio-storage-format.md) | codec/container ADR for FR-1 — default Opus/Ogg + raw-PCM scratch + ALAC export |
+| [`docs/adr/ADR-0002-audio-storage-format.md`](../adr/ADR-0002-audio-storage-format.md) | codec/container ADR for FR-1 — default Opus-in-CAF (amended 2026-05-13) + raw-PCM scratch + ALAC export |
 | [`docs/adr/ADR-0003-locale-resolution-policy.md`](../adr/ADR-0003-locale-resolution-policy.md) | locale-policy ADR for FR-6 — candidate-set restriction + 4-knob hysteresis |
 | chronicle-tool 0.1.0 (current spike state) | this PRD extends |
 | `chronicle/notes/research-notes.md` Tahoe surface map | this PRD operationalises |

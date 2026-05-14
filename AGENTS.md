@@ -14,7 +14,7 @@ Authoritative reading order for any non-trivial change:
 
 1. [`docs/prd/PRD-001-resilient-multi-source-daemon.md`](docs/prd/PRD-001-resilient-multi-source-daemon.md) — master PRD (FRs, NFRs, rollout, verification appendix).
 2. [`docs/adr/ADR-0001-modular-pipeline-architecture.md`](docs/adr/ADR-0001-modular-pipeline-architecture.md) — protocol-oriented `Core/` + `Subcommands/`. **Implemented (P0).**
-3. [`docs/adr/ADR-0002-audio-storage-format.md`](docs/adr/ADR-0002-audio-storage-format.md) — Opus 24 kbps / Ogg as default; raw-PCM scratch; ALAC export. **Pending (P11).**
+3. [`docs/adr/ADR-0002-audio-storage-format.md`](docs/adr/ADR-0002-audio-storage-format.md) — Opus 24 kbps in CAF as default (amended 2026-05-13 from Ogg); raw-PCM scratch; ALAC export; `.opus` Ogg via on-demand ffmpeg rewrap. **In progress (P11).**
 4. [`docs/adr/ADR-0003-locale-resolution-policy.md`](docs/adr/ADR-0003-locale-resolution-policy.md) — candidate-set restriction + 4-knob hysteresis. **Pending (P4).**
 5. [`docs/STATUS.md`](docs/STATUS.md) — quick-reference roadmap: every phase + current task state in one screen.
 6. [`README.md`](README.md) — operator quick-start, subcommand surface, architecture diagram.

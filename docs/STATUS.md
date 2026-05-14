@@ -13,7 +13,7 @@ Last refresh: 2026-05-13.
 |---|---|---|---|---|
 | **P0** | Modular refactor + test target | — | ✔ **done** | Byte-identical parity vs 2026-05-13 spike on `transcribe` + `diarize`; 13 `Core/` modules; 11 subcommands as thin veneers; `ChronicleTests` target wired. |
 | **P7** | `chronicle sysaudio` subcommand | FR-3 | ✔ **done** | `SCStream` audio-only via `Core/Audio/SysAudioSource`; 4/4 TTS sentences captured exact; Info.plist `NSScreenCaptureUsageDescription` added. |
-| **P11** | Opus production audio sink | FR-1 | ⏳ **next** | `Core/Sinks/OpusOggSink` + `Core/Sinks/RollingPCMScratchSink`; WER delta ≤ 1 % vs WAV baseline on the 6870 s reference; default flips WAV → Opus after parity confirmed. |
+| **P11** | Opus production audio sink | FR-1 | ⏳ **in progress** | `Core/Sinks/OpusCAFSink` + `Core/Sinks/RollingPCMScratchSink` (ADR-0002 amended 2026-05-13: CAF default, not Ogg); WER delta ≤ 1 % vs WAV baseline on the 6870 s reference; default flips WAV → Opus-in-CAF after parity confirmed. |
 | P3 | JSONL incremental trace | FR-2 | ⏳ pending | `Core/Sinks/JSONLTraceSink` via `AtomicFile.appendJSONLine`; `kill -9` mid-write leaves ≤ 1 torn line. |
 | P4 | Locale auto-detect per ADR-0003 | FR-6 | ⏳ pending | `Core/Speech/LocaleResolver`; candidate-set restriction + 4-knob hysteresis; no "random Russian" by construction. |
 | P5 | Live diarization | FR-4 | ⏳ pending | `Core/Audio/BufferMulticast` + `Core/Diarize/StreamingDiarizer`; speakerId merged into finals by audio range. |
@@ -48,7 +48,7 @@ phase done:
 |---|---|---|
 | `AudioSource` | `MicAudioSource` (AVAudioEngine), `SysAudioSource` (SCStream) | `FileAudioSource` (P5 testing); RTSP / Bluetooth (post-PRD) |
 | `TranscriptionSink` | `LiveFileSink`, `FinalsAppendSink` | `JSONLTraceSink` (P3), `TagsJSONLSink` (P6) |
-| audio sidecar sink | `AVAudioFile` WAV (inline in subcommands) | `OpusOggSink` + `RollingPCMScratchSink` (P11); `WAVSegmentSink` retained for export |
+| audio sidecar sink (`AudioSidecarSink`) | inline `AVAudioFile` WAV in subcommands (today) | `OpusCAFSink` + `RollingPCMScratchSink` (P11); `WAVSidecarSink` extracted as opt-in for export |
 | `OfflineDiarizing` | `OfflineDiarizer` (FluidAudio VBx) | — |
 | (planned) `StreamingDiarizing` | — | `StreamingDiarizer` (FluidAudio Sortformer, P5) |
 | `ContentTagger.tagText` / `Summarizer.summarizeText` | cached via `ModelHost.shared` | — |

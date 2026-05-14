@@ -1,17 +1,17 @@
 ---
 title: "Audio storage format for the chronicle daemon"
 adr: ADR-0002
-status: Proposed
+status: Accepted (amended)
 date: 2026-05-13
 prd: "PRD-001-resilient-multi-source-daemon"
-decision: "Opus 24 kbps mono in Ogg as default; rolling raw-PCM scratch for premium-STT bursts; ALAC/CAF for on-demand lossless export"
+decision: "Opus 24 kbps mono in CAF as default; rolling raw-PCM scratch for premium-STT bursts; ALAC/CAF for on-demand lossless export; .opus (Ogg) available as on-demand ffmpeg transcode"
 ---
 
 # ADR-0002: Audio storage format for the chronicle daemon
 
 ## Status
 
-Proposed
+Accepted (amended 2026-05-13 — pre-implementation flip from Option 5 Ogg to Option 6 CAF; see Amendment section).
 
 ## Date
 
@@ -189,9 +189,10 @@ Same codec as Option 5, Apple-native container.
 Chosen scheme: **dual-tier audio storage**, mirroring the HEVC vs raw
 video split already documented in `research-notes.md`.
 
-1. **Default live capture**: **Opus 24 kbps mono in Ogg** (`.opus`).
+1. **Default live capture**: **Opus 24 kbps mono in CAF** (`.caf`).
    Continuous, crash-safe by container design, ~260 MB/day, model-side
-   accuracy validated against the 2026-05-13 Zoom session.
+   accuracy validated against the 2026-05-13 Zoom session. CAF is
+   Apple's canonical container for Opus on macOS (Option 6 below).
 2. **Rolling raw scratch**: last 60-300 s of audio also retained as raw
    PCM (Option 2 format) under `audio/scratch/`. On-demand premium-STT
    bursts pull from the scratch within its TTL; once a segment ages out
@@ -200,25 +201,68 @@ video split already documented in `research-notes.md`.
    high-fidelity copy of a moment, a dedicated subcommand transcodes from
    the rolling scratch (or, if the moment has already aged out, from
    Opus) into ALAC inside CAF (`.caf`).
+4. **On-demand `.opus` (Ogg) export**: when an external tool needs the
+   `.opus` extension specifically, a one-line `ffmpeg -i in.caf -c:a copy
+   out.opus` rewraps without re-encoding. Not a daemon-time concern.
 
 Sink protocol implementations land in `Core/Sinks/`:
 
-- `OpusOggSink` — production default, page-flush every ~20 ms, atomic
-  truncate-recovery semantics from the Ogg spec.
+- `OpusCAFSink` — production default, `AVAudioConverter` (PCM → Opus
+  packets) + `AudioFile` (`kAudioFileCAFType`) for streaming CAF writes.
+  Crash-safe by CAF's chunk design; per-packet flush every ~20 ms.
 - `RollingPCMScratchSink` — bounded-size append-only ring of raw PCM
   segments (e.g. 5 × 60 s = 5 min of lossless headroom). Old segments
   unlink themselves automatically.
-- `WAVSegmentSink` — **retained as a transitional default** during the
-  PRD-001 P0/P1 refactor for parity validation against current outputs,
-  and **kept long-term as an export sink** for ad-hoc lossless dumps
-  (operator may request `--save-audio …wav` for a deliberate session).
+- `WAVSidecarSink` — extracted from current inline WAV-writing in
+  `Subcommands/Mic.swift` + `SysAudio.swift`; **retained as an opt-in
+  sidecar** (`--audio-format wav`) for the rare lossless-by-default
+  request. Not the default after P11.
 - `ALACCAFExportSink` — invoked by a `chronicle export-audio` subcommand
   (future), not by the live daemon.
 
-Encoder is `AVAudioConverter` configured with `AudioStreamBasicDescription`
-`{mFormatID = kAudioFormatOpus, mSampleRate = 16000, mFormatFlags = 0}`,
-fed page-by-page into Ogg via `AudioFileGlobalInfoDictionary` tooling, all
-in Swift. No third-party deps.
+Encoder is `AVAudioConverter` from PCM source to an `AudioStreamBasicDescription`
+`{mFormatID = kAudioFormatOpus, mSampleRate = 48000, mFramesPerPacket = 960,
+mChannelsPerFrame = 1}`; `converter.bitRate = 24_000`. Encoded packets are
+written via `AudioFileWritePackets` against an `AudioFileID` opened with
+`AudioFileCreateWithURL(…, kAudioFileCAFType, …)`. All Apple-native; no
+third-party deps.
+
+## Amendment 2026-05-13
+
+Original proposal picked **Option 5 (Opus-in-Ogg, `.opus`)** as the
+default. Before any P11 code was written, the decision was re-examined
+and flipped to **Option 6 (Opus-in-CAF, `.caf`)**. Reasons:
+
+- **Stated downside of CAF did not apply.** Original wording: "online
+  STT vendors and consumer players generally expect `.opus` (Ogg)".
+  PRD-001 §1 is explicitly on-device, ANE-accelerated, local-first —
+  there is no online STT vendor in the loop. Consumer-player concerns are
+  out of scope for an on-device chronicle whose receipts are not shared.
+- **Apple-native vs. hand-rolled muxer.** Apple's `AudioFile` API
+  writes Opus-in-CAF natively in streaming mode (verified end-to-end on
+  this machine: 5 s test produced a valid CAF + Opus 48 kHz mono file
+  decodable by `ffprobe`). Opus-in-Ogg requires either ~400-450 LOC of
+  hand-rolled RFC 3533 page muxer + RFC 7845 Opus framing, or pulling
+  libopus + libogg XCFrameworks (e.g. element-hq/swift-ogg). Both are
+  testable, but both add a recurring cost (test surface or dep posture)
+  in exchange for a property the on-device daemon does not need.
+- **`.opus` export is one line of ffmpeg.** If an external tool ever
+  demands `.opus` specifically, `ffmpeg -i in.caf -c:a copy out.opus`
+  rewraps without re-encoding, preserving bit-exactness. This is
+  capture-time-zero work.
+- **Crash-safety equivalence.** CAF's chunk layout is designed for
+  streaming writes; `AudioFile` flushes packet-level data continuously
+  (no fixed-size header to patch at finish, unlike RIFF/WAV). Audio loss
+  budget ≤ 60 s per PRD-001 NFR remains met without a `chronicle repair`
+  subcommand for the default codec.
+
+Net impact on P11: ~80 LOC `OpusCAFSink` instead of ~450 LOC
+`OpusOggSink`; same crash-safety, same storage budget, same model
+accuracy guarantee.
+
+Original Option 5 + Option 6 comparison below is preserved verbatim for
+audit; the verdict on Option 6's "narrower third-party tool support" no
+longer applies as a daemon-time concern.
 
 ## Consequences
 
@@ -263,26 +307,31 @@ in Swift. No third-party deps.
 
 ### Neutral
 
-- `AVAudioFile` does not directly write Ogg today; we must use
-  `AudioConverter` + `AudioFile` (lower-level Core Audio APIs) and
-  assemble Ogg pages in Swift, or call into `ExtAudioFile` with the Opus
-  format. This is a one-time implementation detail captured in
-  `OpusOggSink`'s tests, not a recurring cost.
+- `AudioFile` + `AudioFileWritePackets` is the streaming-write path for
+  Opus-in-CAF; `AVAudioConverter` produces the Opus packets. Both are
+  Apple-native and `kAudioFormatOpus` has shipped in AudioToolbox since
+  macOS 11. This is a one-time implementation detail captured in
+  `OpusCAFSink`'s tests, not a recurring cost.
 - Existing offline subcommands (`chronicle transcribe`, `chronicle
   diarize`) require no changes — `AVAudioFile(forReading:)` already
-  decodes Ogg/Opus.
-- The `--save-audio` flag's default behaviour changes (WAV → Opus). The
-  flag accepts an explicit `--audio-format {opus|wav|pcm}` switch for
-  operators who want the legacy default.
+  decodes both CAF/Opus and (since macOS Sequoia) Ogg/Opus.
+- The `--save-audio` flag's default behaviour changes (WAV → Opus-in-CAF).
+  The flag accepts an explicit `--audio-format {opus|wav|pcm}` switch for
+  operators who want the legacy default or pure-PCM scratch.
+- `.opus` (Ogg) consumers remain supported via on-demand
+  `ffmpeg -i in.caf -c:a copy out.opus` rewrap; ffmpeg is a build-time
+  fixture-generator dep already, not a runtime dep.
 
 ## Related
 
 - **PRD**: `docs/prd/PRD-001-resilient-multi-source-daemon.md` — FR-1
   (segmented audio capture), §6 NFR (resilience budget), §7 R-A1 (Opus
-  accuracy mitigation), §11 P1/P11 (rollout sequencing).
+  accuracy mitigation), §11 P11 (rollout sequencing).
 - **ADRs**: [ADR-0001](ADR-0001-modular-pipeline-architecture.md) — the
   sink protocol this ADR plugs into.
 - **Research**: `~/workspace/victor/research/chronicle/notes/research-notes.md`
   — cost model + video-side codec choice this audio decision mirrors.
-- **Implementation**: tasks **P1** (transitional `WAVSegmentSink`),
-  **P11** (production `OpusOggSink` + accuracy parity test).
+- **Implementation**: task **P11** (production `OpusCAFSink` +
+  `RollingPCMScratchSink` + accuracy parity test). P1 (transitional
+  `WAVSegmentSink` rotation) was skipped — Opus-in-CAF is crash-safe
+  enough that the transitional bridge has no value.
