@@ -52,6 +52,17 @@ public final class SysAudioSource: NSObject, AudioSource, SCStreamOutput, @unche
   /// hot path clean.
   public var verbose: Bool = false
 
+  /// True once SCStream has delivered at least one *valid* buffer
+  /// (sane ASBD + non-zero conversion). Used by the buffer-flow watchdog
+  /// to detect silently-denied audio TCC.
+  public private(set) var hasValidBuffer: Bool = false
+
+  /// True once SCStream has delivered at least one buffer with a clearly
+  /// **invalid** ASBD (sample rate 0, bogus bit depth, etc.). That is
+  /// SCK's signature when audio capture is silently denied even though
+  /// `startCapture()` returned.
+  public private(set) var sawInvalidASBD: Bool = false
+
   public init(analyzerFormat: AVAudioFormat, excludeCurrentProcessAudio: Bool = true) {
     self.analyzerFormat = analyzerFormat
     self.excludeSelf = excludeCurrentProcessAudio
@@ -75,15 +86,42 @@ public final class SysAudioSource: NSObject, AudioSource, SCStreamOutput, @unche
   /// Async because `SCShareableContent` and `SCStream.startCapture` are
   /// both async APIs; the legacy completion-handler variants warn under
   /// Swift 6 strict concurrency.
+  /// Hard timeout for the SCStream `startCapture()` await. When TCC is
+  /// unset macOS does NOT throw — it leaks the continuation forever.
+  /// We refuse to wait longer than this and surface a clean error.
+  public static let startTimeoutSeconds: Double = 10.0
+
   public func start() async throws {
     guard !started else { return }
     started = true
 
+    // Preflight TCC. Fails fast with an actionable error instead of
+    // letting SCStream.startCapture() hang on a leaked continuation.
+    let preflight = TCCPreflight.screenRecording()
+    FileHandle.standardError.write(Data(
+      "[sysaudio.tcc] CGPreflightScreenCaptureAccess => \(preflight)\n".utf8
+    ))
+    switch preflight {
+    case .granted:
+      break
+    case .denied, .undetermined:
+      throw SysAudioSourceError.screenRecordingTCCDenied
+    }
+
     // Capture the entire shareable content; we only want the audio mix so
     // the display choice is cosmetic, but SCContentFilter requires one.
+    // Bounded by the same timeout because SCShareableContent has been
+    // known to stall on unhappy systems.
     let content: SCShareableContent
     do {
-      content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+      content = try await withTimeout(
+        seconds: Self.startTimeoutSeconds,
+        label: "SCShareableContent.excludingDesktopWindows"
+      ) {
+        try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+      }
+    } catch is TimeoutError {
+      throw SysAudioSourceError.startTimedOut(seconds: Self.startTimeoutSeconds, stage: "SCShareableContent")
     } catch {
       throw SysAudioSourceError.permissionDenied(underlying: error)
     }
@@ -109,13 +147,50 @@ public final class SysAudioSource: NSObject, AudioSource, SCStreamOutput, @unche
     try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: .global(qos: .userInitiated))
 
     do {
-      try await stream.startCapture()
+      try await withTimeout(
+        seconds: Self.startTimeoutSeconds,
+        label: "SCStream.startCapture"
+      ) {
+        try await stream.startCapture()
+      }
+    } catch is TimeoutError {
+      throw SysAudioSourceError.startTimedOut(seconds: Self.startTimeoutSeconds, stage: "SCStream.startCapture")
     } catch {
       throw SysAudioSourceError.startFailed(underlying: error)
     }
 
     self.stream = stream
+
+    // Buffer-flow watchdog. Audio TCC for the current binary identity
+    // can be denied even though `CGPreflightScreenCaptureAccess()`
+    // returned true (Sequoia/Tahoe split visual and audio capture grants;
+    // dev binaries with unbound Info.plist get attributed weirdly). In
+    // that state SCK happily "starts" the stream and delivers only
+    // placeholder CMSampleBuffers with garbage ASBDs. We refuse to
+    // return from `start()` until at least one real buffer has flowed
+    // through; if none arrives within the budget, throw with the same
+    // actionable remediation as the preflight-denied path.
+    let watchStart = Date()
+    while !hasValidBuffer && Date().timeIntervalSince(watchStart) < Self.firstValidBufferTimeoutSeconds {
+      try? await Task.sleep(nanoseconds: 100_000_000)  // 100 ms poll
+    }
+    if !hasValidBuffer {
+      // Tear down the half-started SCStream so we don't leave it running
+      // in the background once we throw.
+      Task { try? await stream.stopCapture() }
+      throw SysAudioSourceError.audioCaptureSilent(
+        reason: sawInvalidASBD ? .invalidASBD : .noBuffers,
+        waitedSeconds: Self.firstValidBufferTimeoutSeconds
+      )
+    }
   }
+
+  /// Maximum time `start()` will wait for the first valid audio buffer.
+  /// If exceeded, the binary's audio TCC is presumed denied even though
+  /// `CGPreflightScreenCaptureAccess()` may have returned true; we throw
+  /// `audioCaptureSilent` instead of letting the daemon proceed with a
+  /// dead pipeline.
+  public static let firstValidBufferTimeoutSeconds: Double = 5.0
 
   public func stop() {
     guard started, !stopped else { return }
@@ -140,6 +215,24 @@ public final class SysAudioSource: NSObject, AudioSource, SCStreamOutput, @unche
     guard let formatDesc = sampleBuffer.formatDescription,
           let asbd = formatDesc.audioStreamBasicDescription else { return }
 
+    // ASBD sanity. SCK silently delivers placeholder buffers with a
+    // garbage ASBD (sample rate 0, gigantic bytes-per-frame, etc.) when
+    // audio TCC is denied for the calling binary identity. Detect and
+    // record that state so `start()`'s buffer-flow watchdog can throw
+    // `audioCaptureSilent` with an actionable remediation message.
+    let validSampleRate = asbd.mSampleRate >= 8_000 && asbd.mSampleRate <= 192_000
+    let validChannels = asbd.mChannelsPerFrame >= 1 && asbd.mChannelsPerFrame <= 8
+    let validBytesPerFrame = asbd.mBytesPerFrame >= 1 && asbd.mBytesPerFrame <= 64
+    guard validSampleRate && validChannels && validBytesPerFrame else {
+      sawInvalidASBD = true
+      if verbose {
+        FileHandle.standardError.write(Data(
+          "[sysaudio.src] invalid ASBD ignored (sr=\(asbd.mSampleRate) ch=\(asbd.mChannelsPerFrame) bytesPerFrame=\(asbd.mBytesPerFrame)) — likely audio TCC denied\n".utf8
+        ))
+      }
+      return
+    }
+
     var sourceFmt = self.sourceFormat
     if sourceFmt == nil {
       let fmt = AVAudioFormat(streamDescription: withUnsafePointer(to: asbd) { $0 })
@@ -149,7 +242,7 @@ public final class SysAudioSource: NSObject, AudioSource, SCStreamOutput, @unche
         self.converter = BufferConverter(from: fmt, to: analyzerFormat)
         if verbose {
           FileHandle.standardError.write(Data(
-            "[sysaudio.src] first buffer; sourceFormat=\(fmt) commonFormat=\(fmt.commonFormat.rawValue) interleaved=\(fmt.isInterleaved)\n".utf8
+            "[sysaudio.src] first valid buffer; sourceFormat=\(fmt) commonFormat=\(fmt.commonFormat.rawValue) interleaved=\(fmt.isInterleaved)\n".utf8
           ))
         }
       }
@@ -158,6 +251,10 @@ public final class SysAudioSource: NSObject, AudioSource, SCStreamOutput, @unche
 
     guard let input = makePCMBuffer(from: sampleBuffer, format: sourceFmt) else { return }
     guard let converted = converter.convert(input) else { return }
+
+    // First valid converted buffer — release `start()`'s watchdog wait
+    // (poll-based; see below).
+    hasValidBuffer = true
 
     buffersReceived += 1
     // Cheap peak-amplitude check on the Int16 output every 64 buffers.
@@ -228,18 +325,53 @@ public final class SysAudioSource: NSObject, AudioSource, SCStreamOutput, @unche
 }
 
 public enum SysAudioSourceError: Error, CustomStringConvertible {
+  /// TCC preflight reported Screen Recording is denied / undetermined.
+  case screenRecordingTCCDenied
+  /// A `SCShareableContent` or `SCStream.startCapture` await did not
+  /// resume within the bounded timeout.
+  case startTimedOut(seconds: Double, stage: String)
+  /// SCShareableContent threw an underlying error.
   case permissionDenied(underlying: Error)
+  /// SCContentFilter requires at least one display.
   case noDisplayAvailable
+  /// SCStream.startCapture threw an underlying error.
   case startFailed(underlying: Error)
+  /// `startCapture()` returned cleanly but no valid audio buffer flowed
+  /// through within the watchdog budget. The most common cause is audio
+  /// TCC being denied for the binary's identity (Sequoia/Tahoe split
+  /// visual and audio capture grants; an unbound Info.plist or a brand-new
+  /// .app bundle ID typically needs to be added to System Settings).
+  case audioCaptureSilent(reason: SilentReason, waitedSeconds: Double)
+
+  public enum SilentReason: Sendable {
+    /// SCK delivered buffers but every one had a garbage ASBD.
+    case invalidASBD
+    /// SCK delivered zero buffers in the watchdog window.
+    case noBuffers
+  }
 
   public var description: String {
     switch self {
+    case .screenRecordingTCCDenied:
+      return TCCPreflight.screenRecordingRemediation
+    case .startTimedOut(let s, let stage):
+      return "\(stage) did not complete within \(s)s. \(TCCPreflight.screenRecordingRemediation)"
     case .permissionDenied(let e):
-      return "Screen Recording permission denied (\(e.localizedDescription)). Open System Settings → Privacy & Security → Screen Recording and enable chronicle."
+      return "Screen Recording permission denied (\(e.localizedDescription)). \(TCCPreflight.screenRecordingRemediation)"
     case .noDisplayAvailable:
       return "No display available for SCStream content filter (locked screen? headless machine?)."
     case .startFailed(let e):
       return "SCStream.startCapture failed: \(e.localizedDescription)"
+    case .audioCaptureSilent(let reason, let s):
+      let why: String = {
+        switch reason {
+        case .invalidASBD:
+          return "SCStream delivered placeholder buffers with invalid ASBD (sample rate 0 / gigantic frame size). This is SCK's signature when audio capture is silently denied."
+        case .noBuffers:
+          return "SCStream delivered no audio buffers at all within \(s)s."
+        }
+      }()
+      return "Audio capture is muted: \(why) The chronicle binary is likely running with audio TCC denied for its current identity. Build the proper .app bundle (`./scripts/make-app.sh`) and add it to System Settings → Privacy & Security → Screen & System Audio Recording (and Microphone, for mic capture). See AGENTS.md."
     }
   }
 }

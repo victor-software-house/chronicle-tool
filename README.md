@@ -59,17 +59,24 @@ data, commit style), see [`AGENTS.md`](AGENTS.md).
   to be pre-installed via System Settings → Language & Region → Translation
   Languages. The CLI emits a clear remediation message when a pack is
   missing.
-- **Microphone TCC permission** — `mic` requires Microphone permission. The
-  embedded Info.plist (`NSMicrophoneUsageDescription`) triggers the
-  first-run prompt; grant it once via System Settings → Privacy & Security
-  → Microphone.
-- **Screen Recording TCC permission** — `sysaudio` requires Screen Recording
-  permission (`ScreenCaptureKit` audio capture piggy-backs on this
-  entitlement). Unsigned dev binaries inherit the grant from the **parent
-  app** (cmux, Terminal, iTerm, etc.). Grant it once at that parent via
-  System Settings → Privacy & Security → Screen Recording. Without the
-  grant, `sysaudio` runs without erroring but produces silent buffers —
-  use `--verbose` to diagnose.
+- **`.app` bundle required for `mic` / `sysaudio`** — macOS Sequoia/Tahoe
+  attributes audio TCC to a stable bundle identity. The bare
+  `swift build` binary has `Info.plist=not bound` and SCStream silently
+  delivers garbage placeholder buffers. Build the proper bundle:
+
+  ```sh
+  scripts/make-app.sh
+  ```
+
+  Then run via `.build/release/chronicle.app/Contents/MacOS/chronicle`.
+  See [`AGENTS.md`](AGENTS.md) for the full first-run TCC setup.
+- **Microphone TCC permission** — grant `chronicle.app` (bundle ID
+  `com.victor-software-house.chronicle`) under System Settings → Privacy
+  & Security → Microphone.
+- **Screen & System Audio Recording TCC permission** — grant
+  `chronicle.app` under System Settings → Privacy & Security → Screen
+  & System Audio Recording. Without it, `chronicle sysaudio` fails fast
+  in ~5 s with a clear remediation error — it does not hang.
 - **Xcode 26 or Swift 6.2+**.
 
 ## Install / build

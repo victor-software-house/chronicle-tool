@@ -40,6 +40,21 @@ phase done:
 6. Task marked `completed` via `TaskWrite` with the receipt summary in
    `metadata`.
 
+## Robustness layer (audio pipeline)
+
+Three defensive layers prevent the macOS-Tahoe SCStream + audio-TCC
+failure mode that previously hung the daemon at "stopping..." forever:
+
+| Layer | Lives in | Catches |
+|---|---|---|
+| L1 preflight | `Core/Audio/TCCPreflight.swift` | TCC denied at known APIs (CGPreflightScreenCaptureAccess, AVAudioApplication recordPermission). Fails before any blocking syscall. |
+| L2 first-valid-buffer watchdog (5 s) | `Core/Audio/SysAudioSource.swift` | SCStream silently delivering placeholder buffers when audio TCC denied for the binary identity. Throws `audioCaptureSilent`. |
+| L3 bounded analyzer finalize (5 s + 2 s) | `Subcommands/Mic.swift` + `Subcommands/SysAudio.swift` | SpeechAnalyzer hung at shutdown after degenerate input. Falls through to `cancelAndFinishNow`. |
+
+Production operator path requires a proper `.app` bundle (built via
+`scripts/make-app.sh`) so that codesign binds the Info.plist and macOS
+TCC resolves a stable identity. See AGENTS.md.
+
 ## What's plugged in vs what's still abstract
 
 `Core/` ships these protocols today; everything below is composition:

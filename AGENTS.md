@@ -63,6 +63,46 @@ so the binary carries the TCC strings (`NSMicrophoneUsageDescription`,
 `NSSpeechRecognitionUsageDescription`, `NSScreenCaptureUsageDescription`).
 Do not remove the `unsafeFlags` linker block.
 
+### Production: build the `.app` bundle (REQUIRED for `mic` / `sysaudio`)
+
+The bare `swift build` artefact has the Info.plist embedded in `__TEXT
+__info_plist` but `codesign -dvv` reports `Info.plist=not bound` — which
+causes `SCStream` to silently deliver placeholder buffers with garbage
+ASBDs when audio capture is attempted (macOS Sequoia/Tahoe attributes
+audio TCC to a stable bundle identity, and the bare binary doesn't
+have one).
+
+```sh
+scripts/make-app.sh              # builds .build/release/chronicle.app, adhoc-signs it
+```
+
+The bundle has bundle ID `com.victor-software-house.chronicle`. **First
+run requires the operator to grant TCC to this bundle** (one-time):
+
+1. Build the bundle: `scripts/make-app.sh`
+2. System Settings → Privacy & Security → Screen & System Audio
+   Recording → `+` → add `.build/release/chronicle.app`
+3. (For `chronicle mic`) Same flow under Privacy & Security → Microphone.
+4. Run via the bundle path:
+   ```sh
+   .build/release/chronicle.app/Contents/MacOS/chronicle sysaudio ...
+   ```
+
+Without the grant, `chronicle sysaudio` fails fast in ~5 s with a clear
+`audioCaptureSilent` error pointing back to this section — it does
+**not** hang.
+
+### Robustness layer (Core/Audio/TCCPreflight + Core/Runtime/AsyncTimeout)
+
+Three defensive layers around the live audio pipeline; do not remove
+without replacing:
+
+| Layer | Defense |
+|---|---|
+| **L1.** `TCCPreflight.screenRecording()` / `.microphone()` | Non-blocking TCC check before any blocking system audio call. Fails fast with actionable remediation. |
+| **L2.** `SysAudioSource.start()` first-valid-buffer watchdog (5 s) | Catches the case where preflight passed but SCStream silently delivers garbage-ASBD placeholder buffers (audio TCC denied for the binary identity). Throws `audioCaptureSilent`. |
+| **L3.** Bounded `analyzer.finalizeAndFinishThroughEndOfInput()` (5 s + 2 s) | If the analyzer received only degenerate input, finalize would otherwise hang; we time out and fall through to `cancelAndFinishNow`. |
+
 Verification expectations:
 
 - Every refactor that touches a hot path must reproduce **byte-identical**

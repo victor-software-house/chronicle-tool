@@ -28,8 +28,20 @@ struct SysAudio: AsyncParsableCommand {
   @Option(name: .long, help: "Rewrite this file on every event with the rolling live transcript.")
   var live: String?
 
-  @Option(name: .long, help: "Also save the raw system-audio capture to this WAV file (16 kHz Int16 mono).")
+  @Option(name: .long, help: "Also save the raw system-audio sidecar to this path. Extension depends on --audio-format.")
   var saveAudio: String?
+
+  @Option(name: .long, help: "Audio sidecar codec: 'opus' (Opus 24 kbps in CAF, ADR-0002), 'wav' (lossless), or 'pcm' (rolling raw-PCM scratch, ADR-0002 sec. 2).")
+  var audioFormat: String = "wav"
+
+  @Option(name: .long, help: "Opus target bitrate in bps (default 24000). Only meaningful when --audio-format=opus.")
+  var opusBitRate: Int = OpusCAFSink.defaultBitRate
+
+  @Option(name: .long, help: "PCM scratch TTL in seconds (default 300). Only meaningful when --audio-format=pcm.")
+  var scratchTtl: Double = RollingPCMScratchSink.defaultTTLSeconds
+
+  @Option(name: .long, help: "PCM scratch rotation interval in seconds (default 30). Only meaningful when --audio-format=pcm.")
+  var scratchRotate: Double = RollingPCMScratchSink.defaultRotateSeconds
 
   @Flag(name: .long, help: "Include audio from this process. Default is to exclude (prevents feedback loops).")
   var includeSelfAudio: Bool = false
@@ -64,21 +76,16 @@ struct SysAudio: AsyncParsableCommand {
     )
     sysSource.verbose = verbose
 
-    // Optional raw-audio sidecar (writes the analyzer-format buffer; not the
-    // SCStream native format).
-    var audioFile: AVAudioFile? = nil
-    if let saveAudio {
-      let url = URL(fileURLWithPath: (saveAudio as NSString).expandingTildeInPath)
-      let settings = analyzerFormat.settings
-      audioFile = try AVAudioFile(
-        forWriting: url,
-        settings: settings,
-        commonFormat: analyzerFormat.commonFormat,
-        interleaved: analyzerFormat.isInterleaved
-      )
-      FileHandle.standardError.write(Data("[sysaudio] saving audio to \(url.path) (\(analyzerFormat))\n".utf8))
-    }
-    let audioFileBox = SysAudioFileBox(file: audioFile)
+    // Optional raw-audio sidecar (writes the analyzer-format buffer; not
+    // the SCStream native format).
+    let audioSink: AudioSidecarSink? = try makeAudioSidecarSink(
+      path: saveAudio,
+      analyzerFormat: analyzerFormat,
+      audioFormat: audioFormat,
+      opusBitRate: opusBitRate,
+      scratchTtl: scratchTtl,
+      scratchRotate: scratchRotate
+    )
 
     // Compose sidecar sinks.
     var sinks: [TranscriptionSink] = []
@@ -141,12 +148,12 @@ struct SysAudio: AsyncParsableCommand {
       return (volatileCount, finalCount)
     }
 
-    // Drain PCM buffers into the optional WAV sidecar concurrently with
-    // analyzer consumption.
+    // Drain PCM buffers into the optional audio sidecar (Opus / WAV /
+    // rolling PCM scratch) concurrently with analyzer consumption.
     let pcmTask = Task {
       for await ref in sysSource.pcmBuffers {
-        if let file = audioFileBox.file {
-          try? file.write(from: ref.buffer)
+        if let sink = audioSink {
+          await sink.append(ref.buffer)
         }
       }
     }
@@ -170,9 +177,27 @@ struct SysAudio: AsyncParsableCommand {
 
     FileHandle.standardError.write(Data("\n[sysaudio] stopping...\n".utf8))
     sysSource.stop()
-    try await analyzer.finalizeAndFinishThroughEndOfInput()
+    // Bound the analyzer finalize. When the analyzer received no real
+    // input (e.g. audio TCC denied + garbage SCStream buffers) this can
+    // otherwise hang indefinitely. On timeout fall back to a hard
+    // cancel-and-finish (also bounded).
+    do {
+      try await withTimeout(seconds: 5.0, label: "analyzer.finalize") {
+        try await analyzer.finalizeAndFinishThroughEndOfInput()
+      }
+    } catch is TimeoutError {
+      FileHandle.standardError.write(Data(
+        "[sysaudio] analyzer.finalize timed out; falling back to cancelAndFinishNow\n".utf8
+      ))
+      try? await withTimeout(seconds: 2.0, label: "analyzer.cancelAndFinishNow") {
+        try await analyzer.cancelAndFinishNow()
+      }
+    }
     let (volatileCount, finalCount) = try await consumeTask.value
     _ = await pcmTask.value
+    if let audioSink {
+      await audioSink.finish()
+    }
     for sink in composedSinks {
       await sink.finish()
     }
@@ -181,11 +206,4 @@ struct SysAudio: AsyncParsableCommand {
       "[sysaudio] done. volatile=\(volatileCount) final=\(finalCount)\n".utf8
     ))
   }
-}
-
-/// Sendable wrapper so the pcm-drain task can hold a reference to an
-/// AVAudioFile without a Sendable warning.
-private final class SysAudioFileBox: @unchecked Sendable {
-  let file: AVAudioFile?
-  init(file: AVAudioFile?) { self.file = file }
 }

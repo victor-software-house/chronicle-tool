@@ -48,8 +48,24 @@ public final class MicAudioSource: AudioSource, @unchecked Sendable {
     self.pcmBuilder = pBuilder
   }
 
+  /// Hard timeout for the AVAudioEngine `start()` call. Engine start has
+  /// been observed to stall on misconfigured systems; we refuse to wait
+  /// longer than this and surface a clean error.
+  public static let startTimeoutSeconds: Double = 10.0
+
   public func start() async throws {
     guard !started else { return }
+
+    // Preflight TCC. Fails fast with an actionable error instead of
+    // letting AVAudioEngine.start() stall on a denied / undetermined
+    // microphone grant.
+    switch TCCPreflight.microphone() {
+    case .granted:
+      break
+    case .denied, .undetermined:
+      throw MicAudioSourceError.microphoneTCCDenied
+    }
+
     started = true
 
     let micFormat = self.micFormat
@@ -64,7 +80,20 @@ public final class MicAudioSource: AudioSource, @unchecked Sendable {
     }
 
     engine.prepare()
-    try engine.start()
+    // AVAudioEngine.start() is synchronous; wrap so a future stall
+    // surfaces as a TimeoutError instead of a stuck process. AVAudioEngine
+    // is not Sendable so we hop into a detached, audio-engine-bound box.
+    let engineRef = MicEngineRef(engine: engine)
+    do {
+      try await withTimeout(
+        seconds: Self.startTimeoutSeconds,
+        label: "AVAudioEngine.start"
+      ) {
+        try engineRef.engine.start()
+      }
+    } catch is TimeoutError {
+      throw MicAudioSourceError.startTimedOut(seconds: Self.startTimeoutSeconds)
+    }
   }
 
   public func stop() {
@@ -78,12 +107,27 @@ public final class MicAudioSource: AudioSource, @unchecked Sendable {
 }
 
 public enum MicAudioSourceError: Error, CustomStringConvertible {
+  /// TCC preflight reported Microphone is denied / undetermined.
+  case microphoneTCCDenied
+  /// `AVAudioEngine.start()` did not return within the bounded timeout.
+  case startTimedOut(seconds: Double)
   case converterUnavailable(from: AVAudioFormat, to: AVAudioFormat)
 
   public var description: String {
     switch self {
+    case .microphoneTCCDenied:
+      return TCCPreflight.microphoneRemediation
+    case .startTimedOut(let s):
+      return "AVAudioEngine.start did not complete within \(s)s. \(TCCPreflight.microphoneRemediation)"
     case let .converterUnavailable(from, to):
       return "Could not build AVAudioConverter from \(from) to \(to)"
     }
   }
+}
+
+/// Sendable wrapper so the timeout closure can capture an AVAudioEngine
+/// reference without a strict-concurrency warning.
+private final class MicEngineRef: @unchecked Sendable {
+  let engine: AVAudioEngine
+  init(engine: AVAudioEngine) { self.engine = engine }
 }

@@ -43,8 +43,20 @@ struct Mic: AsyncParsableCommand {
   @Option(name: .long, help: "Rewrite this file on every event with the rolling live transcript (finals + current volatile). Updates every ~150 ms.")
   var live: String?
 
-  @Option(name: .long, help: "Also save the raw microphone audio to this WAV file (16 kHz mono Float32, lossless).")
+  @Option(name: .long, help: "Also save the raw microphone audio sidecar to this path. Extension depends on --audio-format.")
   var saveAudio: String?
+
+  @Option(name: .long, help: "Audio sidecar codec: 'opus' (Opus 24 kbps in CAF, ADR-0002), 'wav' (lossless), or 'pcm' (rolling raw-PCM scratch, ADR-0002 sec. 2).")
+  var audioFormat: String = "wav"
+
+  @Option(name: .long, help: "Opus target bitrate in bps (default 24000). Only meaningful when --audio-format=opus.")
+  var opusBitRate: Int = OpusCAFSink.defaultBitRate
+
+  @Option(name: .long, help: "PCM scratch TTL in seconds (default 300). Only meaningful when --audio-format=pcm.")
+  var scratchTtl: Double = RollingPCMScratchSink.defaultTTLSeconds
+
+  @Option(name: .long, help: "PCM scratch rotation interval in seconds (default 30). Only meaningful when --audio-format=pcm.")
+  var scratchRotate: Double = RollingPCMScratchSink.defaultRotateSeconds
 
   func run() async throws {
     guard #available(macOS 26.0, *) else {
@@ -69,14 +81,10 @@ struct Mic: AsyncParsableCommand {
     FileHandle.standardError.write(Data("[mic] mic format=\(micSource.micFormat)\n".utf8))
 
     // Optional raw-audio sidecar.
-    var audioFile: AVAudioFile? = nil
-    if let saveAudio {
-      let url = URL(fileURLWithPath: (saveAudio as NSString).expandingTildeInPath)
-      let settings = analyzerFormat.settings
-      audioFile = try AVAudioFile(forWriting: url, settings: settings, commonFormat: analyzerFormat.commonFormat, interleaved: analyzerFormat.isInterleaved)
-      FileHandle.standardError.write(Data("[mic] saving audio to \(url.path) (\(analyzerFormat))\n".utf8))
-    }
-    let audioFileBox = AudioFileBox(file: audioFile)
+    let audioSink: AudioSidecarSink? = try makeAudioSidecarSink(
+      path: saveAudio,
+      analyzerFormat: analyzerFormat
+    )
 
     struct TraceEvent: Codable, Sendable {
       let wallclockOffsetMs: Double
@@ -151,12 +159,13 @@ struct Mic: AsyncParsableCommand {
       }
     }
 
-    // Drain PCM buffers into the optional WAV sidecar concurrently with
-    // analyzer consumption. MicAudioSource already converts to analyzerFormat.
+    // Drain PCM buffers into the optional audio sidecar (Opus / WAV /
+    // rolling PCM scratch) concurrently with analyzer consumption.
+    // MicAudioSource already converts to analyzerFormat.
     let pcmTask = Task {
       for await ref in micSource.pcmBuffers {
-        if let file = audioFileBox.file {
-          try? file.write(from: ref.buffer)
+        if let sink = audioSink {
+          await sink.append(ref.buffer)
         }
       }
     }
@@ -177,9 +186,25 @@ struct Mic: AsyncParsableCommand {
 
     FileHandle.standardError.write(Data("\n[mic] stopping...\n".utf8))
     micSource.stop()
-    try await analyzer.finalizeAndFinishThroughEndOfInput()
+    // Bound the analyzer finalize. Falls back to a hard cancel on
+    // timeout (e.g. when no valid input ever reached the analyzer).
+    do {
+      try await withTimeout(seconds: 5.0, label: "analyzer.finalize") {
+        try await analyzer.finalizeAndFinishThroughEndOfInput()
+      }
+    } catch is TimeoutError {
+      FileHandle.standardError.write(Data(
+        "[mic] analyzer.finalize timed out; falling back to cancelAndFinishNow\n".utf8
+      ))
+      try? await withTimeout(seconds: 2.0, label: "analyzer.cancelAndFinishNow") {
+        try await analyzer.cancelAndFinishNow()
+      }
+    }
     try await consumeTask.value
     _ = await pcmTask.value
+    if let audioSink {
+      await audioSink.finish()
+    }
     for sink in composedSinks {
       await sink.finish()
     }
@@ -216,9 +241,36 @@ struct Mic: AsyncParsableCommand {
   }
 }
 
-/// Sendable wrapper so the audio-tap closure can hold a reference to an
-/// AVAudioFile without a Sendable warning.
-private final class AudioFileBox: @unchecked Sendable {
-  let file: AVAudioFile?
-  init(file: AVAudioFile?) { self.file = file }
+// MARK: - AudioSidecarSink dispatch
+
+func makeAudioSidecarSink(
+  path: String?,
+  analyzerFormat: AVAudioFormat,
+  audioFormat: String? = nil,
+  opusBitRate: Int = OpusCAFSink.defaultBitRate,
+  scratchTtl: Double = RollingPCMScratchSink.defaultTTLSeconds,
+  scratchRotate: Double = RollingPCMScratchSink.defaultRotateSeconds
+) throws -> AudioSidecarSink? {
+  guard let path else { return nil }
+  let expanded = (path as NSString).expandingTildeInPath
+  let url = URL(fileURLWithPath: expanded)
+  let kind = (audioFormat ?? "wav").lowercased()
+  switch kind {
+  case "opus":
+    FileHandle.standardError.write(Data("[audio] OpusCAFSink -> \(url.path) (\(opusBitRate) bps, source=\(analyzerFormat))\n".utf8))
+    return try OpusCAFSink(url: url, sourceFormat: analyzerFormat, bitRate: opusBitRate)
+  case "wav":
+    FileHandle.standardError.write(Data("[audio] WAVSidecarSink -> \(url.path) (\(analyzerFormat))\n".utf8))
+    return try WAVSidecarSink(url: url, sourceFormat: analyzerFormat)
+  case "pcm":
+    FileHandle.standardError.write(Data("[audio] RollingPCMScratchSink -> \(url.path)/ (ttl=\(scratchTtl)s rotate=\(scratchRotate)s)\n".utf8))
+    return try RollingPCMScratchSink(
+      base: url,
+      sourceFormat: analyzerFormat,
+      ttl: scratchTtl,
+      rotateInterval: scratchRotate
+    )
+  default:
+    throw ValidationError("--audio-format must be one of {opus, wav, pcm}; got '\(kind)'")
+  }
 }
