@@ -121,6 +121,18 @@ databases with `auth_value=2`. They did **not** make SCStream audio
 work; CoreAudio tap is what works. Remove the rows once chronicle.app
 is registered through System Settings.
 
+**Why the direct TCC.db writes didn't work** (root cause confirmed in
+ADR-0004 research-validation addendum 2026-05-15): macOS Sequoia/Tahoe
+TCC keys grants by code-signing hash. Every ad-hoc rebuild has a
+different hash. The inserted rows were valid relative to one build but
+stale relative to the next. The operational fix is `tccutil reset`
+before each rebuild (productionised as `scripts/reset-tcc.sh`, cleanup
+item #10) — not direct DB writes. Note that for comparison
+`BasedHardware/omi` continues to use SCStream successfully because they
+distribute a Developer-ID-signed app and don't hit the ad-hoc TCC gate;
+they are a counter-example to the convergence story, not converging
+evidence.
+
 Verification expectations:
 
 - Every refactor that touches a hot path must reproduce **byte-identical**

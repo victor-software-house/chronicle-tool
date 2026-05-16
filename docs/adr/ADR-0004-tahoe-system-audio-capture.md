@@ -121,7 +121,7 @@ Replace `SysAudioSource` with `CoreAudioTapSource` conforming to the same `Audio
 10. Add an RMS heartbeat watchdog to detect the Apple-forum-825780 all-zero-buffer drift mode and trigger a full rebuild.
 
 - Good, because the 2026-05-14 incident validated this end-to-end on the same machine, same TCC state, same Tahoe 26.5 version where SCStream failed.
-- Good, because the surveyed production audio recorders converge on this exact pattern (AudioCap, OMI, Muesli, OpenOats, Kaset, argmax, AudioTee, AudioCaptureKit, blackbox, swift-capture-kit, MeetingNotes, spkrdump, sbetko/catap, Heimdall).
+- Good, because 10+ surveyed production audio recorders converge on this exact pattern: [`insidegui/AudioCap`](https://github.com/insidegui/AudioCap), [`makeusabrew/audiotee`](https://github.com/makeusabrew/audiotee), [`pablo-health/AudioCaptureKit`](https://github.com/pablo-health/AudioCaptureKit), [`yazinsai/OpenOats`](https://github.com/yazinsai/OpenOats), [`pHequals7/muesli`](https://github.com/pHequals7/muesli) (migrated from SCK), [`tenequm/blackbox`](https://github.com/tenequm/blackbox) (migrated from SCK), [`argmaxinc/argmax-sdk-swift-playground`](https://github.com/argmaxinc/argmax-sdk-swift-playground) (based on Apple's sample), [`obsfx/audiograb`](https://github.com/obsfx/audiograb), [`jdefrancesco/spkrdump`](https://github.com/jdefrancesco/spkrdump), [`sbetko/catap`](https://github.com/sbetko/catap), [`crimson-knight/crystal-audio`](https://github.com/crimson-knight/crystal-audio), [`atelier-socle/swift-capture-kit`](https://github.com/atelier-socle/swift-capture-kit). Verified directly via Apple Developer Forum + repo wikis 2026-05-15 (see Research-validation addendum below).
 - Good, because `kTCCServiceAudioCapture` is independent of screen recording.
 - Good, because ad-hoc codesigned bundles are honoured.
 - Good, because PCM is delivered directly without `CMSampleBuffer` ceremony.
@@ -133,7 +133,7 @@ Replace `SysAudioSource` with `CoreAudioTapSource` conforming to the same `Audio
 - Bad, because aggregate device + IO proc + tap must be torn down on every error path; leaks become zombie audio devices that survive until reboot otherwise.
 - Bad, because the all-zero-buffer drift mode (Apple Developer Forum [thread 825780](https://developer.apple.com/forums/thread/825780)) requires an RMS heartbeat to detect; detection is hard because all-zero is indistinguishable from real silence.
 
-Score: 9/10. Apple-blessed, ad-hoc-friendly, production-validated, only real cost is implementation depth.
+Score: 9/10. Apple-blessed, ad-hoc-friendly, production-validated, only real cost is implementation depth. Counterfactual (ignore the Dev ID gate entirely): tap still scores 9/10 vs SCStream's 6/10 — even with paid Developer ID signing in place, every SCStream API call pays a TCC + cert-chain + revocation check ([Dominic Rodemer, "The macOS Notarization Performance Mystery"](https://blog.dominicrodemer.com/macos-notarization-performance-mystery/), 2026-01-27), and the FR-4 hardware-sync-with-mic, semantic-correctness, and recoverable-failure-mode advantages remain.
 
 ### Option 3: Hybrid — SCStream for future screen video + CoreAudio tap for audio
 
@@ -288,7 +288,7 @@ Concretely:
 
 ## Implementation Recipe
 
-This recipe converges the patterns used by `insidegui/AudioCap`, `BasedHardware/omi`, `pHequals7/muesli`, `yazinsai/OpenOats`, `sozercan/kaset`, `argmaxinc/argmax-sdk-swift-playground`, `makeusabrew/audiotee`, and the live-validated `/tmp/catap_record.swift` from the 2026-05-14 incident.
+This recipe converges the patterns used by `insidegui/AudioCap`, `pHequals7/muesli` (post-migration), `yazinsai/OpenOats`, `argmaxinc/argmax-sdk-swift-playground` (based on Apple's `Capturing system audio with Core Audio taps` sample), `makeusabrew/audiotee`, `tenequm/blackbox` (post-migration), and the live-validated `/tmp/catap_record.swift` from the 2026-05-14 incident. Note: `BasedHardware/omi` was previously listed here in error — omi uses `SCStream` for system audio because it is distributed as a Developer-ID-signed app and does not hit the ad-hoc TCC gate. `sozercan/kaset` was also listed in error — it does not capture system audio; it plays YouTube Music inside a `WKWebView`.
 
 ### Required Info.plist additions
 
@@ -496,6 +496,54 @@ And finals.sys.md contains all finals committed before the kill
 
 Until those pass on a clean machine, ADR-0004 stays Accepted-pending-verification.
 
+## Research-validation addendum (2026-05-15)
+
+ADR-0004's central claims were independently validated against primary sources after acceptance. The decision (Option 2, CoreAudio process tap) holds. Three citation corrections + five new gotchas were folded back into this document.
+
+### What was confirmed
+
+| Claim | Confirming source |
+|---|---|
+| macOS 15 Sequoia / 26 Tahoe SCStream audio requires a stable Apple Developer ID Team ID; ad-hoc signing is silently rejected | Apple DTS Engineer Quinn ("The Eskimo!") on [thread 819406](https://developer.apple.com/forums/thread/819406) and [thread 760112](https://developer.apple.com/forums/thread/760112). Quinn cites [TN3127 Inside Code Signing: Requirements](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements) as the authoritative spec. |
+| CoreAudio process taps are Apple's canonical 2025-2026 sysaudio API | [Apple developer docs page](https://developer.apple.com/documentation/coreaudio/capturing-system-audio-with-core-audio-taps) explicitly documents the recipe; current sample requires macOS 26.0+. |
+| All-zero buffer drift mode is real, reproducible, and unrecoverable without full teardown + rebuild | Apple Developer Forum [thread 825780](https://developer.apple.com/forums/thread/825780). No HAL property exists to distinguish data-path failure from legitimate silence; RMS heartbeat is the only practical detector. |
+| `kAudioSubTapDriftCompensationKey: true` is mandatory per sub-tap | Confirmed by muesli + blackbox + Apple docs page. (AudioTee omits it — known gap in that reference impl.) |
+| Teardown order `Stop → DestroyIOProcID → DestroyAggregate → DestroyTap` | Confirmed identical across AudioCap, AudioTee, blackbox, spkrdump. |
+| CGWindowListCreateImage conflict with SCStream | Confirmed in muesli migration commit [ada9493](https://github.com/pHequals7/muesli/commit/ada94936c0863e494305580cfceeaed8bd62fdeb). |
+
+### Citation corrections
+
+| Removed claim | Reality | Action taken |
+|---|---|---|
+| `BasedHardware/omi` listed in the convergence list | omi's `SystemAudioCaptureService` uses ScreenCaptureKit `SCStream`, not CoreAudio tap. omi is distributed as a Developer-ID-signed app and does not hit the ad-hoc TCC gate. Counter-example, not converging evidence. | Removed from Option 2 "Good, because…" list and from the Implementation Recipe convergence list. Kept in Related as a signed-app counter-example. |
+| `sozercan/kaset` listed in the convergence list | Kaset does not capture system audio at all — it plays YouTube Music inside a `WKWebView`. The `ProcessTapHelper.swift` file in the repo is dead code or a vestigial experiment; the actual playback path is the WebView. | Removed from convergence list and Related references. |
+| "13+ surveyed production apps converge" | Actual verified count is 10+ (12 listed in the updated convergence list). | Tightened the count. |
+
+### New gotchas folded into the decision
+
+1. **TCC v2 silently rejects ad-hoc rebuild grants.** Every new ad-hoc build has a different code signature hash. macOS Sequoia/Tahoe TCC keys grants by signature hash. Result: **TCC entries can appear granted in System Settings while being silently rejected at runtime.** This explains exactly why the 2026-05-14 direct `TCC.db` writes for `com.victor-software-house.chronicle` did not fix SCStream audio — the rows were valid but stale to `tccd`'s signature-hash check. Source: [UseStitch/stitch PR #153](https://github.com/UseStitch/stitch/pull/153), [CapSoftware/Cap #1722](https://github.com/CapSoftware/Cap/issues/1722). Operational mitigation: `tccutil reset ScreenCapture <bundle-id>` + `tccutil reset Microphone <bundle-id>` + `tccutil reset AudioCapture <bundle-id>` on every signing-hash change, then re-prompt. Productionising this for the dev workflow is a chronicle cleanup task (STATUS.md #10).
+
+2. **Apple's canonical sample now requires macOS 26.0+.** The CoreAudio tap APIs (`CATapDescription`, `AudioHardwareCreateProcessTap`) have been present since macOS 14.2, but Apple bumped the sample's deployment target to 26.0 in the current docs page. Chronicle is Tahoe 26+ only, so this is aligned; older community references claiming "14.2+" or "14.4+" are still correct for the underlying API but stale relative to Apple's current minimum.
+
+3. **Developer ID-signed binaries pay measurable TCC perf overhead on every SCStream call.** [Dominic Rodemer, "The macOS Notarization Performance Mystery"](https://blog.dominicrodemer.com/macos-notarization-performance-mystery/) (2026-01-27): every `SCShareableContent.excludingDesktopWindows()` and every `stream.updateConfiguration()` call invokes `tccd` which runs full cert chain validation + revocation checks for Developer-ID-signed binaries. Apple Development certs use a faster path. Architectural implication: even if chronicle paid for Apple Developer Program enrolment, SCStream would still be slower than CoreAudio tap per-call because the tap's aggregate device is a single setup cost rather than a per-call security boundary. Counterfactual scoreboard updated: SCStream drops from 7/10 to 6/10 when the Dev ID gate is hypothetically removed.
+
+4. **AudioTee lacks drift compensation.** Verified via deepwiki on `makeusabrew/audiotee` codebase: the aggregate device dict in `AudioTapManager.setupAudioTap` does not include `kAudioSubTapDriftCompensationKey`. This is a known gap in the AudioTee reference impl. Chronicle's `CoreAudioTapSource` recipe (which does set the key) is therefore strictly stronger than AudioTee's. OMI's experience confirms the cost of omitting it: "without it the aggregate clock drifts and the system resamples on every IO cycle, producing periodic crackling in *all* system audio playback".
+
+5. **Pre-allocated `AVAudioPCMBuffer` pool inside the IOProc.** `tenequm/blackbox` 0.7.0 explicitly added a pre-allocated PCM buffer pool because allocating inside the IOProc block violates real-time-thread safety. Chronicle's `CoreAudioTapSource` must adopt the same pattern: pre-allocate N buffers at start, use a lock-free ring to hand them between the IOProc thread and the consumer. Productionising this is STATUS.md cleanup item #11.
+
+### Counterfactual scoreboard (updated)
+
+If the Apple Developer ID Team ID gate were hypothetically removed, the merit-only comparison shifts but the verdict stands:
+
+| Option | Score (Dev ID gate active) | Score (counterfactual: gate removed) | Why changed |
+|---|:-:|:-:|---|
+| 1. SCStream audio-only | 1/10 | 6/10 | -1 from Dominic Rodemer's cert-chain-per-call perf finding |
+| **2. CoreAudio process tap** | **9/10** | **9/10** | unchanged — wins by 3 instead of 8 |
+| 3. Hybrid SCStream video + tap audio | 8/10 | 9/10 | only relevant if chronicle adds screen video |
+| 12. Developer ID enrolment | 3/10 | n/a | gate removed by hypothesis |
+
+Even in the counterfactual world, CoreAudio tap wins on permission semantics, FR-4 hardware sync with mic, recoverable failure modes via RMS heartbeat, and per-call perf cost. The Dev ID gate makes the choice forced; removing it makes the choice merely correct.
+
 ## Related
 
 - **PRD**: [`PRD-001: Resilient multi-source chronicle daemon`](../prd/PRD-001-resilient-multi-source-daemon.md)
@@ -526,10 +574,9 @@ Until those pass on a clean machine, ADR-0004 stays Accepted-pending-verificatio
   - [trycua/cua #870](https://github.com/trycua/cua/issues/870) — Tahoe requires .app bundle for Privacy UI listing (2026-01-21)
   - [matthartman/ghost-pepper #21](https://github.com/matthartman/ghost-pepper/issues/21) — Hardened Runtime audio-input entitlement stripping (2026-04-06)
   - `insidegui/AudioCap` — [ProcessTap.swift](https://github.com/insidegui/AudioCap/blob/main/AudioCap/ProcessTap/ProcessTap.swift), [AudioRecordingPermission.swift](https://github.com/insidegui/AudioCap/blob/main/AudioCap/ProcessTap/AudioRecordingPermission.swift)
-  - `BasedHardware/omi` — [SystemAudioCaptureService.swift](https://github.com/BasedHardware/omi/blob/main/desktop/Desktop/Sources/SystemAudioCaptureService.swift)
+  - `BasedHardware/omi` — [SystemAudioCaptureService.swift](https://github.com/BasedHardware/omi/blob/main/desktop/Desktop/Sources/SystemAudioCaptureService.swift) (uses SCStream behind Developer-ID signing; counter-example, not converging evidence)
   - `pHequals7/muesli` — [CoreAudioSystemRecorder.swift](https://github.com/pHequals7/muesli/blob/main/native/MuesliNative/Sources/MuesliNativeApp/CoreAudioSystemRecorder.swift), migration commit [ada9493](https://github.com/pHequals7/muesli/commit/ada94936c0863e494305580cfceeaed8bd62fdeb)
   - `yazinsai/OpenOats` — [SystemAudioCapture.swift](https://github.com/yazinsai/OpenOats/blob/main/OpenOats/Sources/OpenOats/Audio/SystemAudioCapture.swift)
-  - `sozercan/kaset` — [ProcessTapHelper.swift](https://github.com/sozercan/kaset/blob/main/Sources/Kaset/Services/Audio/ProcessTapHelper.swift)
   - `argmaxinc/argmax-sdk-swift-playground` — [ProcessTapper.swift](https://github.com/argmaxinc/argmax-sdk-swift-playground/blob/main/Playground/Audio/ProcessTapper.swift) (WhisperKit integration)
   - `makeusabrew/audiotee` — [AudioTapManager.swift](https://github.com/makeusabrew/audiotee/blob/main/Sources/AudioTeeCore/Core/AudioTapManager.swift)
   - `atelier-socle/swift-capture-kit` — [PCM ring buffer fix](https://github.com/atelier-socle/swift-capture-kit/commit/15a9d1009ab8f4e1022ec9a36d4abb6f0df08882) (AAC-LC frame alignment, applies to Opus too)
