@@ -128,10 +128,24 @@ different hash. The inserted rows were valid relative to one build but
 stale relative to the next. The operational fix is `tccutil reset`
 before each rebuild (productionised as `scripts/reset-tcc.sh`, cleanup
 item #10) — not direct DB writes. Note that for comparison
-`BasedHardware/omi` continues to use SCStream successfully because they
-distribute a Developer-ID-signed app and don't hit the ad-hoc TCC gate;
-they are a counter-example to the convergence story, not converging
-evidence.
+`BasedHardware/omi`, `moonshine-ai/MoonshineNoteTaker` (78 stars),
+`bemmerzaal/Audido`, and `turantekin/Parrot` continue to use SCStream
+successfully because they distribute Developer-ID-signed apps and don't
+hit the ad-hoc TCC gate. They are counter-examples to the convergence
+story, not converging evidence. The pattern across 22+ surveyed 2026
+repos: apps born on ad-hoc workflows go CoreAudio tap; apps with Dev ID
+already in place stay on SCStream out of inertia. Chronicle's ad-hoc
+workflow puts it firmly in the first camp.
+
+**Tahoe device-change-storm guard** (ADR-0004 gotcha #6): when implementing
+`CoreAudioTapSource`, the `kAudioHardwarePropertyDefaultOutputDevice`
+listener must guard against self-induced notifications. Tahoe fires
+device-change notifications much more aggressively than Sequoia, and
+`AudioHardwareCreateAggregateDevice` is itself a device-change event —
+naive rebuild-on-every-event becomes an infinite rebuild loop. Cache
+the resolved default-output `AudioObjectID` and rebuild only when the
+resolved ID actually changes, not on every property-changed callback.
+See STATUS.md cleanup item #12.
 
 Verification expectations:
 

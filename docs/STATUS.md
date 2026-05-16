@@ -5,7 +5,7 @@ plan". Authoritative scope and acceptance criteria live in
 [`PRD-001`](prd/PRD-001-resilient-multi-source-daemon.md); this is the
 operator-facing dashboard.
 
-Last refresh: 2026-05-15 (ADR-0004 research-validation addendum + cleanup items #10 and #11 added).
+Last refresh: 2026-05-15 rev-b (round-2 deeper survey of 22+ 2026-dated repos: muesli weakened to feature-flag transitional, 5 new convergence refs, 3 new signed-app counter-examples, new gotcha #6 Tahoe device-change-storm → cleanup item #12).
 
 ## Phase board
 
@@ -62,6 +62,7 @@ production-clean and must be folded back into the repo.
 | 9 | Garbage-collect `sys-HHMMSS.wav` 4 KB rejects from `~/Movies/pi-captures/sessions/20260514-112533-live/audio/` (already done locally, watch for regression once retry watchdog lands in repo) | session dir |
 | 10 | Add a `scripts/reset-tcc.sh` dev helper that runs `tccutil reset ScreenCapture <bundle-id>` + `tccutil reset Microphone <bundle-id>` + `tccutil reset AudioCapture <bundle-id>` whenever the chronicle.app code-signing hash changes. macOS Sequoia/Tahoe TCC keys grants by signature hash; every ad-hoc rebuild silently invalidates prior grants (entries appear granted in System Settings but are rejected at runtime). This is the operational countermeasure for the same root cause that the 2026-05-14 direct TCC.db writes failed to address. Source: ADR-0004 research-validation addendum gotcha #1. | `scripts/reset-tcc.sh` |
 | 11 | Pre-allocate `AVAudioPCMBuffer` pool inside `CoreAudioTapSource` IOProc. Allocating buffers inside the IOProc block violates real-time-thread safety (`tenequm/blackbox` 0.7.0 explicitly documents this as spec item D5). Pattern: pre-allocate N buffers at start, use a lock-free SPSC ring to hand them between the IOProc thread and the consumer task. Source: ADR-0004 research-validation addendum gotcha #5. | `Core/Audio/CoreAudioTapSource.swift` |
+| 12 | Guard `kAudioHardwarePropertyDefaultOutputDevice` listener against **self-induced** device-change notifications. On Tahoe the audio subsystem fires device-change notifications much more aggressively than on Sequoia, and `AudioHardwareCreateAggregateDevice` is itself a device-change event. Naive rebuild-on-every-event = infinite rebuild loop. Pattern: cache the resolved default-output `AudioObjectID` after each rebuild and only act when the *resolved AudioObjectID* changes — not on every property-changed callback. References: [Beingpax/VoiceInk PR #517](https://github.com/Beingpax/VoiceInk/pull/517) (Tahoe notification storm), [pablo-health/AudioCaptureKit README](https://github.com/pablo-health/AudioCaptureKit) (aggregate-device-creation self-fires). Source: ADR-0004 research-validation addendum gotcha #6. | `Core/Audio/CoreAudioTapSource.swift` |
 
 Live session being captured during the incident lives at:
 `~/Movies/pi-captures/sessions/20260514-112533-live/`.
