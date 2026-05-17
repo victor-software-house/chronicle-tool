@@ -165,6 +165,16 @@ that did not reach disk, not the whole active ALAC segment. Automated scratch
 export/repair is implemented as `chronicle scratch-export`; manual ffmpeg
 recovery remains a fallback/debug path.
 
+**Open requirement — channel-preserving evidence sidecar:** current sidecars are
+fed analyzer-format PCM, which is typically mono 16 kHz after SpeechAnalyzer
+format negotiation. That is correct for transcript parity, but it can destroy
+channel-level evidence when the source capture is stereo or multi-channel. Future
+audio storage work should add an opt-in source-channel-preserving sidecar or
+scratch tier so left/right (or device channel) data remains separable during
+forensics, especially when one channel is clipped, muted, noisy, echo-contaminated,
+or otherwise compromised. This is an open spec item only; it does not change the
+current default analyzer-format ALAC + raw scratch implementation.
+
 **Acceptance criteria:**
 
 ```gherkin

@@ -164,7 +164,8 @@ Current approach is the best local boundary, but these gaps remain product work:
 3. **Power-loss durability policy.** Decide whether scratch should `fsync` on rotate, on a fixed interval, or never. Current evidence is strong for process crash after successful writes, not for kernel panic/power loss before filesystem flush.
 4. **Sequential fan-out measurement.** Measure worst-case append latency for ALAC + scratch under real mic/sysaudio loads. If needed, move child sink writes behind bounded queues while preserving backpressure and ordering.
 5. **Scratch allocation profile.** Keep current `Data` allocation per append for 16 kHz mono, but profile before higher sample rates or multi-channel capture become defaults.
-6. **CAF tail repair research.** FR-8 should determine whether active ALAC CAF can be repaired by walking `kuki`/`pakt`/`data` chunks and truncating to the last decodable packet. If not, scratch export is the primary recovery path.
+6. **Channel-preserving evidence sidecar.** Current sidecars store analyzer-format PCM, commonly mono 16 kHz. Add an opt-in future sidecar or scratch tier that preserves source channel layout so compromised channels can be isolated after capture.
+7. **CAF tail repair research.** FR-8 should determine whether active ALAC CAF can be repaired by walking `kuki`/`pakt`/`data` chunks and truncating to the last decodable packet. If not, scratch export is the primary recovery path.
 
 ## Revisit triggers
 
