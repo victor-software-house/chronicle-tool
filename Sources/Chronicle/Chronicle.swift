@@ -21,7 +21,8 @@ struct Chronicle: AsyncParsableCommand {
       Diarize.self,
       EncodeOpus.self,
       EncodeALAC.self,
-      ScratchExport.self
+      ScratchExport.self,
+      Merge.self
     ],
     defaultSubcommand: nil
   )

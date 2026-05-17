@@ -450,10 +450,21 @@ And each line is prefixed with its source ("[mic]" / "[sys]")
 And speaker labels (if present) are preserved
 ```
 
+**Implemented receipts (2026-05-17):**
+
+* `Sources/Chronicle/Subcommands/Merge.swift` ships the `chronicle merge` subcommand with `MergedRecord`, `MergeOutcome`, `MergeService`, `MergeInputFormat`, `MergeOutputFormat`, `FinalsMarkdownReader`, and `MergeRenderer` helpers.
+* Accepts ≥1 inputs (JSONL preferred, `finals.md` fallback); explicit `--source-alias <path>=<name>` overrides per-input label; sort key is `(wallclock, sourcePath, eventId)`.
+* Default output: `[wallclock] [source] (speaker, locale) text` log lines on stdout. `--format markdown` switches to a markdown table; `--include-volatile` opts into volatile events from JSONL input; `-o <path>` writes to a file.
+* Recovers torn trailing JSONL line via `JSONLTraceSink.readRecoveringEvents` and surfaces a stderr `[merge] recovered torn trailing line in <path>` warning.
+* `Tests/ChronicleTests/Subcommands/MergeTests.swift` covers chronological JSONL merge, finals.md inference, mixed JSONL+finals.md, `--include-volatile` flag, speaker labels, stable tie-break on identical wallclock, log format with `[source]` prefix, markdown table escaping, torn trailing-line warning, and alias parsing.
+* Synthetic smoke: hand-built `mic.jsonl` + `sys.jsonl` merged into a chronologically sorted log with mic/sys interleaving; `--format markdown` produced a valid markdown table; mixed JSONL + finals.md with `--source-alias` preserved a `legacy` label.
+* End-to-end smoke: two `chronicle live -o` runs over `say` fixtures wrote separate `trace.jsonl` files, then `chronicle merge a.jsonl b.jsonl` emitted a chronological transcript with `[live]` source prefixes and `(en_US)` locale annotations.
+
 **Files:**
 
-* `Sources/Chronicle/Subcommands/Merge.swift` — new subcommand.
-* `Tests/ChronicleTests/Subcommands/MergeTests.swift` — chronological JSONL/finals merge, stable tie-breaks, source aliases, speaker labels.
+* `Sources/Chronicle/Subcommands/Merge.swift` — the subcommand plus merge service, parser, and renderer helpers.
+* `Sources/Chronicle/Chronicle.swift` — registers `Merge.self` in the subcommand list.
+* `Tests/ChronicleTests/Subcommands/MergeTests.swift` — chronological JSONL/finals merge, stable tie-breaks, source aliases, speaker labels, torn-trailing-line warning, log and markdown renderers.
 
 ---
 
@@ -707,8 +718,8 @@ Order each step so the previous one's receipts feed the next.
 3. **P11 — FR-1 (ALAC production sink) per [ADR-0002](../adr/ADR-0002-audio-storage-format.md) (amended 2026-05-16).** Implement `AVAudioFileALACSink` + `RollingPCMScratchSink`, wire `--audio-format alac|wav|pcm|opus` to the audio sinks, run the accuracy-parity test against the 2026-05-13 reference session and assert WER delta ≤ 1 % vs the WAV baseline. Flip the default from WAV to ALAC-in-CAF once sidecar wiring is complete. **Skips the transitional WAV-rotation step** (formerly P1) because the verified default is Apple-native ALAC/CAF plus rolling raw scratch. Opus remains opt-in/export only after WER regression on the real reference.
 4. **Next functional batch — source-aware trace spine and transcript assembly** per [plan-functional-trace-merge-diarize-locale](../architecture/plan-functional-trace-merge-diarize-locale.md):
    1. **P3 — FR-2: `JSONLTraceSink` resilience. Done in `36375a5`.** Incremental source-aware trace via append-only JSONL. Unit + crash-recovery tests (`kill -9` / torn trailing line simulation). Current receipts: 46-test suite pass, release build pass, help checks pass, specdocs pass, file-driven live smoke wrote 13 valid events with `trace.dropped=0`.
-   2. **P8 — FR-7: `merge` subcommand. Next.** Build immediately on the trace schema so source-aware exports exist before diarization and locale add more metadata.
-   3. **P5 — FR-4: live diarization. Pending.** Reuses the existing FluidAudio dep. `BufferMulticast` + `StreamingDiarizer` are unit-testable with `MockAudioSource`. Test against the 2026-05-13 Zoom session offline first, then live.
+   2. **P8 — FR-7: `merge` subcommand. Done.** `chronicle merge` consumes source-aware `trace.jsonl` (preferred) and legacy `finals.md` files, sorts by wallclock with stable tie-breaks, preserves source/locale/speaker labels, and renders log or markdown table output. End-to-end smoke verified two `chronicle live -o` traces merge into one chronological transcript.
+   3. **P5 — FR-4: live diarization. Next.** Reuses the existing FluidAudio dep. `BufferMulticast` + `StreamingDiarizer` are unit-testable with `MockAudioSource`. Test against the 2026-05-13 Zoom session offline first, then live. Once events carry `speakerId`, `chronicle merge` already prefixes finals with the speaker.
    4. **P4 — FR-6: locale auto-detect. Pending.** Per [ADR-0003](../adr/ADR-0003-locale-resolution-policy.md). `LocaleResolver` with candidate-set restriction + 4-knob hysteresis. Unit tests on synthetic NL inputs covering: correct in-set switch, suppression of out-of-set candidates, suppression during cooldown, suppression below min-chars, pin-mode bypass.
 5. **P6 — FR-5: live tagging.** Once the trace spine, merge, diarization, and locale state are in place, tagging is the smallest layer on top via `ModelHost` + `TagsJSONLSink`.
 6. **P2 — FR-8: `chronicle repair`** (de-prioritised). Mostly needed for the `--audio-format wav` opt-in path and unusual CAF tail recovery; ALAC/CAF plus raw scratch reduces the default repair surface. Canned malformed-WAV corpus tests.

@@ -24,33 +24,36 @@ The implementation should prefer small shared Core helpers over a full `LivePipe
 
 ## Current Checkpoint — 2026-05-17
 
-Only phase 1 is implemented. The batch is not complete.
+Phase 1 (FR-2) and phase 2 (FR-7) are implemented. The batch is not complete.
 
-| Batch item | Task | FR                         | Status  | Commit                                       | Current evidence                                                                                                                                          |
-| ---------- | ---- | -------------------------- | ------- | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1          | #23  | FR-2 JSONL trace           | Done    | `36375a5 feat: add source-aware JSONL trace` | `swift test`, `swift build -c release`, help checks, `git diff --check`, `specdocs_validate`, file-driven live smoke with a 13-event valid `trace.jsonl`. |
-| 2          | #28  | FR-7 merge                 | Next    | —                                            | Not started. Must consume FR-2 `TraceEvent` JSONL first, with `finals.md` fallback.                                                                       |
-| 3          | #25  | FR-4 streaming diarization | Pending | —                                            | Not started. Must attach `speakerId` into FR-2 events and finals only after source-aware merge surface exists.                                            |
-| 4          | #24  | FR-6 locale resolver       | Pending | —                                            | Not started. Must emit locale state/switches into trace; restart path can be staged if risky.                                                             |
+| Batch item | Task | FR                         | Status  | Commit                                       | Current evidence                                                                                                                                                                                                                                                  |
+| ---------- | ---- | -------------------------- | ------- | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1          | #23  | FR-2 JSONL trace           | Done    | `36375a5 feat: add source-aware JSONL trace` | `swift test`, `swift build -c release`, help checks, `git diff --check`, `specdocs_validate`, file-driven live smoke with a 13-event valid `trace.jsonl`.                                                                                                         |
+| 2          | #28  | FR-7 merge                 | Done    | this commit                                  | 10 new `MergeTests` plus full `swift test` (56 tests) green, `swift build -c release` green, `chronicle merge --help`, synthetic JSONL+finals.md smoke, end-to-end smoke with two `chronicle live -o` runs over `say` fixtures merged into one chronological log. |
+| 3          | #25  | FR-4 streaming diarization | Next    | —                                            | Not started. Must attach `speakerId` into FR-2 events and finals; `chronicle merge` already preserves `speakerId` end-to-end once events carry it.                                                                                                                |
+| 4          | #24  | FR-6 locale resolver       | Pending | —                                            | Not started. Must emit locale state/switches into trace; restart path can be staged if risky.                                                                                                                                                                     |
 
 FR-2 changed the shared live result surface: `TranscriptionSink.didReceiveResult(_:isFinal:wallclockOffsetMs:wallclock:audioRange:)` now carries optional analyzer timing metadata. `JSONLTraceSink` uses it; `LiveFileSink` and `FinalsAppendSink` inherit default forwarding to their existing volatile/final hooks. Future FR-4/FR-6 work should use this hook instead of adding parallel result loops.
 
-FR-2 also hardened shared append semantics in `AtomicFile.appendLine`: Darwin uses `O_APPEND`, `flock(LOCK_EX)`, EINTR retry, partial-write looping, and `write == 0` failure. That affects `JSONLTraceSink` and existing line append sinks. Merge should assume each complete line is one event, and recovery should tolerate at most one torn final line.
+FR-2 also hardened shared append semantics in `AtomicFile.appendLine`: Darwin uses `O_APPEND`, `flock(LOCK_EX)`, EINTR retry, partial-write looping, and `write == 0` failure. That affects `JSONLTraceSink` and existing line append sinks. Merge assumes each complete line is one event, and tolerates at most one torn trailing line per JSONL input.
+
+FR-7 added `Sources/Chronicle/Subcommands/Merge.swift` with helper types `MergedRecord`, `MergeOutcome`, `MergeService`, `MergeInputFormat`, `MergeOutputFormat`, `FinalsMarkdownReader`, and `MergeRenderer`. Default output is a plain log (`[wallclock] [source] (speaker, locale) text`); `--format markdown` produces a markdown table. Stable sort key is `(wallclock, sourcePath, eventId)`; `--source-alias <path>=<name>` overrides source labels for finals.md fallback or for renamed JSONL files; `--include-volatile` is opt-in. Concurrent-writer JSONL files (`chronicle mic -o trace.jsonl` and `chronicle sysaudio -o trace.jsonl` sharing one path) merge into one chronological output because the trace itself is already source-tagged per event.
 
 ## Resume After Compaction
 
-Start with #28. Do not claim the 1–4 batch is finished until #28, #25, and #24 are also implemented, validated, committed, pushed, and task-marked complete.
+Start with #25. Do not claim the 1–4 batch is finished until #25 and #24 are also implemented, validated, committed, pushed, and task-marked complete.
 
 Minimum restart sequence:
 
-1. `set_session_context(status="working", tabTopic="Trace Merge", workLabel="fr7 merge")`.
-2. `TaskWrite` #28 → `in_progress`.
-3. Read this file, PRD-001 FR-7, `docs/STATUS.md`, `Sources/Chronicle/Core/Sinks/JSONLTraceSink.swift`, `Sources/Chronicle/Chronicle.swift`, and subcommand/test patterns.
-4. Implement `Sources/Chronicle/Subcommands/Merge.swift` and register it in `Chronicle.swift`.
-5. Add parser/helpers for `TraceEvent` finals and legacy `finals.md` lines.
-6. Add `Tests/ChronicleTests/Subcommands/MergeTests.swift`.
-7. Validate with focused merge tests, `swift test`, `swift build -c release`, `git diff --check`, `specdocs_validate`, and `chronicle merge --help`.
-8. Commit/push with a Conventional Commit, then mark #28 complete.
+1. `set_session_context(status="working", tabTopic="Live Diarize", workLabel="fr4 diarize")`.
+2. `TaskWrite` #25 → `in_progress`.
+3. Read this file, PRD-001 FR-4, `docs/STATUS.md`, `Sources/Chronicle/Core/Audio/AudioSourceOutputStreams.swift`, `Sources/Chronicle/Subcommands/Diarize.swift`, and the existing FluidAudio diarizer wiring.
+4. Decide whether `Core/Audio/BufferMulticast.swift` is needed or whether existing `AudioSourceOutputStreams` can support analyzer + sidecar + diarizer consumers.
+5. Add `Core/Diarize/StreamingDiarizer.swift` behind a small protocol and wire `--diarize` to `chronicle mic` and `chronicle sysaudio`.
+6. Attach `speakerId` to `JSONLTraceSink` events; FR-7 already surfaces speakers in merged output.
+7. Add unit tests for multicast fan-out, slow consumer, finish/drain semantics, and speaker alignment on canned ranges.
+8. Validate `swift test`, `swift build -c release`, `git diff --check`, `specdocs_validate`, `chronicle mic --help` / `chronicle sysaudio --help`.
+9. Commit/push, then mark #25 complete.
 
 ## Components
 
@@ -136,8 +139,8 @@ Minimum restart sequence:
 | Phase | Component                               | Dependencies                                                              | Estimated Scope | Status            |
 | ----- | --------------------------------------- | ------------------------------------------------------------------------- | --------------- | ----------------- |
 | 1     | TraceEvent schema + `JSONLTraceSink`    | Existing `AtomicFile`, `TranscriptionSink`, `Mic.swift`, `SysAudio.swift` | M               | Done in `36375a5` |
-| 2     | `chronicle merge` over JSONL/finals     | Phase 1 trace schema                                                      | M               | Next              |
-| 3     | `BufferMulticast` + `StreamingDiarizer` | Phase 1 trace fields, Phase 2 merge can inspect output                    | L               | Pending           |
+| 2     | `chronicle merge` over JSONL/finals     | Phase 1 trace schema                                                      | M               | Done              |
+| 3     | `BufferMulticast` + `StreamingDiarizer` | Phase 1 trace fields, Phase 2 merge can inspect output                    | L               | Next              |
 | 4     | `LocaleResolver` + locale trace events  | Phase 1 trace fields; ADR-0003                                            | L               | Pending           |
 | 5     | Batch smoke + docs receipts             | Phases 1-4                                                                | M               | Pending           |
 
@@ -159,7 +162,7 @@ Minimum restart sequence:
 * Resolved for next FR-7 pass: `chronicle merge` emits markdown first; `--format jsonl` remains additive future work unless implementation evidence shows immediate machine-consumer need.
 * What exact timing axis should diarizer alignment use: analyzer buffer offsets, wallclock offsets, or both? FR-2 now stores both fractional wallclock and monotonic offset plus optional analyzer `audioRange`; FR-4 must decide which axis owns speaker alignment.
 * Should live locale switch restart the `SpeechAnalyzer` immediately, or first record candidate/switch events while keeping current transcriber pinned?
-* What default source aliases should merge infer from paths: `mic`, `sysaudio`, or caller-provided `--source <name>`?
+* What default source aliases should merge infer from paths: `mic`, `sysaudio`, or caller-provided `--source <name>`? Resolved for FR-7: merge infers source from `TraceEvent.source` for JSONL inputs, and from filename tokens (`mic`, `sys`, `sysaudio`, `live`) for `finals.md` fallback; either can be overridden by `--source-alias <path>=<name>`.
 
 ## ADR Index
 
