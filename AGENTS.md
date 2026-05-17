@@ -92,6 +92,15 @@ while no app is producing audio, Chronicle keeps running, logs a warning after
 ~5 s, and re-warns every ~30 s instead of treating idle output as a permission
 failure.
 
+### Source identity and debug boundary
+
+Current live commands are source-isolated:
+
+* `chronicle mic` opens `MicAudioSource` / microphone only and logs `captureSource=MicAudioSource source=microphone systemOutput=not-opened`.
+* `chronicle sysaudio` opens `CoreAudioTapSource` / CoreAudio process tap only and logs `captureSource=CoreAudioTapSource source=system-output mic=not-opened`.
+
+`AnalyzerInput(buffer:)` carries audio only, not source metadata. Do not feed mic and system buffers into one raw analyzer stream without adding source labels before the merge; that would destroy source awareness at the SpeechAnalyzer boundary. Keep current one-source-per-transcriber commands or merge source-prefixed finals/traces later.
+
 ### Robustness layer (Core/Audio/CoreAudioTapSource + Core/Runtime/AsyncTimeout)
 
 Defensive layers around the live audio pipeline; do not remove without replacing:

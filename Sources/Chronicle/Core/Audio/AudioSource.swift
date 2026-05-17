@@ -63,6 +63,12 @@ public final class PCMBufferRef: @unchecked Sendable {
 /// Sources yield each converted buffer once here; the helper wraps it for
 /// SpeechAnalyzer and the sidecar stream in one place. This keeps stop/drain
 /// ordering consistent across audio sources.
+///
+/// Source identity is intentionally outside `AnalyzerInput`: current `mic` and
+/// `sysaudio` commands run one source per transcriber. A future multi-source
+/// daemon must preserve source labels before merging streams; feeding mic and
+/// system buffers into one raw `AnalyzerInput` sequence would lose source
+/// awareness at the SpeechAnalyzer boundary.
 final class AudioSourceOutputStreams: @unchecked Sendable {
   let analyzerInputs: AsyncStream<AnalyzerInput>
   let pcmBuffers: AsyncStream<PCMBufferRef>

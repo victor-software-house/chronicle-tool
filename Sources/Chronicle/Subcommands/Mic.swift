@@ -82,6 +82,9 @@ struct Mic: AsyncParsableCommand {
 
     let micSource = try MicAudioSource(analyzerFormat: analyzerFormat)
     FileHandle.standardError.write(Data("[mic] mic format=\(micSource.micFormat)\n".utf8))
+    FileHandle.standardError.write(Data(
+      "[mic] captureSource=MicAudioSource source=microphone systemOutput=not-opened sidecarFormat=analyzer-pcm\n".utf8
+    ))
 
     // Optional raw-audio sidecar.
     let audioSink: AudioSidecarSink? = try makeAudioSidecarSink(

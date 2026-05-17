@@ -78,6 +78,9 @@ struct SysAudio: AsyncParsableCommand {
       excludeCurrentProcessAudio: !includeSelfAudio,
       verbose: verbose
     )
+    FileHandle.standardError.write(Data(
+      "[sysaudio] captureSource=CoreAudioTapSource source=system-output mic=not-opened sidecarFormat=analyzer-pcm\n".utf8
+    ))
 
     // Optional raw-audio sidecar (writes the analyzer-format buffer; not
     // the CoreAudio tap native format).
