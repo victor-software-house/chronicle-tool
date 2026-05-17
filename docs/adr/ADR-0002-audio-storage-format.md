@@ -52,12 +52,16 @@ The video-side choice in `research-notes.md` already established the
 pattern (HEVC + fragmented MP4 with 5-min rotation). Audio needs the
 equivalent decision.
 
-Chronicle's downstream consumers all operate on **decoded** 16 kHz Int16
-PCM internally: `SpeechAnalyzer`, FluidAudio's diarizers, and any premium
-cloud STT (ElevenLabs Scribe v2, Deepgram Nova-3) all decode to PCM
-before inference. The on-disk format only matters for storage, transport,
-and human playback — never for model accuracy, provided the codec is
-high-quality enough that decode-to-PCM is faithful.
+Chronicle's downstream consumers all operate on **decoded PCM** internally.
+For live SpeechAnalyzer input, Chronicle must negotiate the exact buffer format
+with `SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith:)`; current live
+smokes observe 16 kHz mono Int16, but that is an OS/module result, not a hard
+contract. FluidAudio's diarizers and any premium cloud STT (ElevenLabs Scribe
+v2, Deepgram Nova-3) also decode to PCM before inference. The on-disk format
+only matters for storage, transport, and human playback — never for model
+accuracy, provided the codec is high-quality enough that decode-to-PCM is
+faithful and format conversion preserves the model input Chronicle intends to
+replay.
 
 Speech 24/7 is the easiest audio compression target there is: low
 bandwidth (human voice tops out near 8 kHz), narrow dynamic range,
@@ -327,6 +331,52 @@ work. The `AVAudioFile` probe passed, so that lower-level draft was removed from
 the production path. `ExtAudioFile` remains documented only as the fallback if
 future OS behavior breaks the high-level writer's 16-bit-source ALAC output.
 
+## Analyzer-format boundary
+
+Apple's SpeechAnalyzer buffer path is explicit: call
+`SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith:)`, then convert live
+buffers to that supported `AVAudioFormat` before yielding `AnalyzerInput`.
+Apple's docs state that `SpeechAnalyzer` does **not** transparently upsample,
+downsample, or convert buffer input because it keeps `CMTime` values
+sample-accurate. File-based analyzer entry points may auto-convert whole files,
+but Chronicle's live daemons use the buffer/`AsyncStream<AnalyzerInput>` path.
+
+Chronicle therefore has two distinct audio shapes:
+
+1. **Source-native capture PCM** — e.g. current CoreAudio system tap smokes show
+   48 kHz stereo Float32 from `kAudioTapPropertyFormat`.
+2. **Analyzer PCM** — the `bestAvailableAudioFormat` result for the selected
+   Speech modules. Current smokes show 16 kHz mono Int16, but callers must treat
+   this as negotiated runtime state.
+
+Current durable storage deliberately records **analyzer PCM**, not source-native
+PCM:
+
+```text
+CoreAudio tap / AVAudioEngine native PCM
+  → BufferConverter
+  → analyzer PCM from SpeechAnalyzer.bestAvailableAudioFormat
+      ├─ AnalyzerInput → SpeechAnalyzer
+      └─ PCMBufferRef  → ALAC-in-CAF + rolling raw-PCM scratch
+```
+
+This means the ALAC and scratch tiers preserve exactly what SpeechAnalyzer heard
+(after channel mixdown/resampling/quantization), which is the right default for
+transcript replay, premium-STT bursts, and repair. It is not a hi-fi archive of
+the original system mix. A future source-analysis or archival mode should add a
+separate source-native sidecar branch **before** `BufferConverter`, rather than
+changing the SpeechAnalyzer path.
+
+GitHub/reference check (2026-05-17): Apple's CoreAudio taps sample, Marcelo
+Cajueiro's `insidegui/AudioCap`, and `makeusabrew/audiotee` follow the same tap
+setup pattern Chronicle uses: create `CATapDescription`, create process tap,
+read `kAudioTapPropertyUID`/`kAudioTapPropertyFormat`, attach tap to a private
+aggregate device, create IOProc, then start the aggregate. SpeechAnalyzer sample
+code follows the same `bestAvailableAudioFormat` + explicit conversion pattern.
+No surveyed Swift library provides a drop-in replacement for Chronicle's exact
+combo of CoreAudio tap, SpeechAnalyzer-format conversion, rotated ALAC sidecar,
+and raw scratch repair tier; ADR-0005 keeps Apple-native APIs plus local policy.
+
 ## Consequences
 
 ### Positive
@@ -391,6 +441,14 @@ future OS behavior breaks the high-level writer's 16-bit-source ALAC output.
   — why Chronicle keeps local sidecar rotation/scratch policy instead of
   adopting AudioKit, SFBAudioEngine, AVAssetWriter segmentation, ffmpeg, or
   GStreamer for the live daemon path.
+* **Apple docs**:
+  [`SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith:)`](https://developer.apple.com/documentation/speech/speechanalyzer/bestavailableaudioformat\(compatiblewith:\))
+  — analyzer buffer-format negotiation; [Capturing system audio with Core Audio
+  taps](https://developer.apple.com/documentation/coreaudio/capturing-system-audio-with-core-audio-taps)
+  — CoreAudio tap + aggregate-device recipe.
+* **GitHub references**: [`insidegui/AudioCap`](https://github.com/insidegui/AudioCap)
+  and [`makeusabrew/audiotee`](https://github.com/makeusabrew/audiotee) —
+  production-style CoreAudio tap setup references used for comparison.
 * **Research**: `~/workspace/victor/research/chronicle/notes/research-notes.md`
   — cost model + video-side codec choice this audio decision mirrors.
 * **Implementation**: task **P11** (production `AVAudioFileALACSink` +

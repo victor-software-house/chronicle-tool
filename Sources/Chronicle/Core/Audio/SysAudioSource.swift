@@ -11,7 +11,8 @@ import Darwin
 ///
 /// Captures the system mix (every app's audio output combined) at the
 /// platform's default rate (typically 48 kHz Float32 stereo) and converts
-/// per-buffer into the analyzer's preferred format (16 kHz Int16 mono).
+/// per-buffer into the negotiated analyzer format returned by
+/// `SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith:)`.
 ///
 /// Requires the user to grant Screen Recording permission (TCC):
 /// - Info.plist must carry `NSScreenCaptureUsageDescription`.

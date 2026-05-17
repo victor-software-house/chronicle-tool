@@ -166,7 +166,7 @@ output mix.
 
 ```text
 AudioSource (MicAudioSource | CoreAudioTapSource)
-  → BufferConverter (→ 16 kHz Int16 mono)
+  → BufferConverter (→ analyzerFormat from SpeechAnalyzer.bestAvailableAudioFormat)
   → fan-out via two AsyncStreams:
       ├─ AsyncStream<AnalyzerInput> → SpeechAnalyzer + .progressiveTranscription [ANE]
       │    → volatile / final events → TranscriptionSink fan-out:
@@ -176,13 +176,23 @@ AudioSource (MicAudioSource | CoreAudioTapSource)
       └─ AsyncStream<PCMBufferRef>  → audio sidecar sinks (default: ALAC-in-CAF + raw PCM scratch).
 ```
 
+`SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith:)` is the format
+boundary for live capture. Apple documents that `SpeechAnalyzer` does not
+transparently upsample, downsample, or convert buffer input because it preserves
+sample-accurate `CMTime` values; Chronicle therefore converts source buffers
+before yielding `AnalyzerInput`. Current storage records the converted analyzer
+PCM (what SpeechAnalyzer heard), not the source-native tap PCM. On current live
+smokes this is 16 kHz mono Int16; callers must not hard-code that shape.
+
 Resource cost per daemon: **~0.5–0.8 % CPU, ~30 MB RSS, ALAC sidecar size
 varies by source but the 6870 s reference compressed to ~91.3 MB, ~10 KB/s of
 text sidecars, ~150 ms volatile latency, 5–30 s final latency.** The model
 runs off-process on the ANE; the daemon just does the tap + convert +
 fan-out + file writes. On M4 Pro / 48 GB the ANE + RAM headroom supports
 ~100–200 parallel real-time streams — the actual bottleneck is the audio
-device / TCC ceiling.
+device / TCC ceiling. A future hi-fi/source-analysis mode should add a separate
+source-native sidecar branch before `BufferConverter` rather than changing the
+transcription path.
 
 Full receipts (spike-era):
 [`spikes/2026-05-13-daemon-live-mic.md`](spikes/2026-05-13-daemon-live-mic.md).

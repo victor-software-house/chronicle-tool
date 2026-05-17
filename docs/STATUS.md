@@ -90,7 +90,7 @@ TCC resolves a stable identity. See AGENTS.md.
 |---|---|---|
 | `AudioSource` | `MicAudioSource` (AVAudioEngine), `CoreAudioTapSource` (CoreAudio process tap), `SysAudioSource` (deprecated SCStream fallback not used by CLI) | `FileAudioSource` (P5 testing); RTSP / Bluetooth (post-PRD) |
 | `TranscriptionSink` | `LiveFileSink`, `FinalsAppendSink` | `JSONLTraceSink` (P3), `TagsJSONLSink` (P6) |
-| audio sidecar sink (`AudioSidecarSink`) | inline `AVAudioFile` WAV in subcommands (today) | `AVAudioFileALACSink` + `RollingPCMScratchSink` (P11); `WAVSidecarSink` extracted as opt-in for debug/export; `OpusCAFSink` retained opt-in only; `ExtAudioFile` ALAC fallback only if `AVAudioFile` regresses |
+| audio sidecar sink (`AudioSidecarSink`) | `AVAudioFileALACSink` + `RollingPCMScratchSink` default; `WAVSidecarSink` and `OpusCAFSink` opt-in | optional source-native sidecar before `BufferConverter` (#79); `ExtAudioFile` ALAC fallback only if `AVAudioFile` regresses |
 | `OfflineDiarizing` | `OfflineDiarizer` (FluidAudio VBx) | — |
 | (planned) `StreamingDiarizing` | — | `StreamingDiarizer` (FluidAudio Sortformer, P5) |
 | `ContentTagger.tagText` / `Summarizer.summarizeText` | cached via `ModelHost.shared` | — |
@@ -146,6 +146,7 @@ Open phases map to bare numeric task IDs in the Pi task tracker:
 | Scratch allocation profiling | #75 | open |
 | Retire deprecated SCStream sysaudio source | #76 | open |
 | Drain BufferConverter residual frames on stop | #77 | open |
+| Optional source-native audio sidecar | #79 | open |
 
 Use `TaskRead taskIds=["<id>"]` for full acceptance criteria; use
 `TaskRead` with no args to list everything.

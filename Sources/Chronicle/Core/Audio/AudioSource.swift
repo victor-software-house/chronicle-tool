@@ -7,8 +7,8 @@ import Speech
 /// Conforming sources:
 /// - Configure their underlying capture mechanism (`AVAudioEngine`, CoreAudio
 ///   process tap, `AVAudioFile`, network, etc.) and resolve a *capture* format.
-/// - Resolve an *analyzer* format compatible with the supplied transcribers
-///   (almost always 16 kHz Int16 mono per `SpeechAnalyzer.bestAvailableAudioFormat`).
+/// - Resolve an *analyzer* format compatible with the supplied transcribers via
+///   `SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith:)`.
 /// - Yield converted `AnalyzerInput` values on `analyzerInputs` for the
 ///   `SpeechAnalyzer` to consume.
 /// - Yield the same audio (in the *analyzer* format) on `pcmBuffers` so that
@@ -21,7 +21,8 @@ import Speech
 public protocol AudioSource: AnyObject, Sendable {
   /// Format of the buffers yielded by `pcmBuffers` and wrapped inside
   /// `analyzerInputs`. Matches what `SpeechAnalyzer.bestAvailableAudioFormat`
-  /// returned at construction time. Almost always 16 kHz Int16 mono.
+  /// returned at construction time. The observed Chronicle live path is often
+  /// 16 kHz mono Int16, but callers must not hard-code that shape.
   var analyzerFormat: AVAudioFormat { get }
 
   /// Async stream of `AnalyzerInput` values to feed into
