@@ -14,10 +14,12 @@ import AVFoundation
 ///     <base>/0000NN.pcm   ← currently-being-written segment
 ///     <base>/format.json  ← sample rate / channels / bit depth / float-or-int metadata
 ///
-/// Each `.pcm` is a flat header-less interleaved PCM block in the source
-/// format. Segments rotate every `rotateInterval` seconds; segments older
-/// than `ttl` seconds are pruned on rotation. The on-disk size budget is
-/// strictly bounded by `ttl * source-bandwidth`.
+/// Each `.pcm` is a flat header-less PCM block using the source sample format,
+/// sample rate, and channel count, but written in canonical interleaved frame
+/// order (`c0f0, c1f0, c0f1, c1f1, ...`). Segments rotate every
+/// `rotateInterval` seconds; segments older than `ttl` seconds are pruned on
+/// rotation. The on-disk size budget is strictly bounded by
+/// `ttl * source-bandwidth`.
 ///
 /// **Crash safety:** because the scratch is header-less raw PCM, a SIGKILL
 /// at any point leaves a perfectly-readable file truncated to the last
@@ -112,7 +114,7 @@ public final class RollingPCMScratchSink: AudioSidecarSink, @unchecked Sendable 
       "sampleRate": sourceFormat.sampleRate,
       "channelCount": sourceFormat.channelCount,
       "commonFormat": commonFormatName(sourceFormat.commonFormat),
-      "interleaved": sourceFormat.isInterleaved,
+      "interleaved": true,
       "bitsPerChannel": bitsPerChannel(sourceFormat),
       "ttl": ttl,
       "rotateInterval": rotateInterval
@@ -168,6 +170,9 @@ public final class RollingPCMScratchSink: AudioSidecarSink, @unchecked Sendable 
 
     switch buffer.format.commonFormat {
     case .pcmFormatFloat32:
+      if buffer.format.isInterleaved {
+        return interleavedBytes(buffer, bytesPerSample: MemoryLayout<Float>.size)
+      }
       guard let ch = buffer.floatChannelData else { return nil }
       // Interleave: [c0f0, c1f0, c0f1, c1f1, ...] if multi-channel; mono
       // is the typical chronicle path.
@@ -182,6 +187,9 @@ public final class RollingPCMScratchSink: AudioSidecarSink, @unchecked Sendable 
       }
       return data
     case .pcmFormatInt16:
+      if buffer.format.isInterleaved {
+        return interleavedBytes(buffer, bytesPerSample: MemoryLayout<Int16>.size)
+      }
       guard let ch = buffer.int16ChannelData else { return nil }
       var data = Data(count: frames * channels * MemoryLayout<Int16>.size)
       data.withUnsafeMutableBytes { raw in
@@ -194,6 +202,9 @@ public final class RollingPCMScratchSink: AudioSidecarSink, @unchecked Sendable 
       }
       return data
     case .pcmFormatInt32:
+      if buffer.format.isInterleaved {
+        return interleavedBytes(buffer, bytesPerSample: MemoryLayout<Int32>.size)
+      }
       guard let ch = buffer.int32ChannelData else { return nil }
       var data = Data(count: frames * channels * MemoryLayout<Int32>.size)
       data.withUnsafeMutableBytes { raw in
@@ -208,6 +219,19 @@ public final class RollingPCMScratchSink: AudioSidecarSink, @unchecked Sendable 
     default:
       return nil
     }
+  }
+
+  private func interleavedBytes(_ buffer: AVAudioPCMBuffer, bytesPerSample: Int) -> Data? {
+    let frames = Int(buffer.frameLength)
+    let channels = Int(buffer.format.channelCount)
+    let expectedBytes = frames * channels * bytesPerSample
+    guard expectedBytes > 0 else { return nil }
+
+    let audioBuffer = buffer.audioBufferList.pointee.mBuffers
+    guard let source = audioBuffer.mData else { return nil }
+    let availableBytes = Int(audioBuffer.mDataByteSize)
+    guard availableBytes >= expectedBytes else { return nil }
+    return Data(bytes: source, count: expectedBytes)
   }
 
   private func commonFormatName(_ f: AVAudioCommonFormat) -> String {

@@ -26,6 +26,30 @@ struct RollingPCMScratchSinkTests {
     return buf
   }
 
+  private func makeStereoInt16Buffer(frames: AVAudioFrameCount) -> AVAudioPCMBuffer {
+    let format = AVAudioFormat(
+      commonFormat: .pcmFormatInt16,
+      sampleRate: 16_000,
+      channels: 2,
+      interleaved: false
+    )!
+    let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
+    buf.frameLength = frames
+    let left = buf.int16ChannelData![0]
+    let right = buf.int16ChannelData![1]
+    for i in 0..<Int(frames) {
+      left[i] = Int16(1_000 + i)
+      right[i] = Int16(-1_000 - i)
+    }
+    return buf
+  }
+
+  private func int16Values(from data: Data) -> [Int16] {
+    data.withUnsafeBytes { rawBuffer in
+      Array(rawBuffer.bindMemory(to: Int16.self))
+    }
+  }
+
   private func listSegments(_ dir: URL) throws -> [URL] {
     try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
       .filter { $0.pathExtension == "pcm" }
@@ -50,7 +74,7 @@ struct RollingPCMScratchSinkTests {
     #expect(json?["sampleRate"] as? Double == 16_000)
     #expect(json?["channelCount"] as? Int == 1)
     #expect(json?["commonFormat"] as? String == "float32")
-    #expect(json?["interleaved"] as? Bool == false || json?["interleaved"] as? Bool == true)
+    #expect(json?["interleaved"] as? Bool == true)
 
     let segments = try listSegments(dir)
     #expect(segments.count == 1)
@@ -78,6 +102,33 @@ struct RollingPCMScratchSinkTests {
     let bytes = try Data(contentsOf: seg)
     // 1600 frames * 1 channel * 4 bytes (Float32) = 6400 bytes
     #expect(bytes.count == 6400)
+  }
+
+  @Test("append() writes sample-exact interleaved Int16 scratch bytes")
+  func appendWritesSampleExactInt16Scratch() async throws {
+    let dir = tmpDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    let buf = makeStereoInt16Buffer(frames: 4)
+    let sink = try RollingPCMScratchSink(base: dir, sourceFormat: buf.format, ttl: 60, rotateInterval: 30)
+    await sink.append(buf)
+    await sink.finish()
+
+    let manifestData = try Data(contentsOf: dir.appendingPathComponent("format.json"))
+    let manifest = try JSONSerialization.jsonObject(with: manifestData) as? [String: Any]
+    #expect(manifest?["sampleRate"] as? Double == 16_000)
+    #expect(manifest?["channelCount"] as? Int == 2)
+    #expect(manifest?["commonFormat"] as? String == "int16")
+    #expect(manifest?["interleaved"] as? Bool == true)
+
+    let bytes = try Data(contentsOf: dir.appendingPathComponent("000000.pcm"))
+    #expect(bytes.count == 4 * 2 * MemoryLayout<Int16>.size)
+    #expect(int16Values(from: bytes) == [
+      1_000, -1_000,
+      1_001, -1_001,
+      1_002, -1_002,
+      1_003, -1_003
+    ])
   }
 
   // MARK: - 3. Rotation on interval

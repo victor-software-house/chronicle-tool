@@ -64,6 +64,43 @@ struct AVAudioFileALACSinkTests {
     return buf
   }
 
+  private func int16PatternBuffer(
+    frames: AVAudioFrameCount,
+    sampleRate: Double = 16_000,
+    start: Int
+  ) -> AVAudioPCMBuffer {
+    let fmt = AVAudioFormat(
+      commonFormat: .pcmFormatInt16,
+      sampleRate: sampleRate,
+      channels: 1,
+      interleaved: false
+    )!
+    let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: frames)!
+    buf.frameLength = frames
+    let data = buf.int16ChannelData![0]
+    for i in 0..<Int(frames) {
+      data[i] = Int16(((start + i) % 32_000) - 16_000)
+    }
+    return buf
+  }
+
+  private func decodedInt16Bytes(from url: URL) throws -> Data {
+    let file = try AVAudioFile(
+      forReading: url,
+      commonFormat: .pcmFormatInt16,
+      interleaved: false
+    )
+    var out = Data()
+    while file.framePosition < file.length {
+      let frameCount = min(4096, AVAudioFrameCount(file.length - file.framePosition))
+      let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: frameCount)!
+      try file.read(into: buffer, frameCount: frameCount)
+      guard buffer.frameLength > 0, let channel = buffer.int16ChannelData?[0] else { break }
+      out.append(Data(bytes: channel, count: Int(buffer.frameLength) * MemoryLayout<Int16>.size))
+    }
+    return out
+  }
+
   private func scratchURL(for sidecarURL: URL) -> URL {
     sidecarURL
       .deletingLastPathComponent()
@@ -147,6 +184,54 @@ struct AVAudioFileALACSinkTests {
     let secondReader = try AVAudioFile(forReading: secondURL)
     #expect(firstReader.fileFormat.streamDescription.pointee.mFormatID == kAudioFormatAppleLossless)
     #expect(secondReader.fileFormat.streamDescription.pointee.mFormatID == kAudioFormatAppleLossless)
+  }
+
+  @Test("rotated ALAC segments decode to the same PCM as one continuous ALAC file")
+  func rotatedALACSegmentsPreservePCMContinuity() async throws {
+    let continuousURL = tmpURL("continuous.alac.caf")
+    let rotatedBaseURL = tmpURL("continuity.alac.caf")
+    let firstURL = RotatingAudioSidecarSink.segmentURL(for: rotatedBaseURL, index: 1)
+    let secondURL = RotatingAudioSidecarSink.segmentURL(for: rotatedBaseURL, index: 2)
+    let thirdURL = RotatingAudioSidecarSink.segmentURL(for: rotatedBaseURL, index: 3)
+    defer {
+      try? FileManager.default.removeItem(at: continuousURL)
+      try? FileManager.default.removeItem(at: rotatedBaseURL)
+      try? FileManager.default.removeItem(at: firstURL)
+      try? FileManager.default.removeItem(at: secondURL)
+      try? FileManager.default.removeItem(at: thirdURL)
+    }
+
+    let buffers = (0..<6).map { int16PatternBuffer(frames: 640, start: $0 * 640) } // 40 ms each @ 16 kHz.
+    let sourceFormat = buffers[0].format
+
+    let continuous = try AVAudioFileALACSink(url: continuousURL, sourceFormat: sourceFormat)
+    for buffer in buffers {
+      await continuous.append(buffer)
+    }
+    await continuous.finish()
+
+    let rotating = try RotatingAudioSidecarSink(
+      baseURL: rotatedBaseURL,
+      rotateInterval: 0.08,
+      sourceFormat: sourceFormat
+    ) { segmentURL in
+      try AVAudioFileALACSink(url: segmentURL, sourceFormat: sourceFormat)
+    }
+    for buffer in buffers {
+      await rotating.append(buffer)
+    }
+    await rotating.finish()
+
+    let expected = try decodedInt16Bytes(from: continuousURL)
+    var actual = Data()
+    for url in [firstURL, secondURL, thirdURL] where FileManager.default.fileExists(atPath: url.path) {
+      actual.append(try decodedInt16Bytes(from: url))
+    }
+
+    #expect(FileManager.default.fileExists(atPath: firstURL.path))
+    #expect(FileManager.default.fileExists(atPath: secondURL.path))
+    #expect(actual.count == expected.count, "rotated decoded bytes \(actual.count) != continuous decoded bytes \(expected.count)")
+    #expect(actual == expected)
   }
 
   @Test("AVAudioFile writes ALAC-in-CAF that AVFoundation reopens")
