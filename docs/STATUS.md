@@ -15,11 +15,11 @@ Last refresh: 2026-05-17 — `chronicle sysaudio` now uses `CoreAudioTapSource` 
 | **P7** | `chronicle sysaudio` subcommand | FR-3 | ✔ **done** | `CoreAudioTapSource` via CoreAudio process tap (`CATapDescription` + private aggregate device) feeds the same `SpeechAnalyzer` pipeline as mic; live TTS smoke produced a final transcript and wrote readable ALAC + scratch sidecars. |
 | **P11** | ALAC production audio sink | FR-1 | ✔ **done** | `Core/Sinks/AVAudioFileALACSink` + `Core/Sinks/RollingPCMScratchSink` (ADR-0002 amended 2026-05-16: ALAC default after Opus WER regression; ADR-0005 documents the reuse-boundary audit); `AVAudioFile` writer probe passed WER/byte-compare evidence. Default `--audio-format` is composite ALAC + scratch; `--rotate-audio` segments ALAC/WAV/Opus by audio duration. Live mic smoke produced two readable ALAC CAF segments plus scratch PCM. |
 | **P2a** | Scratch export recovery | FR-8 | ✔ **done** | `chronicle scratch-export <scratch-dir> -o recovered.wav|.caf` reads `format.json`, validates canonical interleaved raw PCM, requires contiguous `.pcm` segments, trims partial trailing frames, and writes WAV or ALAC-in-CAF. |
-| P3 | JSONL incremental trace | FR-2 | ⏳ pending | `Core/Sinks/JSONLTraceSink` via `AtomicFile.appendJSONLine`; `kill -9` mid-write leaves ≤ 1 torn line. |
-| P4 | Locale auto-detect per ADR-0003 | FR-6 | ⏳ pending | `Core/Speech/LocaleResolver`; candidate-set restriction + 4-knob hysteresis; no "random Russian" by construction. |
-| P5 | Live diarization | FR-4 | ⏳ pending | `Core/Audio/BufferMulticast` + `Core/Diarize/StreamingDiarizer`; speakerId merged into finals by audio range. |
-| P6 | Live tagging via `--tag-every N` | FR-5 | ⏳ pending | `Core/Sinks/TagsJSONLSink` + cached `ContentTagger.tagText`; guardrail violations skip + continue. |
-| P8 | `chronicle merge` | FR-7 | ⏳ pending | Chronological merge of N finals/JSONL traces preserving speaker labels. |
+| P3 | JSONL incremental trace | FR-2 | ⏳ next batch #1 | `Core/Sinks/JSONLTraceSink` appends source-aware `trace.jsonl`; torn trailing line recovery; schema becomes spine for merge/diarize/locale. |
+| P8 | `chronicle merge` | FR-7 | ⏳ next batch #2 | Chronological merge of N trace/finals inputs preserving source, locale, and speaker labels. |
+| P5 | Live diarization | FR-4 | ⏳ next batch #3 | `Core/Audio/BufferMulticast` + `Core/Diarize/StreamingDiarizer`; speakerId merged into trace/finals by audio range. |
+| P4 | Locale auto-detect per ADR-0003 | FR-6 | ⏳ next batch #4 | `Core/Speech/LocaleResolver`; candidate-set restriction + 4-knob hysteresis; trace records locale state/switches. |
+| P6 | Live tagging via `--tag-every N` | FR-5 | ⏳ after functional batch | `Core/Sinks/TagsJSONLSink` + cached `ContentTagger.tagText`; guardrail violations skip + continue. |
 | P2b | Legacy WAV tail repair | FR-8 | ⏳ pending | `chronicle repair <wav>` rewrites malformed/stale WAV headers for old incident artefacts and `--audio-format wav` opt-in tails. |
 | P1 | WAV transitional rotation | FR-1 | ✘ skipped | Superseded by P11; was meant as a stepping stone toward Opus. |
 | P9 | End-to-end verification | — | ⏳ pending | Run PRD-001 §15 appendix on a fresh session; capture receipts. |
@@ -97,17 +97,16 @@ TCC resolves a stable identity. See AGENTS.md.
 
 ## How to pick the next thing to do
 
-Default order is the table above. If you have a real reason to deviate:
+Default order is the table above. The current functional batch is planned in [`plan-functional-trace-merge-diarize-locale`](architecture/plan-functional-trace-merge-diarize-locale.md): FR-2 trace first, FR-7 merge second, FR-4 diarization third, FR-6 locale fourth. If you have a real reason to deviate:
 
 - The protocol-oriented core (ADR-0001) means **any single phase is
   cheap to land** because every other phase composes against the same
   protocols.
 - Phases that prerequisite each other are explicit:
-  - P5 (live diarize) needs `BufferMulticast`, which P11 (Opus + scratch)
-    also benefits from. Landing P11 first stabilises the fan-out under
-    the audio thread.
-  - P6 (live tagging) reads `TranscriptionSink` finals; it composes onto
-    any P3 / P4 / P5 outcome without coupling.
+  - P8 (merge) now follows P3 immediately because trace schema should prove source-aware export before speaker/locale metadata lands.
+  - P5 (live diarize) needs `BufferMulticast`; land it after trace/merge so speaker labels flow into a durable source-aware event shape.
+  - P4 (locale auto-detect) can run after trace/merge so locale state and switches are debuggable from the same event spine.
+  - P6 (live tagging) reads `TranscriptionSink` finals; it composes onto any P3 / P4 / P5 outcome without coupling.
   - P9 (verification) needs every other FR. Last.
 
 ## Where to look first when something is wrong

@@ -241,9 +241,17 @@ for `commonFormat=float32`).
 
 ### FR-2: Incremental JSONL trace (`-o trace.jsonl` overrides `trace.json`)
 
-Every event is appended as one JSON object on its own line, flushed every
-K events. The legacy `trace.json` snapshot is still written on graceful
-shutdown but the JSONL is the source of truth.
+Every event is appended as one JSON object on its own line. The legacy
+`trace.json` snapshot is still written on graceful shutdown where needed,
+but the JSONL is the source of truth.
+
+For the next functional batch, `trace.jsonl` is the source-aware spine for
+`merge`, diarization, and locale debugging. Events must carry enough metadata to
+avoid guessing later: schema version, event id, source (`mic` / `sysaudio` /
+custom), source kind, stream id, wallclock timestamp, monotonic offset ms, event
+kind, text, final/volatile state, locale, optional `speakerId`, and future-safe
+audio/channel/export policy fields. Additive fields are allowed; existing fields
+must stay stable once the first implementation lands.
 
 **Acceptance criteria:**
 
@@ -257,8 +265,11 @@ And `jq -c . trace.jsonl 2>/dev/null | wc -l` is within 5 events of the true cou
 
 **Files:**
 
-* `Sources/Chronicle/Mic.swift` — replace `trace.json` writer with JSONL appender.
-* `Sources/Chronicle/Live.swift` — same pattern.
+* `Sources/Chronicle/Core/Sinks/JSONLTraceSink.swift` — append-only source-aware trace sink.
+* `Sources/Chronicle/Subcommands/Mic.swift` — wire `-o trace.jsonl` into the live result loop.
+* `Sources/Chronicle/Subcommands/SysAudio.swift` — same pattern with `source=sysaudio` / system-output metadata.
+* `Sources/Chronicle/Subcommands/Live.swift` — same pattern for file-driven runs if the command keeps trace support.
+* `Tests/ChronicleTests/Sinks/JSONLTraceSinkTests.swift` — JSONL validity, source fields, ordering, and trailing-line recovery.
 
 ---
 
@@ -404,9 +415,16 @@ Then the switch is suppressed because the 30 s cooldown has not elapsed
 
 ### FR-7: Cross-stream merge (`chronicle merge`)
 
-A standalone subcommand that takes ≥2 `finals.md` files (or JSONL traces)
-and emits one chronological, source-prefixed, speaker-labeled markdown
-log on stdout.
+A standalone subcommand that takes ≥2 `trace.jsonl` files (preferred) or
+`finals.md` files (fallback for older runs) and emits one chronological,
+source-prefixed, speaker-labeled markdown log on stdout.
+
+`trace.jsonl` input is canonical because it preserves source, locale, future
+speaker, and future channel/export metadata. `finals.md` input remains useful for
+older receipts but may require source aliases inferred from the file path or
+provided by flags. First implementation emits markdown; unified JSONL output is
+deferred to an additive `--format jsonl` flag unless implementation evidence says
+machine consumers need it immediately.
 
 **Acceptance criteria:**
 
@@ -420,7 +438,8 @@ And speaker labels (if present) are preserved
 
 **Files:**
 
-* `Sources/Chronicle/Merge.swift` — new subcommand.
+* `Sources/Chronicle/Subcommands/Merge.swift` — new subcommand.
+* `Tests/ChronicleTests/Subcommands/MergeTests.swift` — chronological JSONL/finals merge, stable tie-breaks, source aliases, speaker labels.
 
 ---
 
@@ -672,27 +691,28 @@ Order each step so the previous one's receipts feed the next.
 1. **P0 — Modular refactor + test target** \[DONE 2026-05-13]. Implemented [ADR-0001](../adr/ADR-0001-modular-pipeline-architecture.md): extracted `Core/Audio`, `Core/Speech`, `Core/Diarize`, `Core/LLM`, `Core/Sinks`, `Core/Runtime`; converted each subcommand to a thin veneer; added `ChronicleTests` Swift Package test target; verified behaviour parity (byte-identical transcribe.txt + diarize segments) against the 2026-05-13 Zoom session receipts.
 2. **P7 — FR-3: `sysaudio` subcommand** (promoted). Validates the `AudioSource` protocol from ADR-0001 against a real second implementation before the rest of the FRs build on it. `CoreAudioTapSource` is the active system-audio source; sidecar sinks reused. Catches TCC / signing friction early; lets the upcoming P11 audio parity test validate against two real sources.
 3. **P11 — FR-1 (ALAC production sink) per [ADR-0002](../adr/ADR-0002-audio-storage-format.md) (amended 2026-05-16).** Implement `AVAudioFileALACSink` + `RollingPCMScratchSink`, wire `--audio-format alac|wav|pcm|opus` to the audio sinks, run the accuracy-parity test against the 2026-05-13 reference session and assert WER delta ≤ 1 % vs the WAV baseline. Flip the default from WAV to ALAC-in-CAF once sidecar wiring is complete. **Skips the transitional WAV-rotation step** (formerly P1) because the verified default is Apple-native ALAC/CAF plus rolling raw scratch. Opus remains opt-in/export only after WER regression on the real reference.
-4. **P3 — FR-2: `JSONLTraceSink` resilience.** Incremental trace via `AtomicFile.appendJSONLine`. Unit + crash-recovery tests (`kill -9` simulation).
-5. **P4 — FR-6: locale auto-detect** per [ADR-0003](../adr/ADR-0003-locale-resolution-policy.md). `LocaleResolver` with candidate-set restriction + 4-knob hysteresis. Unit tests on synthetic NL inputs covering: correct in-set switch, suppression of out-of-set candidates, suppression during cooldown, suppression below min-chars, pin-mode bypass.
-6. **P5 — FR-4: live diarization.** Reuses the existing FluidAudio dep. `BufferMulticast` + `StreamingDiarizer` are unit-testable with `MockAudioSource`. Test against the 2026-05-13 Zoom session offline first, then live.
-7. **P6 — FR-5: live tagging.** Once FR-4 lands, tagging is the smallest layer on top via `ModelHost` + `TagsJSONLSink`.
-8. **P8 — FR-7: `merge` subcommand.** Pure-function; easy to leave for last and unit-test exhaustively.
-9. **P2 — FR-8: `chronicle repair`** (de-prioritised). Mostly needed for the `--audio-format wav` opt-in path and unusual CAF tail recovery; ALAC/CAF plus raw scratch reduces the default repair surface. Canned malformed-WAV corpus tests.
-10. **P9 — Verification pass.** Run the §15 appendix end-to-end on a fresh session. Capture receipts.
-11. **P10 — Documentation pass.** Update README + research-notes + spike doc with the final source code + final numbers.
+4. **Next functional batch — source-aware trace spine and transcript assembly** per [plan-functional-trace-merge-diarize-locale](../architecture/plan-functional-trace-merge-diarize-locale.md):
+   1. **P3 — FR-2: `JSONLTraceSink` resilience.** Incremental source-aware trace via append-only JSONL. Unit + crash-recovery tests (`kill -9` / torn trailing line simulation).
+   2. **P8 — FR-7: `merge` subcommand.** Build immediately on the trace schema so source-aware exports exist before diarization and locale add more metadata.
+   3. **P5 — FR-4: live diarization.** Reuses the existing FluidAudio dep. `BufferMulticast` + `StreamingDiarizer` are unit-testable with `MockAudioSource`. Test against the 2026-05-13 Zoom session offline first, then live.
+   4. **P4 — FR-6: locale auto-detect** per [ADR-0003](../adr/ADR-0003-locale-resolution-policy.md). `LocaleResolver` with candidate-set restriction + 4-knob hysteresis. Unit tests on synthetic NL inputs covering: correct in-set switch, suppression of out-of-set candidates, suppression during cooldown, suppression below min-chars, pin-mode bypass.
+5. **P6 — FR-5: live tagging.** Once the trace spine, merge, diarization, and locale state are in place, tagging is the smallest layer on top via `ModelHost` + `TagsJSONLSink`.
+6. **P2 — FR-8: `chronicle repair`** (de-prioritised). Mostly needed for the `--audio-format wav` opt-in path and unusual CAF tail recovery; ALAC/CAF plus raw scratch reduces the default repair surface. Canned malformed-WAV corpus tests.
+7. **P9 — Verification pass.** Run the §15 appendix end-to-end on a fresh session. Capture receipts.
+8. **P10 — Documentation pass.** Update README + research-notes + spike doc with the final source code + final numbers.
 
 ---
 
 ## 12. Open Questions
 
-| #  | Question                                                                                                                                                                                     | Owner  | Due        | Status                                                                                                                                                                |
-| -- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Q1 | Does the `SCStream` audio tap work for unsigned `swift build -c release` binaries, or do we need ad-hoc codesigning?                                                                         | Victor | 2026-05-15 | **Resolved:** No for Chronicle's ad-hoc Tahoe workflow; ADR-0004 replaced it with CoreAudio process tap, and #76 removed the retired code path.                       |
-| Q2 | Does `SortformerDiarizer` actually meet its 480 ms latency claim on M4 Pro Tahoe, or does it backpressure on the buffer queue?                                                               | Victor | 2026-05-16 | Open                                                                                                                                                                  |
-| Q3 | What's the right way to express "speaker 2" in `finals.md` while keeping the file diff-friendly when reprocessing? `[S2]` prefix or YAML frontmatter per line?                               | Victor | 2026-05-15 | **Resolved:** `[S<N>]` inline prefix, no frontmatter; keeps grep/jq-friendly and Obsidian-readable.                                                                   |
-| Q4 | Should `chronicle merge` also produce a unified JSONL trace, or just the markdown?                                                                                                           | Victor | 2026-05-17 | Open                                                                                                                                                                  |
-| Q5 | If Foundation Models live tagging trips the unsafe-content guardrail repeatedly on a transcript, should we degrade to keyword extraction via `NaturalLanguage` instead of silently dropping? | Victor | 2026-05-18 | Open                                                                                                                                                                  |
-| Q6 | Should the rotation timer be a wall-clock deadline or a per-segment audio-duration accumulator? Audio duration is more accurate; wall-clock is simpler.                                      | Victor | 2026-05-15 | **Resolved:** Audio-duration accumulator. Wall-clock drifts if the engine briefly stalls; audio duration is what `AVAudioFile.length / sampleRate` gives us directly. |
+| #  | Question                                                                                                                                                                                     | Owner  | Due        | Status                                                                                                                                                                                |
+| -- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Q1 | Does the `SCStream` audio tap work for unsigned `swift build -c release` binaries, or do we need ad-hoc codesigning?                                                                         | Victor | 2026-05-15 | **Resolved:** No for Chronicle's ad-hoc Tahoe workflow; ADR-0004 replaced it with CoreAudio process tap, and #76 removed the retired code path.                                       |
+| Q2 | Does `SortformerDiarizer` actually meet its 480 ms latency claim on M4 Pro Tahoe, or does it backpressure on the buffer queue?                                                               | Victor | 2026-05-16 | Open                                                                                                                                                                                  |
+| Q3 | What's the right way to express "speaker 2" in `finals.md` while keeping the file diff-friendly when reprocessing? `[S2]` prefix or YAML frontmatter per line?                               | Victor | 2026-05-15 | **Resolved:** `[S<N>]` inline prefix, no frontmatter; keeps grep/jq-friendly and Obsidian-readable.                                                                                   |
+| Q4 | Should `chronicle merge` also produce a unified JSONL trace, or just the markdown?                                                                                                           | Victor | 2026-05-17 | **Resolved for next batch:** markdown output first; unified JSONL deferred to an additive `--format jsonl` flag unless implementation evidence shows immediate machine-consumer need. |
+| Q5 | If Foundation Models live tagging trips the unsafe-content guardrail repeatedly on a transcript, should we degrade to keyword extraction via `NaturalLanguage` instead of silently dropping? | Victor | 2026-05-18 | Open                                                                                                                                                                                  |
+| Q6 | Should the rotation timer be a wall-clock deadline or a per-segment audio-duration accumulator? Audio duration is more accurate; wall-clock is simpler.                                      | Victor | 2026-05-15 | **Resolved:** Audio-duration accumulator. Wall-clock drifts if the engine briefly stalls; audio duration is what `AVAudioFile.length / sampleRate` gives us directly.                 |
 
 ---
 
