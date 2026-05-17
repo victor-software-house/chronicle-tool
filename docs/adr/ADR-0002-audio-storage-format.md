@@ -387,7 +387,10 @@ future OS behavior breaks the high-level writer's 16-bit-source ALAC output.
   (segmented audio capture), §6 NFR (resilience budget), §7 R-A1 (compressed
   audio accuracy mitigation), §11 P11 (rollout sequencing).
 * **ADRs**: [ADR-0001](ADR-0001-modular-pipeline-architecture.md) — the
-  sink protocol this ADR plugs into.
+  sink protocol this ADR plugs into. [ADR-0005](ADR-0005-audio-sidecar-reuse-boundary.md)
+  — why Chronicle keeps local sidecar rotation/scratch policy instead of
+  adopting AudioKit, SFBAudioEngine, AVAssetWriter segmentation, ffmpeg, or
+  GStreamer for the live daemon path.
 * **Research**: `~/workspace/victor/research/chronicle/notes/research-notes.md`
   — cost model + video-side codec choice this audio decision mirrors.
 * **Implementation**: task **P11** (production `AVAudioFileALACSink` +

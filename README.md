@@ -339,12 +339,16 @@ ffmpeg -f s16le -ar 16000 -ac 1 -i /tmp/recovered.s16le recovered.wav
 If `format.json` says `commonFormat` is `float32`, use `-f f32le` instead of
 `-f s16le`.
 
-Verification receipts:
+Verification and decision receipts:
 
 * `AVAudioFile` ALAC probe on the 6870 s Zoom reference:
   `alac`, `s16p`, 16 kHz mono, 91,316,352 bytes, decoded PCM `cmp-ok`.
 * Live mic smoke with `--rotate-audio 1` produced two readable ALAC CAF segments
   plus scratch PCM.
+* [ADR-0005](docs/adr/ADR-0005-audio-sidecar-reuse-boundary.md) documents why
+  Chronicle keeps Apple-native writers plus local rotation/scratch policy rather
+  than adopting AudioKit, SFBAudioEngine, AVAssetWriter segmentation, ffmpeg, or
+  GStreamer for the live daemon path.
 
 ## Historical P11 verification — rejected Opus round-trip WER parity (#50)
 
