@@ -30,7 +30,7 @@ Sources/Chronicle/
 ├── Chronicle.swift           @main + ArgumentParser dispatch
 ├── Subcommands/              thin CLI veneers (one per `chronicle <verb>`)
 └── Core/
-    ├── Audio/                AudioSource protocol + MicAudioSource + CoreAudioTapSource + deprecated SysAudioSource + BufferConverter
+    ├── Audio/                AudioSource protocol + MicAudioSource + CoreAudioTapSource + BufferConverter
     ├── Speech/               TranscriptionEngine (SpeechAnalyzer factory)
     ├── Diarize/              OfflineDiarizing protocol + FluidAudio impl
     ├── LLM/                  cached LanguageModelSession (ModelHost) + ContentTagger + Summarizer

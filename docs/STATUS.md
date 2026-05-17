@@ -59,7 +59,7 @@ into `Core/Audio/CoreAudioTapSource`; remaining cleanup is tracked below.
 | 5 | Remove the direct `tccd` TCC.db writes added during the incident; chronicle.app should be authorised through System Settings | pending operator cleanup | `~/Library/Application Support/com.apple.TCC/TCC.db`, `/Library/Application Support/com.apple.TCC/TCC.db` |
 | 6 | Live transcription for sys path: pipe CoreAudio tap PCM into `SpeechAnalyzer` the same way `Mic.swift` does, so `finals.sys.md` is no longer empty | ✔ done | `Subcommands/SysAudio.swift` |
 | 7 | Header-recovery helper for orphan WAVs (recovered the 200 MB `catap_sys.wav` by hand via Python; should be one of `chronicle repair` modes) | pending P2b | `Subcommands/Repair.swift` (FR-8) |
-| 8 | Remove `CGRequestScreenCaptureAccess()` from the active sysaudio path once the new tap backend lands | ✔ done by switching CLI to `CoreAudioTapSource`; deprecated `SysAudioSource` still carries the legacy ScreenCaptureKit prompt path until #76 removes it | `Subcommands/SysAudio.swift`, `Core/Audio/SysAudioSource.swift` |
+| 8 | Remove legacy ScreenCapture permission helper and retired sysaudio source | ✔ done | `Subcommands/SysAudio.swift`, `Core/Audio/CoreAudioTapSource.swift` |
 | 9 | Garbage-collect `sys-HHMMSS.wav` 4 KB rejects from `~/Movies/pi-captures/sessions/20260514-112533-live/audio/` | done locally; watch for regression | session dir |
 | 10 | Add a `scripts/reset-tcc.sh` dev helper that runs `tccutil reset ScreenCapture <bundle-id>` + `tccutil reset Microphone <bundle-id>` + `tccutil reset AudioCapture <bundle-id>` whenever the chronicle.app code-signing hash changes | pending | `scripts/reset-tcc.sh` |
 | 11 | Pre-allocate `AVAudioPCMBuffer` pool inside `CoreAudioTapSource` IOProc; current code still materialises/converts per callback and is acceptable only as a first productionised source | pending hardening | `Core/Audio/CoreAudioTapSource.swift` |
@@ -88,7 +88,7 @@ TCC resolves a stable identity. See AGENTS.md.
 
 | Protocol | Today's impls | Future impls |
 |---|---|---|
-| `AudioSource` | `MicAudioSource` (AVAudioEngine), `CoreAudioTapSource` (CoreAudio process tap), `SysAudioSource` (deprecated SCStream fallback not used by CLI) | `FileAudioSource` (P5 testing); RTSP / Bluetooth (post-PRD) |
+| `AudioSource` | `MicAudioSource` (AVAudioEngine), `CoreAudioTapSource` (CoreAudio process tap) | `FileAudioSource` (P5 testing); RTSP / Bluetooth (post-PRD) |
 | `TranscriptionSink` | `LiveFileSink`, `FinalsAppendSink` | `JSONLTraceSink` (P3), `TagsJSONLSink` (P6) |
 | audio sidecar sink (`AudioSidecarSink`) | `AVAudioFileALACSink` + `RollingPCMScratchSink` default; `WAVSidecarSink` and `OpusCAFSink` opt-in | source-native hi-fi sidecar is deferred indefinitely / watchlist only (#79); `ExtAudioFile` ALAC fallback only if `AVAudioFile` regresses |
 | `OfflineDiarizing` | `OfflineDiarizer` (FluidAudio VBx) | — |
@@ -144,7 +144,7 @@ Open phases map to bare numeric task IDs in the Pi task tracker:
 | Active ALAC CAF tail repair research | #73 | open |
 | Sidecar fanout profiling | #74 | done — see [`spikes/2026-05-17-sidecar-fanout-profile.md`](../spikes/2026-05-17-sidecar-fanout-profile.md) |
 | Scratch allocation profiling | #75 | done — see [`spikes/2026-05-17-scratch-allocation-profile.md`](../spikes/2026-05-17-scratch-allocation-profile.md) |
-| Retire deprecated SCStream sysaudio source | #76 | open |
+| Retire legacy sysaudio source | #76 | done |
 | Drain BufferConverter residual frames on stop | #77 | done |
 | Source-native hi-fi audio sidecar watchlist | #79 | deferred indefinitely |
 

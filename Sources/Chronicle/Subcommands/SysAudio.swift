@@ -80,7 +80,7 @@ struct SysAudio: AsyncParsableCommand {
     )
 
     // Optional raw-audio sidecar (writes the analyzer-format buffer; not
-    // the SCStream native format).
+    // the CoreAudio tap native format).
     let audioSink: AudioSidecarSink? = try makeAudioSidecarSink(
       path: saveAudio,
       analyzerFormat: analyzerFormat,
@@ -182,7 +182,7 @@ struct SysAudio: AsyncParsableCommand {
     FileHandle.standardError.write(Data("\n[sysaudio] stopping...\n".utf8))
     sysSource.stop()
     // Bound the analyzer finalize. When the analyzer received no real
-    // input (e.g. audio TCC denied + garbage SCStream buffers) this can
+    // input (e.g. audio TCC denied or silent tap startup) this can
     // otherwise hang indefinitely. On timeout fall back to a hard
     // cancel-and-finish (also bounded).
     do {

@@ -257,7 +257,6 @@ Sources/Chronicle/
     │   ├── AudioSource.swift      protocol: AsyncStreams of AnalyzerInput + PCMBufferRef
     │   ├── MicAudioSource.swift   AVAudioEngine impl
     │   ├── CoreAudioTapSource.swift CoreAudio process tap impl
-    │   ├── SysAudioSource.swift   deprecated ScreenCaptureKit / SCStream impl
     │   └── BufferConverter.swift  AVAudioConverter wrapper
     ├── Speech/
     │   └── TranscriptionEngine.swift  SpeechTranscriber + SpeechAnalyzer factory
@@ -312,10 +311,11 @@ public diarizer on Tahoe 26.
 swift test
 ```
 
-`Tests/ChronicleTests/` uses Swift Testing (`@Test`). 40 tests across 9
-suites (`AVAudioFile ALAC sink`, `BufferConverter`, `CoreAudioTapSource`,
-`OpusCAFSink`, `RollingPCMScratchSink`, `ScratchExporter`, `TCCPreflight`,
-`AsyncTimeout`, `EncodeOpus round-trip`). More tests land alongside each FR per
+`Tests/ChronicleTests/` uses Swift Testing (`@Test`). 39 tests across 10
+suites (`AVAudioFile ALAC sink`, `AudioSource output streams`,
+`BufferConverter`, `CoreAudioTapSource`, `OpusCAFSink`,
+`RollingPCMScratchSink`, `ScratchExporter`, `TCCPreflight`, `AsyncTimeout`,
+`EncodeOpus round-trip`). More tests land alongside each FR per
 PRD-001 file breakdown (`JSONLTraceSinkTests`, `LocaleResolverTests`, etc.).
 
 ## P11 audio sidecar — ALAC default + scratch recovery

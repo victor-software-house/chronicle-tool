@@ -79,7 +79,7 @@ into a system the operator can leave running.
 > brittle recorder.
 
 **Preconditions:** the daemon is launched at login; TCC permissions for
-Microphone and Screen Recording are granted; Apple Intelligence is
+Microphone and System Audio Recording are granted; Apple Intelligence is
 enabled.
 
 ### Primary: chronicle daemon supervisor (Pi `process` tool or `launchd`)
@@ -110,7 +110,7 @@ enabled.
 
 1. **Segmented audio capture** — rotate the WAV output every N seconds (default 60 s) into `audio/session-<index>.wav`. Each segment closes cleanly before the next opens; worst-case loss = current segment.
 2. **Incremental trace persistence** — flush a rolling JSONL trace (`trace.jsonl`) every K events (default every 1 s or 50 events, whichever is sooner). The legacy `trace.json` becomes a final snapshot, but JSONL is the durable source.
-3. **System audio capture subcommand** — `chronicle sysaudio` uses a CoreAudio process tap (`CoreAudioTapSource`) and runs it through the same SpeechAnalyzer pipeline. Same sidecar surface as `chronicle mic` (`--live`, `--append`, `--save-audio`, `-o`). The earlier ScreenCaptureKit implementation remains as deprecated source evidence only; ADR-0004 replaced it after Tahoe ad-hoc builds produced silent/garbage SCStream audio.
+3. **System audio capture subcommand** — `chronicle sysaudio` uses a CoreAudio process tap (`CoreAudioTapSource`) and runs it through the same SpeechAnalyzer pipeline. Same sidecar surface as `chronicle mic` (`--live`, `--append`, `--save-audio`, `-o`). ADR-0004 records why the earlier ScreenCaptureKit implementation was retired after Tahoe ad-hoc builds produced silent/garbage SCStream audio.
 4. **Live diarization** — extend `chronicle mic` (and `chronicle sysaudio`) with `--diarize` flag that fans the same audio buffers into FluidAudio's `SortformerDiarizer`. Speaker labels are merged into the transcript finals (`speakerId` field in the JSONL trace, `[S2] <text>` prefix in `finals.md`).
 5. **Live content tagging** — extend `mic` / `sysaudio` with `--tag-every <N>` flag. Every Nth final triggers a `FoundationModels` `.contentTagging` pass on the rolling transcript window; results are emitted into a `tags.jsonl` sidecar.
 6. **Language auto-detect** — when `--locale auto` is passed, run `NLLanguageRecognizer` on the first 5 finalized segments and switch the transcriber locale once a dominant language is detected with confidence > 0.7. Re-evaluate every 5 minutes for code-switching.
@@ -281,7 +281,7 @@ And raw PCM scratch is written under audio/scratch/
 * `Sources/Chronicle/Core/Audio/CoreAudioTapSource.swift` — CoreAudio process tap source; creates a `CATapDescription`, private aggregate device, IOProc, default-output listener, and first-valid-buffer watchdog.
 * `Sources/Chronicle/Subcommands/SysAudio.swift` — CLI wrapper using `CoreAudioTapSource`.
 * `Info.plist` — includes `NSAudioCaptureUsageDescription` plus existing speech/mic strings.
-* `Sources/Chronicle/Core/Audio/SysAudioSource.swift` — deprecated ScreenCaptureKit implementation retained for reference/tests only.
+* SCStream sysaudio source — removed after CoreAudio tap smoke/test baseline; ADR-0004 retains the historical evidence.
 
 ---
 
@@ -473,8 +473,7 @@ And `chronicle transcribe -i session-003.wav -o out` succeeds without errors
 | Risk                                                                                                                            | Severity | Likelihood                    | Mitigation                                                                                                                                                                                                                                                                                                                                 |
 | ------------------------------------------------------------------------------------------------------------------------------- | -------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **R-A1: compressed audio decode degrades `SpeechAnalyzer` accuracy vs WAV reference**                                           | High     | Proven for Opus; low for ALAC | P11 rejected Opus as default after real 6870 s Zoom WER drift. Default is now ALAC-in-CAF with rounded Int16 source PCM per [ADR-0002](../adr/ADR-0002-audio-storage-format.md). Acceptance test: re-transcribe the 2026-05-13 reference after ALAC round-trip and assert WER delta ≤ 1 % vs WAV baseline; keep WAV/PCM as escape hatches. |
-| **R-A2: system audio capture permission / backend drift**                                                                         | Medium   | Medium                        | ADR-0004 replaced SCStream with `CoreAudioTapSource` because ad-hoc Tahoe builds require CoreAudio process taps for reliable system audio. CLI now uses CoreAudio tap, validates tap ASBD before conversion, requires `.app` bundle TCC identity, and keeps a first-valid-buffer watchdog.                                                                                                                                                                                         |
-| Legacy `SysAudioSource` / SCStream path rots while retained for reference/tests                                                | Low      | Medium                        | CLI uses `CoreAudioTapSource`; keep SCStream code deprecated and delete after one release if no future video/screen path needs it.                                                                                                                                                                                                           |
+| **R-A2: system audio capture permission / backend drift**                                                                       | Medium   | Medium                        | ADR-0004 replaced SCStream with `CoreAudioTapSource` because ad-hoc Tahoe builds require CoreAudio process taps for reliable system audio. CLI now uses CoreAudio tap, validates tap ASBD before conversion, requires `.app` bundle TCC identity, and keeps a first-valid-buffer watchdog.                                                 |
 | `SortformerDiarizer` adds per-buffer latency that pushes volatile updates beyond the 200 ms NFR                                 | Medium   | Low                           | Run the diarizer in a separate `Task` reading from the multicast stream; do not let it block the analyzer's stream. Measure on the 6870 s reference session.                                                                                                                                                                               |
 | Foundation Models live tagging trips the safety guardrail (`Detected content likely to be unsafe`) on certain transcript chunks | Low      | Medium                        | Catch the error, skip the chunk, log a warning to stderr, continue. Already seen on the mic JSON test.                                                                                                                                                                                                                                     |
 | Audio rotation creates "gaps" between segments because `installTap` keeps delivering buffers during file swap                   | Medium   | Medium                        | Lock the rotation in a serial queue; buffer the in-flight buffer until the new file is ready (≤ 50 ms swap). Worst case: one buffer (\~85 ms) overlap, never a gap. CAF packet boundaries are independent so the Opus sink doesn't see this risk; only `WAVSidecarSink` (opt-in) does.                                                     |
@@ -530,14 +529,14 @@ And `chronicle transcribe -i session-003.wav -o out` succeeds without errors
 **Options considered:**
 
 1. **CoreAudio aggregate device + BlackHole loopback.** Works today, no entitlement needed. Requires installing a kext-like virtual driver. Operator burden.
-2. **ScreenCaptureKit `SCStream` audio-only tap.** Native Apple API but unreliable for chronicle's ad-hoc Tahoe builds without Developer ID signing; preserved as deprecated `SysAudioSource` evidence only.
+2. **ScreenCaptureKit `SCStream` audio-only tap.** Native Apple API but unreliable for chronicle's ad-hoc Tahoe builds without Developer ID signing; retired from production code after CoreAudio tap passed smoke/tests.
 3. **CoreAudio process tap (`CATapDescription` + private aggregate device).** Apple-official system-audio tap API on Tahoe; works with ad-hoc app bundles and no third-party driver.
 
 **Decision:** **CoreAudio process tap** per [ADR-0004](../adr/ADR-0004-tahoe-system-audio-capture.md).
 
 **Rationale:** Live incident + 2026-05-17 smoke showed CoreAudio tap captures real system audio where SCStream produced silent/garbage buffers under the same development identity. It keeps Chronicle zero-install, on-device, and single-binary.
 
-**Future path:** keep SCStream only for future video/screen capture if needed; audio remains CoreAudio tap unless Apple changes the TCC/backend model.
+**Future path:** reintroduce ScreenCaptureKit only for future video/screen capture if needed; audio remains CoreAudio tap unless Apple changes the TCC/backend model.
 
 ---
 
@@ -595,7 +594,7 @@ FR-by-FR file mapping below reflects the post-refactor layout.
 | `Sources/Chronicle/Subcommands/Repair.swift`                  | New               | FR-1, FR-8                   | WAV header repair                                            |          |
 | `Sources/Chronicle/Core/Audio/AudioSource.swift`              | New               | FR-3, FR-4                   | Protocol: yields `AnalyzerInput` + raw PCM                   |          |
 | `Sources/Chronicle/Core/Audio/MicAudioSource.swift`           | New               | FR-1                         | `AVAudioEngine` impl                                         |          |
-| `Sources/Chronicle/Core/Audio/SysAudioSource.swift`           | New               | FR-3                         | `SCStream` impl                                              |          |
+| `Sources/Chronicle/Core/Audio/CoreAudioTapSource.swift`       | New               | FR-3                         | CoreAudio process tap + private aggregate device             |          |
 | `Sources/Chronicle/Core/Audio/FileAudioSource.swift`          | New               | n/a                          | `AVAudioFile` impl for file-driven runs                      |          |
 | `Sources/Chronicle/Core/Audio/BufferMulticast.swift`          | New               | FR-4, FR-5                   | Lock-free SPMC fan-out, audio-thread safe                    |          |
 | `Sources/Chronicle/Core/Audio/BufferConverter.swift`          | New               | n/a                          | `AVAudioConverter` wrapper                                   |          |
@@ -629,7 +628,7 @@ FR-by-FR file mapping below reflects the post-refactor layout.
 | `Tests/ChronicleTests/Speech/LocaleResolverTests.swift`       | New               | FR-6                         | Auto-detect convergence on synthetic inputs                  |          |
 | `Tests/ChronicleTests/Helpers/MockAudioSource.swift`          | New               | testing                      | Plays canned WAVs through the live pipeline for E2E coverage |          |
 | `Package.swift`                                               | Modify            | testing                      | Add `ChronicleTests` test target                             |          |
-| `Info.plist`                                                  | Modify            | FR-3                         | Add `NSScreenCaptureUsageDescription`                        |          |
+| `Info.plist`                                                  | Modify            | FR-3                         | Add `NSAudioCaptureUsageDescription`                         |          |
 | `README.md`                                                   | Modify            | all                          | Document new flags, layout, daemon model, recovery story     |          |
 | `docs/prd/PRD-001-resilient-multi-source-daemon.md`           | New               | n/a                          | This document                                                |          |
 | `docs/adr/ADR-0001-modular-pipeline-architecture.md`          | New               | n/a                          | Sister ADR for the structural decision                       |          |
@@ -649,10 +648,10 @@ new structure with its tests.
 * **Apple Intelligence enabled** for FoundationModels (`tag`, `summarize`, `describe`).
 * **Translation language packs** pre-installed for `translate`.
 * **Microphone TCC** for `mic` (already wired).
-* **Screen Recording TCC** for `sysaudio` (new).
+* **System Audio Recording TCC** for `sysaudio` through `NSAudioCaptureUsageDescription`.
 * **FluidAudio 0.14.5+** for `SortformerDiarizer` (Swift Package).
 * **Xcode 26 / Swift 6.2+** for the build.
-* **`Info.plist` embedded via `-sectcreate`** (Package.swift already does this for Microphone; add Screen Recording).
+* **`Info.plist` embedded via `-sectcreate`** (Package.swift carries Microphone, Speech Recognition, and System Audio Recording usage strings).
 
 ---
 
@@ -661,7 +660,7 @@ new structure with its tests.
 Order each step so the previous one's receipts feed the next.
 
 1. **P0 — Modular refactor + test target** \[DONE 2026-05-13]. Implemented [ADR-0001](../adr/ADR-0001-modular-pipeline-architecture.md): extracted `Core/Audio`, `Core/Speech`, `Core/Diarize`, `Core/LLM`, `Core/Sinks`, `Core/Runtime`; converted each subcommand to a thin veneer; added `ChronicleTests` Swift Package test target; verified behaviour parity (byte-identical transcribe.txt + diarize segments) against the 2026-05-13 Zoom session receipts.
-2. **P7 — FR-3: `sysaudio` subcommand** (promoted). Validates the `AudioSource` protocol from ADR-0001 against a real second implementation before the rest of the FRs build on it. Only `SysAudioSource` is new; sidecar sinks reused. Catches TCC / signing friction early; lets the upcoming P11 Opus parity test validate against two real sources.
+2. **P7 — FR-3: `sysaudio` subcommand** (promoted). Validates the `AudioSource` protocol from ADR-0001 against a real second implementation before the rest of the FRs build on it. `CoreAudioTapSource` is the active system-audio source; sidecar sinks reused. Catches TCC / signing friction early; lets the upcoming P11 audio parity test validate against two real sources.
 3. **P11 — FR-1 (ALAC production sink) per [ADR-0002](../adr/ADR-0002-audio-storage-format.md) (amended 2026-05-16).** Implement `AVAudioFileALACSink` + `RollingPCMScratchSink`, wire `--audio-format alac|wav|pcm|opus` to the audio sinks, run the accuracy-parity test against the 2026-05-13 reference session and assert WER delta ≤ 1 % vs the WAV baseline. Flip the default from WAV to ALAC-in-CAF once sidecar wiring is complete. **Skips the transitional WAV-rotation step** (formerly P1) because the verified default is Apple-native ALAC/CAF plus rolling raw scratch. Opus remains opt-in/export only after WER regression on the real reference.
 4. **P3 — FR-2: `JSONLTraceSink` resilience.** Incremental trace via `AtomicFile.appendJSONLine`. Unit + crash-recovery tests (`kill -9` simulation).
 5. **P4 — FR-6: locale auto-detect** per [ADR-0003](../adr/ADR-0003-locale-resolution-policy.md). `LocaleResolver` with candidate-set restriction + 4-knob hysteresis. Unit tests on synthetic NL inputs covering: correct in-set switch, suppression of out-of-set candidates, suppression during cooldown, suppression below min-chars, pin-mode bypass.
@@ -678,7 +677,7 @@ Order each step so the previous one's receipts feed the next.
 
 | #  | Question                                                                                                                                                                                     | Owner  | Due        | Status                                                                                                                                                                |
 | -- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Q1 | Does the `SCStream` audio tap work for unsigned `swift build -c release` binaries, or do we need ad-hoc codesigning?                                                                         | Victor | 2026-05-15 | Open                                                                                                                                                                  |
+| Q1 | Does the `SCStream` audio tap work for unsigned `swift build -c release` binaries, or do we need ad-hoc codesigning?                                                                         | Victor | 2026-05-15 | **Resolved:** No for Chronicle's ad-hoc Tahoe workflow; ADR-0004 replaced it with CoreAudio process tap, and #76 removed the retired code path.                       |
 | Q2 | Does `SortformerDiarizer` actually meet its 480 ms latency claim on M4 Pro Tahoe, or does it backpressure on the buffer queue?                                                               | Victor | 2026-05-16 | Open                                                                                                                                                                  |
 | Q3 | What's the right way to express "speaker 2" in `finals.md` while keeping the file diff-friendly when reprocessing? `[S2]` prefix or YAML frontmatter per line?                               | Victor | 2026-05-15 | **Resolved:** `[S<N>]` inline prefix, no frontmatter; keeps grep/jq-friendly and Obsidian-readable.                                                                   |
 | Q4 | Should `chronicle merge` also produce a unified JSONL trace, or just the markdown?                                                                                                           | Victor | 2026-05-17 | Open                                                                                                                                                                  |

@@ -35,9 +35,9 @@ struct AsyncTimeoutTests {
   func slowCancellableOp() async {
     // Important contract note: `withTimeout` can only force-stop work
     // that responds to Task cancellation. `Task.sleep` does; many
-    // Apple system calls also do. Truly leaked OS continuations (e.g.
-    // SCStream.startCapture() when TCC is unset) are unrescuable here
-    // by design — the preflight check is the actual defense for those.
+    // Apple system calls also do. Truly leaked OS continuations are
+    // unrescuable here by design — source-specific preflight/watchdogs are
+    // the actual defense for those.
     let started = Date()
     do {
       _ = try await withTimeout(seconds: 0.1, label: "long-sleep") {
