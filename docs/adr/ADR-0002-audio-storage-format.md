@@ -363,9 +363,18 @@ CoreAudio tap / AVAudioEngine native PCM
 This means the ALAC and scratch tiers preserve exactly what SpeechAnalyzer heard
 (after channel mixdown/resampling/quantization), which is the right default for
 transcript replay, premium-STT bursts, and repair. It is not a hi-fi archive of
-the original system mix. A future source-analysis or archival mode should add a
-separate source-native sidecar branch **before** `BufferConverter`, rather than
-changing the SpeechAnalyzer path.
+the original system mix.
+
+**Source-native hi-fi storage is deferred indefinitely.** It does not meet
+Chronicle's current transcript-first purpose: the storage cost is much higher
+(e.g. 48 kHz stereo Float32 is \~33 GB/day), it preserves data that SpeechAnalyzer
+will not consume directly, and it adds another realtime branch before current
+fan-out/backpressure profiling is complete. Keep the idea on the watchlist only;
+revisit if Chronicle grows a concrete requirement for hi-fi archive, music/source
+separation, forensic system-mix capture, or a future model that benefits from
+source-native 48 kHz stereo PCM. If that day comes, add a separate source-native
+sidecar branch **before** `BufferConverter`, rather than changing the
+SpeechAnalyzer path.
 
 GitHub/reference check (2026-05-17): Apple's CoreAudio taps sample, Marcelo
 Cajueiro's `insidegui/AudioCap`, and `makeusabrew/audiotee` follow the same tap

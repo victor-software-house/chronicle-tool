@@ -190,9 +190,11 @@ text sidecars, ~150 ms volatile latency, 5–30 s final latency.** The model
 runs off-process on the ANE; the daemon just does the tap + convert +
 fan-out + file writes. On M4 Pro / 48 GB the ANE + RAM headroom supports
 ~100–200 parallel real-time streams — the actual bottleneck is the audio
-device / TCC ceiling. A future hi-fi/source-analysis mode should add a separate
-source-native sidecar branch before `BufferConverter` rather than changing the
-transcription path.
+device / TCC ceiling. Source-native hi-fi storage is explicitly deferred
+indefinitely: it does not serve the transcript-first default and would be much
+larger. Keep it as a watchlist item only; if future hi-fi/source-analysis work
+becomes real, add a separate source-native sidecar branch before
+`BufferConverter` rather than changing the transcription path.
 
 Full receipts (spike-era):
 [`spikes/2026-05-13-daemon-live-mic.md`](spikes/2026-05-13-daemon-live-mic.md).
