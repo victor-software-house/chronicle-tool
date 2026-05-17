@@ -16,6 +16,9 @@ public final class BufferConverter: @unchecked Sendable {
   private static let maxDrainIterations = 16
 
   private let converter: AVAudioConverter
+  // Access is serialized by each source: stop/destroy the tap or IOProc before
+  // calling `drain()`, then discard this converter.
+  private var drained = false
 
   public init?(from source: AVAudioFormat, to destination: AVAudioFormat) {
     guard let conv = AVAudioConverter(from: source, to: destination) else { return nil }
@@ -32,6 +35,8 @@ public final class BufferConverter: @unchecked Sendable {
   /// more source buffers will arrive to flush those residual frames before
   /// closing downstream streams.
   public func convert(_ input: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+    guard !drained else { return nil }
+
     let capacity = AVAudioFrameCount(
       ceil(Double(input.frameLength) * destinationFormat.sampleRate / sourceFormat.sampleRate)
     ) + Self.resamplerTailHeadroomFrames
@@ -67,7 +72,10 @@ public final class BufferConverter: @unchecked Sendable {
   /// After `drain()` the converter must not be reused for `convert(_:)`; discard
   /// this wrapper and build a fresh converter for later input.
   public func drain() -> [AVAudioPCMBuffer] {
-    var drained: [AVAudioPCMBuffer] = []
+    guard !drained else { return [] }
+    drained = true
+
+    var tail: [AVAudioPCMBuffer] = []
 
     for iteration in 0..<Self.maxDrainIterations {
       guard let output = AVAudioPCMBuffer(
@@ -83,7 +91,7 @@ public final class BufferConverter: @unchecked Sendable {
 
       guard error == nil else { break }
       if output.frameLength > 0 {
-        drained.append(output)
+        tail.append(output)
       }
 
       switch status {
@@ -95,14 +103,14 @@ public final class BufferConverter: @unchecked Sendable {
         }
         continue
       case .inputRanDry, .endOfStream:
-        return drained
+        return tail
       case .error:
-        return drained
+        return tail
       @unknown default:
-        return drained
+        return tail
       }
     }
 
-    return drained
+    return tail
   }
 }

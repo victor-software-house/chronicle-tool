@@ -24,8 +24,7 @@ public final class MicAudioSource: AudioSource, @unchecked Sendable {
   private let engine: AVAudioEngine
   private let inputNode: AVAudioInputNode
   private let converter: BufferConverter
-  private let analyzerBuilder: AsyncStream<AnalyzerInput>.Continuation
-  private let pcmBuilder: AsyncStream<PCMBufferRef>.Continuation
+  private let streams: AudioSourceOutputStreams
   private var started = false
   private var stopped = false
 
@@ -39,13 +38,10 @@ public final class MicAudioSource: AudioSource, @unchecked Sendable {
     }
     self.converter = converter
 
-    var aBuilder: AsyncStream<AnalyzerInput>.Continuation!
-    self.analyzerInputs = AsyncStream { aBuilder = $0 }
-    self.analyzerBuilder = aBuilder
-
-    var pBuilder: AsyncStream<PCMBufferRef>.Continuation!
-    self.pcmBuffers = AsyncStream { pBuilder = $0 }
-    self.pcmBuilder = pBuilder
+    let streams = AudioSourceOutputStreams()
+    self.streams = streams
+    self.analyzerInputs = streams.analyzerInputs
+    self.pcmBuffers = streams.pcmBuffers
   }
 
   /// Hard timeout for the AVAudioEngine `start()` call. Engine start has
@@ -70,13 +66,11 @@ public final class MicAudioSource: AudioSource, @unchecked Sendable {
 
     let micFormat = self.micFormat
     let converter = self.converter
-    let analyzerBuilder = self.analyzerBuilder
-    let pcmBuilder = self.pcmBuilder
+    let streams = self.streams
 
     inputNode.installTap(onBus: 0, bufferSize: 4096, format: micFormat) { buffer, _ in
       guard let converted = converter.convert(buffer) else { return }
-      analyzerBuilder.yield(AnalyzerInput(buffer: converted))
-      pcmBuilder.yield(PCMBufferRef(converted))
+      streams.yield(converted)
     }
 
     engine.prepare()
@@ -103,12 +97,8 @@ public final class MicAudioSource: AudioSource, @unchecked Sendable {
     inputNode.removeTap(onBus: 0)
     // Stop engine + remove tap before draining: AVAudioConverter is not
     // thread-safe, so no tap callback may call `convert(_:)` after this point.
-    for converted in converter.drain() {
-      analyzerBuilder.yield(AnalyzerInput(buffer: converted))
-      pcmBuilder.yield(PCMBufferRef(converted))
-    }
-    analyzerBuilder.finish()
-    pcmBuilder.finish()
+    streams.yieldAll(converter.drain())
+    streams.finish()
   }
 }
 

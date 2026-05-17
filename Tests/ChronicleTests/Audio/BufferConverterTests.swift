@@ -68,5 +68,6 @@ struct BufferConverterTests {
     #expect(output.frameLength + drainedFrames >= 1_590)
     #expect(output.frameLength + drainedFrames <= 1_610)
     #expect(converter.drain().isEmpty)
+    #expect(converter.convert(input) == nil)
   }
 }

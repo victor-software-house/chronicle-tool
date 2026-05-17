@@ -30,8 +30,7 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
   private static let aggregateUIDBase = "com.victor-software-house.chronicle.sysaudio."
 
   private let excludeSelf: Bool
-  private let analyzerBuilder: AsyncStream<AnalyzerInput>.Continuation
-  private let pcmBuilder: AsyncStream<PCMBufferRef>.Continuation
+  private let streams: AudioSourceOutputStreams
   private let ioQueue = DispatchQueue(label: "chronicle.sysaudio.coreaudio.ioproc", qos: .userInteractive)
   private let listenerQueue = DispatchQueue(label: "chronicle.sysaudio.coreaudio.listener", qos: .utility)
 
@@ -55,13 +54,10 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
     self.excludeSelf = excludeCurrentProcessAudio
     self.verbose = verbose
 
-    var aBuilder: AsyncStream<AnalyzerInput>.Continuation!
-    self.analyzerInputs = AsyncStream { aBuilder = $0 }
-    self.analyzerBuilder = aBuilder
-
-    var pBuilder: AsyncStream<PCMBufferRef>.Continuation!
-    self.pcmBuffers = AsyncStream { pBuilder = $0 }
-    self.pcmBuilder = pBuilder
+    let streams = AudioSourceOutputStreams()
+    self.streams = streams
+    self.analyzerInputs = streams.analyzerInputs
+    self.pcmBuffers = streams.pcmBuffers
   }
 
   deinit {
@@ -95,13 +91,11 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
     guard started, !stopped else { return }
     stopped = true
     teardownAndDrain(removeListener: true)
-    analyzerBuilder.finish()
-    pcmBuilder.finish()
+    streams.finish()
   }
 
   private func cleanupAfterFailedStart() {
-    analyzerBuilder.finish()
-    pcmBuilder.finish()
+    streams.finish()
     teardownCoreAudio(removeListener: true)
     started = false
     stopped = true
@@ -175,8 +169,7 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
 
     let sourceFormat = tapFormat
     let converter = newConverter
-    let analyzerBuilder = self.analyzerBuilder
-    let pcmBuilder = self.pcmBuilder
+    let streams = self.streams
     let verbose = self.verbose
     let ioBlock: AudioDeviceIOBlock = { _, inputBufferList, _, _, _ in
       guard !self.stopped else { return }
@@ -200,8 +193,7 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
       if verbose, self.buffersReceived == 1 {
         FileHandle.standardError.write(Data("[sysaudio.tap] first converted buffer\n".utf8))
       }
-      analyzerBuilder.yield(AnalyzerInput(buffer: converted))
-      pcmBuilder.yield(PCMBufferRef(converted))
+      streams.yield(converted)
     }
     var newIOProcID: AudioDeviceIOProcID?
     try Self.check(
@@ -257,10 +249,7 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
 
   private func drainConverter() {
     guard let converter else { return }
-    for converted in converter.drain() {
-      analyzerBuilder.yield(AnalyzerInput(buffer: converted))
-      pcmBuilder.yield(PCMBufferRef(converted))
-    }
+    streams.yieldAll(converter.drain())
   }
 
   private func updatePeak(from converted: AVAudioPCMBuffer) {

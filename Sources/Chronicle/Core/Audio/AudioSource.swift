@@ -57,3 +57,43 @@ public final class PCMBufferRef: @unchecked Sendable {
   public let buffer: AVAudioPCMBuffer
   public init(_ buffer: AVAudioPCMBuffer) { self.buffer = buffer }
 }
+
+/// Shared analyzer + PCM stream fan-out for live `AudioSource` implementations.
+///
+/// Sources yield each converted buffer once here; the helper wraps it for
+/// SpeechAnalyzer and the sidecar stream in one place. This keeps stop/drain
+/// ordering consistent across audio sources.
+final class AudioSourceOutputStreams: @unchecked Sendable {
+  let analyzerInputs: AsyncStream<AnalyzerInput>
+  let pcmBuffers: AsyncStream<PCMBufferRef>
+
+  private let analyzerContinuation: AsyncStream<AnalyzerInput>.Continuation
+  private let pcmContinuation: AsyncStream<PCMBufferRef>.Continuation
+
+  init() {
+    var analyzerContinuation: AsyncStream<AnalyzerInput>.Continuation!
+    // Unbounded: live audio callbacks cannot backpressure; consumers must drain promptly.
+    self.analyzerInputs = AsyncStream(bufferingPolicy: .unbounded) { analyzerContinuation = $0 }
+    self.analyzerContinuation = analyzerContinuation
+
+    var pcmContinuation: AsyncStream<PCMBufferRef>.Continuation!
+    self.pcmBuffers = AsyncStream(bufferingPolicy: .unbounded) { pcmContinuation = $0 }
+    self.pcmContinuation = pcmContinuation
+  }
+
+  func yield(_ buffer: AVAudioPCMBuffer) {
+    analyzerContinuation.yield(AnalyzerInput(buffer: buffer))
+    pcmContinuation.yield(PCMBufferRef(buffer))
+  }
+
+  func yieldAll(_ buffers: some Sequence<AVAudioPCMBuffer>) {
+    for buffer in buffers {
+      yield(buffer)
+    }
+  }
+
+  func finish() {
+    analyzerContinuation.finish()
+    pcmContinuation.finish()
+  }
+}

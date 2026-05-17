@@ -38,8 +38,7 @@ public final class SysAudioSource: NSObject, AudioSource, SCStreamOutput, @unche
   public private(set) var sourceFormat: AVAudioFormat?
 
   private let excludeSelf: Bool
-  private let analyzerBuilder: AsyncStream<AnalyzerInput>.Continuation
-  private let pcmBuilder: AsyncStream<PCMBufferRef>.Continuation
+  private let streams: AudioSourceOutputStreams
 
   private var stream: SCStream?
   private var converter: BufferConverter?
@@ -71,13 +70,10 @@ public final class SysAudioSource: NSObject, AudioSource, SCStreamOutput, @unche
     self.analyzerFormat = analyzerFormat
     self.excludeSelf = excludeCurrentProcessAudio
 
-    var aBuilder: AsyncStream<AnalyzerInput>.Continuation!
-    self.analyzerInputs = AsyncStream { aBuilder = $0 }
-    self.analyzerBuilder = aBuilder
-
-    var pBuilder: AsyncStream<PCMBufferRef>.Continuation!
-    self.pcmBuffers = AsyncStream { pBuilder = $0 }
-    self.pcmBuilder = pBuilder
+    let streams = AudioSourceOutputStreams()
+    self.streams = streams
+    self.analyzerInputs = streams.analyzerInputs
+    self.pcmBuffers = streams.pcmBuffers
 
     super.init()
   }
@@ -203,8 +199,7 @@ public final class SysAudioSource: NSObject, AudioSource, SCStreamOutput, @unche
     if let stream = stream {
       Task { try? await stream.stopCapture() }
     }
-    analyzerBuilder.finish()
-    pcmBuilder.finish()
+    streams.finish()
   }
 
   // MARK: SCStreamOutput
@@ -214,7 +209,7 @@ public final class SysAudioSource: NSObject, AudioSource, SCStreamOutput, @unche
     didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
     of type: SCStreamOutputType
   ) {
-    guard type == .audio, sampleBuffer.isValid else { return }
+    guard !stopped, type == .audio, sampleBuffer.isValid else { return }
 
     // Unwrap audio buffer list + format description.
     guard let formatDesc = sampleBuffer.formatDescription,
@@ -282,8 +277,7 @@ public final class SysAudioSource: NSObject, AudioSource, SCStreamOutput, @unche
       }
     }
 
-    analyzerBuilder.yield(AnalyzerInput(buffer: converted))
-    pcmBuilder.yield(PCMBufferRef(converted))
+    streams.yield(converted)
   }
 
   /// Materialise an `AVAudioPCMBuffer` from a `CMSampleBuffer` produced by
