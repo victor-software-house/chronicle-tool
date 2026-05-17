@@ -143,7 +143,7 @@ Open phases map to bare numeric task IDs in the Pi task tracker:
 | Scratch fsync policy | #72 | open |
 | Active ALAC CAF tail repair research | #73 | open |
 | Sidecar fanout profiling | #74 | done — see [`spikes/2026-05-17-sidecar-fanout-profile.md`](../spikes/2026-05-17-sidecar-fanout-profile.md) |
-| Scratch allocation profiling | #75 | open |
+| Scratch allocation profiling | #75 | done — see [`spikes/2026-05-17-scratch-allocation-profile.md`](../spikes/2026-05-17-scratch-allocation-profile.md) |
 | Retire deprecated SCStream sysaudio source | #76 | open |
 | Drain BufferConverter residual frames on stop | #77 | open |
 | Source-native hi-fi audio sidecar watchlist | #79 | deferred indefinitely |
