@@ -273,6 +273,8 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
   }
 
   private func installDefaultOutputListener() {
+    // Rebuilds keep the existing listener installed while replacing only the
+    // tap + aggregate device, so this is intentionally idempotent.
     guard defaultOutputListener == nil else { return }
     var address = AudioObjectPropertyAddress(
       mSelector: kAudioHardwarePropertyDefaultOutputDevice,
@@ -330,8 +332,11 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
       scheduleRebuildWatchdog()
     } catch {
       FileHandle.standardError.write(Data(
-        "[sysaudio.tap] rebuild failed: \(error)\n".utf8
+        "[sysaudio.tap] rebuild failed: \(error); stopping source\n".utf8
       ))
+      rebuilding = false
+      stop()
+      return
     }
     rebuilding = false
   }

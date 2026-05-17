@@ -11,6 +11,8 @@ import Foundation
 public final class BufferConverter: @unchecked Sendable {
   public let sourceFormat: AVAudioFormat
   public let destinationFormat: AVAudioFormat
+  private static let resamplerTailHeadroomFrames = AVAudioFrameCount(64)
+
   private let converter: AVAudioConverter
 
   public init?(from source: AVAudioFormat, to destination: AVAudioFormat) {
@@ -30,7 +32,7 @@ public final class BufferConverter: @unchecked Sendable {
   public func convert(_ input: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
     let capacity = AVAudioFrameCount(
       ceil(Double(input.frameLength) * destinationFormat.sampleRate / sourceFormat.sampleRate)
-    )
+    ) + Self.resamplerTailHeadroomFrames
     guard capacity > 0,
           let output = AVAudioPCMBuffer(pcmFormat: destinationFormat, frameCapacity: capacity)
     else { return nil }

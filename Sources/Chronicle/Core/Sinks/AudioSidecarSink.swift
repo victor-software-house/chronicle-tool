@@ -4,7 +4,8 @@ import AVFoundation
 /// Sink for the raw-audio sidecar branch of the live pipeline.
 ///
 /// `MicAudioSource` and `CoreAudioTapSource` both produce `AsyncStream<PCMBufferRef>`
-/// in the analyzer's input format (typically 16 kHz Int16 mono). A live
+/// in the analyzer's input format (typically 16 kHz Float32 or Int16 mono,
+/// depending on `SpeechAnalyzer.bestAvailableAudioFormat`). A live
 /// subcommand attaches at most one `AudioSidecarSink` and drains the stream
 /// into it; the same protocol lets us swap the on-disk codec (WAV, Opus-in-CAF,
 /// raw PCM scratch) without changing the subcommand.
