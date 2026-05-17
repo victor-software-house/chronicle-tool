@@ -19,7 +19,8 @@ struct Chronicle: AsyncParsableCommand {
       OCR.self,
       Describe.self,
       Diarize.self,
-      EncodeOpus.self
+      EncodeOpus.self,
+      EncodeALAC.self
     ],
     defaultSubcommand: nil
   )

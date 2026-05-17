@@ -5,7 +5,7 @@ plan". Authoritative scope and acceptance criteria live in
 [`PRD-001`](prd/PRD-001-resilient-multi-source-daemon.md); this is the
 operator-facing dashboard.
 
-Last refresh: 2026-05-16 — P11 verification infra landed (#50): `chronicle encode-opus` subcommand wraps `OpusCAFSink` for offline re-encode; `scripts/verify-opus-parity.sh` orchestrates encode → `transcribe` → WER gate; `scripts/wer.py` (uv-inline jiwer) computes the metric; in-process round-trip test asserts `AVAudioFile(forReading:)` decodes the production sink artefact end-to-end (21 tests pass).
+Last refresh: 2026-05-16 — P11 default changed from Opus-in-CAF to ALAC-in-CAF after real-reference verification. Opus failed the 6870 s Zoom WER parity gate; ALAC with rounded Int16 source preserved decoded PCM/WER while shrinking the reference to ~91.3 MB. Native 32-bit-float public speech search did not produce a suitable longer transcripted corpus and no longer blocks the decision. `AVAudioFile` ALAC/CAF probe passed on the 6870 s reference (`alac`, `s16p`, 16 kHz mono, 91,316,352 bytes, `cmp-ok` against source PCM), so `ExtAudioFile` remains fallback-only.
 
 ## Phase board
 
@@ -13,13 +13,13 @@ Last refresh: 2026-05-16 — P11 verification infra landed (#50): `chronicle enc
 |---|---|---|---|---|
 | **P0** | Modular refactor + test target | — | ✔ **done** | Byte-identical parity vs 2026-05-13 spike on `transcribe` + `diarize`; 13 `Core/` modules; 11 subcommands as thin veneers; `ChronicleTests` target wired. |
 | **P7** | `chronicle sysaudio` subcommand | FR-3 | ✔ **done** | `SCStream` audio-only via `Core/Audio/SysAudioSource`; 4/4 TTS sentences captured exact; Info.plist `NSScreenCaptureUsageDescription` added. |
-| **P11** | Opus production audio sink | FR-1 | ⏳ **in progress** | `Core/Sinks/OpusCAFSink` + `Core/Sinks/RollingPCMScratchSink` (ADR-0002 amended 2026-05-13: CAF default, not Ogg); WER delta ≤ 1 % vs WAV baseline on the 6870 s reference; default flips WAV → Opus-in-CAF after parity confirmed. **Verification infra ready 2026-05-16**: `scripts/verify-opus-parity.sh` (operator-run, ~6-7 min on M-series). |
+| **P11** | ALAC production audio sink | FR-1 | ⏳ **in progress** | `Core/Sinks/AVAudioFileALACSink` + `Core/Sinks/RollingPCMScratchSink` (ADR-0002 amended 2026-05-16: ALAC default after Opus WER regression); `AVAudioFile` writer probe passed WER/byte-compare evidence. Current code flips `--audio-format` default to ALAC; remaining FR-1 work is composite default scratch + `--rotate-audio` segment wiring. `ExtAudioFile` is fallback only if `AVAudioFile` regresses. |
 | P3 | JSONL incremental trace | FR-2 | ⏳ pending | `Core/Sinks/JSONLTraceSink` via `AtomicFile.appendJSONLine`; `kill -9` mid-write leaves ≤ 1 torn line. |
 | P4 | Locale auto-detect per ADR-0003 | FR-6 | ⏳ pending | `Core/Speech/LocaleResolver`; candidate-set restriction + 4-knob hysteresis; no "random Russian" by construction. |
 | P5 | Live diarization | FR-4 | ⏳ pending | `Core/Audio/BufferMulticast` + `Core/Diarize/StreamingDiarizer`; speakerId merged into finals by audio range. |
 | P6 | Live tagging via `--tag-every N` | FR-5 | ⏳ pending | `Core/Sinks/TagsJSONLSink` + cached `ContentTagger.tagText`; guardrail violations skip + continue. |
 | P8 | `chronicle merge` | FR-7 | ⏳ pending | Chronological merge of N finals/JSONL traces preserving speaker labels. |
-| P2 | `chronicle repair` | FR-8 | ⏸ de-prioritised | Only needed for `--audio-format wav` opt-in path; Opus + Ogg are crash-safe by container. |
+| P2 | `chronicle repair` | FR-8 | ⏸ de-prioritised | Only needed for `--audio-format wav` opt-in path and unusual tail recovery; ALAC/CAF plus raw scratch reduces the default crash-repair surface. |
 | P1 | WAV transitional rotation | FR-1 | ✘ skipped | Superseded by P11; was meant as a stepping stone toward Opus. |
 | P9 | End-to-end verification | — | ⏳ pending | Run PRD-001 §15 appendix on a fresh session; capture receipts. |
 | P10 | Post-impl documentation | — | ⏳ pending | Update README + research-notes + a verification spike doc with the final numbers. |
@@ -90,7 +90,7 @@ TCC resolves a stable identity. See AGENTS.md.
 |---|---|---|
 | `AudioSource` | `MicAudioSource` (AVAudioEngine), `SysAudioSource` (SCStream) | `FileAudioSource` (P5 testing); RTSP / Bluetooth (post-PRD) |
 | `TranscriptionSink` | `LiveFileSink`, `FinalsAppendSink` | `JSONLTraceSink` (P3), `TagsJSONLSink` (P6) |
-| audio sidecar sink (`AudioSidecarSink`) | inline `AVAudioFile` WAV in subcommands (today) | `OpusCAFSink` + `RollingPCMScratchSink` (P11); `WAVSidecarSink` extracted as opt-in for export |
+| audio sidecar sink (`AudioSidecarSink`) | inline `AVAudioFile` WAV in subcommands (today) | `AVAudioFileALACSink` + `RollingPCMScratchSink` (P11); `WAVSidecarSink` extracted as opt-in for debug/export; `OpusCAFSink` retained opt-in only; `ExtAudioFile` ALAC fallback only if `AVAudioFile` regresses |
 | `OfflineDiarizing` | `OfflineDiarizer` (FluidAudio VBx) | — |
 | (planned) `StreamingDiarizing` | — | `StreamingDiarizer` (FluidAudio Sortformer, P5) |
 | `ContentTagger.tagText` / `Summarizer.summarizeText` | cached via `ModelHost.shared` | — |
@@ -131,7 +131,7 @@ Open phases map to bare numeric task IDs in the Pi task tracker:
 | P0 step 1-8 | #31 (umbrella) + #33-#39 | ✔ |
 | P7 sysaudio | #27 | ✔ |
 | Doc hygiene | #41 | ✔ |
-| P11 Opus production | #32 | next |
+| P11 ALAC production | #32 | next |
 | P3 JSONL | #23 | open |
 | P4 LocaleResolver | #24 | open |
 | P5 streaming diarize | #25 | open |

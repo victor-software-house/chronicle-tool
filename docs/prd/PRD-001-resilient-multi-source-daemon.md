@@ -18,7 +18,7 @@ The current `chronicle mic` binary is a working real-time daemon: it taps the
 microphone via `AVAudioEngine`, feeds buffers into Apple's `SpeechAnalyzer`
 on the Neural Engine, and writes four sidecar streams (`audio.wav`,
 `live.md`, `finals.md`, `trace.json`). Measured cost is 0.5-0.8% of one
-core, 30 MB RSS, ~150 ms volatile latency.
+core, 30 MB RSS, \~150 ms volatile latency.
 
 For chronicle's 24/7 use-case, three structural gaps remain:
 
@@ -50,21 +50,21 @@ into a system the operator can leave running.
 
 ## 2. Goals & Success Metrics
 
-| Goal | Metric | Target |
-|------|--------|--------|
-| **Crash-resistant audio** | Worst-case audio data loss after an unclean termination | ≤ 60 s of audio (vs current "entire session unplayable") |
-| **Crash-resistant trace** | Worst-case event-trace loss after unclean termination | ≤ 5 s of events (vs current "entire trace lost") |
+| Goal                         | Metric                                                    | Target                                                                                |
+| ---------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| **Crash-resistant audio**    | Worst-case audio data loss after an unclean termination   | ≤ 60 s of audio (vs current "entire session unplayable")                              |
+| **Crash-resistant trace**    | Worst-case event-trace loss after unclean termination     | ≤ 5 s of events (vs current "entire trace lost")                                      |
 | **Dual-source live capture** | Concurrent mic + system audio with one unified transcript | Mic + sysaudio daemons run side by side, finals merge by wall-clock with speaker tags |
-| **Live diarization** | Speaker label attached to each finalized transcript line | ≥ 80% of finals carry a `speakerId` within 1 s of the line being committed |
-| **Live tagging** | Topic / entity tags computed on each new final | ≤ 8 s from final commit to tags landing in a sidecar JSON |
-| **Resource ceiling** | Aggregate cost of all live daemons on M4 Pro | ≤ 5% CPU, ≤ 200 MB RSS for the full mic + sysaudio + tagger + diarizer setup |
+| **Live diarization**         | Speaker label attached to each finalized transcript line  | ≥ 80% of finals carry a `speakerId` within 1 s of the line being committed            |
+| **Live tagging**             | Topic / entity tags computed on each new final            | ≤ 8 s from final commit to tags landing in a sidecar JSON                             |
+| **Resource ceiling**         | Aggregate cost of all live daemons on M4 Pro              | ≤ 5% CPU, ≤ 200 MB RSS for the full mic + sysaudio + tagger + diarizer setup          |
 
 **Guardrails (must not regress):**
 
-- Current single-daemon footprint stays under 1% CPU, 50 MB RSS.
-- Volatile latency must not regress beyond ~200 ms.
-- All sidecars stay on-device. No cloud calls. No network. No paid APIs.
-- The atomic-rewrite contract on `live.md` is preserved (readers never see
+* Current single-daemon footprint stays under 1% CPU, 50 MB RSS.
+* Volatile latency must not regress beyond \~200 ms.
+* All sidecars stay on-device. No cloud calls. No network. No paid APIs.
+* The atomic-rewrite contract on `live.md` is preserved (readers never see
   a partial file).
 
 ---
@@ -119,54 +119,52 @@ enabled.
 
 ### Out of scope / later
 
-| What | Why | Tracked in |
-|------|-----|------------|
+| What                               | Why                                                                                                                           | Tracked in |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ---------- |
 | Whisper-style hallucination filter | The Tahoe `SpeechTranscriber` does not exhibit the silence-hallucination problem we hit with Whisper. Premature optimisation. | future PRD |
-| Continuous diarizer-only output | `SortformerDiarizer` is fast enough to run inline; standalone path unnecessary. | future PRD |
-| Direct push to Obsidian vault | Out-of-process; better solved by a chronicle → vault watcher. | future PRD |
-| Encrypted at-rest sidecars | The full chronicle privacy story is its own PRD. | future PRD |
-| launchd plist / login item | Operator currently uses Pi `process` tool. launchd is the right answer post-MVP. | future PRD |
+| Continuous diarizer-only output    | `SortformerDiarizer` is fast enough to run inline; standalone path unnecessary.                                               | future PRD |
+| Direct push to Obsidian vault      | Out-of-process; better solved by a chronicle → vault watcher.                                                                 | future PRD |
+| Encrypted at-rest sidecars         | The full chronicle privacy story is its own PRD.                                                                              | future PRD |
+| launchd plist / login item         | Operator currently uses Pi `process` tool. launchd is the right answer post-MVP.                                              | future PRD |
 
 ### Design for future (build with awareness)
 
-- All subcommands share a common `Sidecar` protocol (a struct that owns a
+* All subcommands share a common `Sidecar` protocol (a struct that owns a
   rolling `LiveState`, optional `append` path, optional `live` path, and
   optional `audio` writer). This makes adding `sysaudio` mechanical: same
   protocol, different audio source.
-- The diarizer is a *consumer* of the same buffer stream the analyzer
+* The diarizer is a *consumer* of the same buffer stream the analyzer
   uses. Build the fan-out as a multicast `AsyncStream`-style helper rather
   than wiring two taps. Future consumers (sound classifier, biometric
   signal extractor, whatever) hook into the same fan-out.
-- Tagger output is a JSON-Lines sidecar, one tag-set per line. Easy to
+* Tagger output is a JSON-Lines sidecar, one tag-set per line. Easy to
   tail, easy to merge, easy to consume downstream. No DB lock-in.
 
 ---
 
 ## 5. Functional Requirements
 
-### FR-1: Segmented audio capture (`--rotate-audio <seconds>`, default codec = Opus-in-CAF)
+### FR-1: Segmented audio capture (`--rotate-audio <seconds>`, default codec = ALAC-in-CAF)
 
 The mic and sysaudio daemons capture audio via a sink protocol
-(`AudioSidecarSink`). The **production default sink is `OpusCAFSink`**
-(Opus 24 kbps mono in CAF, per [ADR-0002](../adr/ADR-0002-audio-storage-format.md) amended 2026-05-13);
-`WAVSegmentSink` is retained as a transitional default during P0/P1
-refactor parity validation and long-term as an explicit-export sink.
-Rotation cuts a new file every N seconds (default 60).
+(`AudioSidecarSink`). The **production default sink is `AVAudioFileALACSink`**
+(ALAC-in-CAF fed by rounded Int16 PCM, per [ADR-0002](../adr/ADR-0002-audio-storage-format.md) amended 2026-05-16 after Opus failed the real-reference WER gate). `WAVSidecarSink` is retained for debugging and broad tool compatibility; `OpusCAFSink` is retained only as an explicit opt-in/export sink.
 
-A rolling raw-PCM scratch sink (`RollingPCMScratchSink`) keeps the last
-300 s of bit-exact PCM under `audio/scratch/` for premium-STT bursts and
-on-demand lossless export.
+Current P11 progress wires the default codec and proves the high-level ALAC
+writer. Segment rotation and parallel default raw-PCM scratch are still pending
+inside FR-1. Until composite sink wiring lands, `RollingPCMScratchSink` is
+selected explicitly with `--audio-format pcm`; it does not run concurrently with
+the default ALAC sidecar.
 
 **Acceptance criteria:**
 
 ```gherkin
-Given the daemon is running with --save-audio session.caf --audio-format opus --rotate-audio 60
-When 130 seconds of audio have streamed and the daemon is killed with SIGKILL
-Then audio/session-000001.caf and audio/session-000002.caf play cleanly in afplay
-And audio/session-000003.caf loses at most the in-flight ~20 ms Opus packet
-And `chronicle transcribe -i audio/session-000003.caf` succeeds without repair
-And concatenating all three through `ffmpeg -f concat` reconstructs the full session
-And the on-disk size of 60 s of speech is between 130 KB and 250 KB
+Given the daemon is running with --save-audio session.caf --audio-format alac
+When audio streams and the daemon exits cleanly
+Then session.caf reopens with AVAudioFile as ALAC-in-CAF
+And the on-disk size of the 6870 s Zoom reference is near the verified rounded-Int16 ALAC target (~91.3 MB)
+And decoded PCM matches the rounded Int16 source control
+And WER delta versus the WAV baseline is ≤ 1 %
 ```
 
 ```gherkin
@@ -179,18 +177,25 @@ And concatenating all three reconstructs the full session
 ```
 
 ```gherkin
-Given the daemon is running with the rolling scratch enabled (default)
+Given the daemon is running with --audio-format pcm during the current P11 step
 When the operator triggers an on-demand premium-STT pass on a segment that finalised 90 seconds ago
 Then the segment is available in audio/scratch/ at bit-exact PCM
 And the daemon evicts scratch segments older than the configured TTL (default 300 s) automatically
+
+Given the later FR-1 composite sink wiring is complete
+When the daemon runs with the default ALAC sidecar
+Then RollingPCMScratchSink also runs in parallel by default
+And --rotate-audio cuts finalized ALAC segments at the configured audio-duration boundary
 ```
 
 **Files:**
-- `Sources/Chronicle/Core/Sinks/OpusCAFSink.swift` — production default, AVAudioConverter (PCM → Opus) + AudioFile (CAF write), packet flush every ~20 ms.
-- `Sources/Chronicle/Core/Sinks/WAVSegmentSink.swift` — transitional + export sink, explicit `rotate()` API.
-- `Sources/Chronicle/Core/Sinks/RollingPCMScratchSink.swift` — bounded-size append-only ring of raw PCM, auto-prunes past TTL.
-- `Sources/Chronicle/Subcommands/Mic.swift` / `Sources/Chronicle/Subcommands/SysAudio.swift` — wire `--audio-format`, `--rotate-audio`, `--scratch-ttl` flags into the pipeline.
-- `Sources/Chronicle/Subcommands/Repair.swift` — WAV header repair (still relevant for the `--audio-format wav` opt-in path).
+
+* `Sources/Chronicle/Core/Sinks/AVAudioFileALACSink.swift` — production default: `AVAudioFile(forWriting:)` configured for CAF + `kAudioFormatAppleLossless`, `AVEncoderBitDepthHintKey: 16`, and rounded Int16 PCM buffers. Probe result on the 6870 s reference: `alac`, `s16p`, 16 kHz mono, 91,316,352 bytes, decoded PCM `cmp-ok`.
+* `Sources/Chronicle/Core/Sinks/WAVSidecarSink.swift` — debug/export sink.
+* `Sources/Chronicle/Core/Sinks/OpusCAFSink.swift` — opt-in/export sink only; rejected as default after WER regression on the 6870 s reference.
+* `Sources/Chronicle/Core/Sinks/RollingPCMScratchSink.swift` — bounded-size append-only ring of raw PCM, auto-prunes past TTL; currently selected with `--audio-format pcm`, later composed in parallel with default ALAC.
+* `Sources/Chronicle/Subcommands/Mic.swift` / `Sources/Chronicle/Subcommands/SysAudio.swift` — current P11 step wires `--audio-format`; remaining FR-1 work wires `--rotate-audio` and composite default scratch.
+* `Sources/Chronicle/Subcommands/Repair.swift` — WAV/tail repair (still relevant for the `--audio-format wav` opt-in path and unusual default-sidecar recovery cases).
 
 ---
 
@@ -211,8 +216,9 @@ And `jq -c . trace.jsonl 2>/dev/null | wc -l` is within 5 events of the true cou
 ```
 
 **Files:**
-- `Sources/Chronicle/Mic.swift` — replace `trace.json` writer with JSONL appender.
-- `Sources/Chronicle/Live.swift` — same pattern.
+
+* `Sources/Chronicle/Mic.swift` — replace `trace.json` writer with JSONL appender.
+* `Sources/Chronicle/Live.swift` — same pattern.
 
 ---
 
@@ -233,8 +239,9 @@ And finals.md captures the spoken content with locale-appropriate accuracy
 ```
 
 **Files:**
-- `Sources/Chronicle/SysAudio.swift` — new subcommand using `SCStream` audio-only configuration.
-- `Info.plist` — add `NSScreenCaptureUsageDescription`.
+
+* `Sources/Chronicle/SysAudio.swift` — new subcommand using `SCStream` audio-only configuration.
+* `Info.plist` — add `NSScreenCaptureUsageDescription`.
 
 ---
 
@@ -256,16 +263,17 @@ And the speaker count converges to 2 within the first ~10 seconds
 ```
 
 **Files:**
-- `Sources/Chronicle/Mic.swift` — add buffer multicast; spawn diarizer task.
-- `Sources/Chronicle/Diarize.swift` — extract `SortformerDiarizer` setup into a shared streaming helper.
-- `Sources/Chronicle/SysAudio.swift` — same flag.
+
+* `Sources/Chronicle/Mic.swift` — add buffer multicast; spawn diarizer task.
+* `Sources/Chronicle/Diarize.swift` — extract `SortformerDiarizer` setup into a shared streaming helper.
+* `Sources/Chronicle/SysAudio.swift` — same flag.
 
 ---
 
 ### FR-5: Live content tagging (`--tag-every <N>`)
 
 Every N finals trigger a `FoundationModels` `.contentTagging` pass over
-the rolling cumulative transcript (most recent ~5000 chars). Results are
+the rolling cumulative transcript (most recent \~5000 chars). Results are
 appended to `tags.jsonl` as one JSON record per pass.
 
 **Acceptance criteria:**
@@ -279,8 +287,9 @@ And the latency between the 3rd final and its tag entry is < 8 seconds
 ```
 
 **Files:**
-- `Sources/Chronicle/Mic.swift` — debounce tagger triggers on each final.
-- `Sources/Chronicle/Tag.swift` — extract a reusable `tagText(_:)` function that does not require CLI args.
+
+* `Sources/Chronicle/Mic.swift` — debounce tagger triggers on each final.
+* `Sources/Chronicle/Tag.swift` — extract a reusable `tagText(_:)` function that does not require CLI args.
 
 ---
 
@@ -288,18 +297,18 @@ And the latency between the 3rd final and its tag entry is < 8 seconds
 
 Locale resolution is governed by [ADR-0003](../adr/ADR-0003-locale-resolution-policy.md). Four modes:
 
-- **Pin** (`--locale en-US`): no detection runs; the transcriber stays at the pinned locale. **This is the operator's "disable auto" switch.**
-- **Auto with default safe set** (`--locale auto`): candidates = operator's configured primary languages (default `[en-US, pt-BR]`; overridable via `~/.config/chronicle/locales.json`). `NLLanguageRecognizer` is configured with `setLanguageConstraints([...])` so it can only return candidates from the safe set.
-- **Auto with explicit set** (`--locale auto:en-US,pt-BR,es-ES`): per-run candidate list.
-- **Auto with full supported set** (`--locale auto:*`): opt-in only; documented as research mode; never picked silently.
+* **Pin** (`--locale en-US`): no detection runs; the transcriber stays at the pinned locale. **This is the operator's "disable auto" switch.**
+* **Auto with default safe set** (`--locale auto`): candidates = operator's configured primary languages (default `[en-US, pt-BR]`; overridable via `~/.config/chronicle/locales.json`). `NLLanguageRecognizer` is configured with `setLanguageConstraints([...])` so it can only return candidates from the safe set.
+* **Auto with explicit set** (`--locale auto:en-US,pt-BR,es-ES`): per-run candidate list.
+* **Auto with full supported set** (`--locale auto:*`): opt-in only; documented as research mode; never picked silently.
 
-Hysteresis (modes auto / auto:list / auto:*):
+Hysteresis (modes auto / auto:list / auto:\*):
 
-- Detector runs on **finals only** (volatile is too noisy by an order of magnitude).
-- Switch requires **N consecutive finals** (`--locale-min-finals`, default 3) agreeing on the same candidate, **with confidence ≥ `--locale-confidence`** (default 0.70).
-- Switch **suppressed for `--locale-cooldown-sec`** (default 30 s) after the previous switch.
-- Switch **suppressed if fewer than `--locale-min-chars`** (default 30) total characters have been observed at the candidate locale across the consecutive-final window — single loanwords don't trigger a flip.
-- Initial locale = first candidate in the set (so the default `[en-US, pt-BR]` starts in `en-US`).
+* Detector runs on **finals only** (volatile is too noisy by an order of magnitude).
+* Switch requires **N consecutive finals** (`--locale-min-finals`, default 3) agreeing on the same candidate, **with confidence ≥ `--locale-confidence`** (default 0.70).
+* Switch **suppressed for `--locale-cooldown-sec`** (default 30 s) after the previous switch.
+* Switch **suppressed if fewer than `--locale-min-chars`** (default 30) total characters have been observed at the candidate locale across the consecutive-final window — single loanwords don't trigger a flip.
+* Initial locale = first candidate in the set (so the default `[en-US, pt-BR]` starts in `en-US`).
 
 **Acceptance criteria:**
 
@@ -335,10 +344,11 @@ Then the switch is suppressed because the 30 s cooldown has not elapsed
 ```
 
 **Files:**
-- `Sources/Chronicle/Core/Speech/LocaleResolver.swift` — owns the candidate set, runs the hysteresis state machine, exposes `consider(final:) -> Locale?` returning a new locale only when all gates pass.
-- `Sources/Chronicle/Subcommands/Mic.swift` / `SysAudio.swift` / `Live.swift` — parse `--locale` grammar, build the resolver, swap transcribers on resolver output.
-- `~/.config/chronicle/locales.json` — optional operator-specific safe set; absence → built-in default `[en-US, pt-BR]`.
-- `Tests/ChronicleTests/Speech/LocaleResolverTests.swift` — unit tests covering in-set switch, out-of-set suppression, cooldown suppression, min-chars suppression, pin-mode bypass.
+
+* `Sources/Chronicle/Core/Speech/LocaleResolver.swift` — owns the candidate set, runs the hysteresis state machine, exposes `consider(final:) -> Locale?` returning a new locale only when all gates pass.
+* `Sources/Chronicle/Subcommands/Mic.swift` / `SysAudio.swift` / `Live.swift` — parse `--locale` grammar, build the resolver, swap transcribers on resolver output.
+* `~/.config/chronicle/locales.json` — optional operator-specific safe set; absence → built-in default `[en-US, pt-BR]`.
+* `Tests/ChronicleTests/Speech/LocaleResolverTests.swift` — unit tests covering in-set switch, out-of-set suppression, cooldown suppression, min-chars suppression, pin-mode bypass.
 
 ---
 
@@ -359,7 +369,8 @@ And speaker labels (if present) are preserved
 ```
 
 **Files:**
-- `Sources/Chronicle/Merge.swift` — new subcommand.
+
+* `Sources/Chronicle/Merge.swift` — new subcommand.
 
 ---
 
@@ -379,19 +390,20 @@ And `chronicle transcribe -i session-003.wav -o out` succeeds without errors
 ```
 
 **Files:**
-- `Sources/Chronicle/Repair.swift` — new subcommand.
+
+* `Sources/Chronicle/Repair.swift` — new subcommand.
 
 ---
 
 ## 6. Non-Functional Requirements
 
-| Category | Requirement |
-|----------|-------------|
-| **Performance** | Single daemon: ≤ 1% CPU, ≤ 50 MB RSS. Full mic + sysaudio + diarize + tag stack: ≤ 5% CPU, ≤ 200 MB RSS. |
-| **Latency** | Volatile transcript updates: ≤ 200 ms. Final commit: ≤ 30 s. Live diarization: ≤ 1 s after final. Live tagging: ≤ 8 s after triggering final. |
-| **Resilience** | After `SIGKILL` or power loss: audio loss ≤ 60 s, trace event loss ≤ 5 s. All other previously-committed events recoverable from disk. |
-| **Privacy** | All processing on-device. No network calls. No telemetry. No paid APIs. |
-| **Portability** | macOS 26+ only. Apple Silicon only. No fallback path for older OS / Intel. |
+| Category               | Requirement                                                                                                                                             |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Performance**        | Single daemon: ≤ 1% CPU, ≤ 50 MB RSS. Full mic + sysaudio + diarize + tag stack: ≤ 5% CPU, ≤ 200 MB RSS.                                                |
+| **Latency**            | Volatile transcript updates: ≤ 200 ms. Final commit: ≤ 30 s. Live diarization: ≤ 1 s after final. Live tagging: ≤ 8 s after triggering final.           |
+| **Resilience**         | After `SIGKILL` or power loss: audio loss ≤ 60 s, trace event loss ≤ 5 s. All other previously-committed events recoverable from disk.                  |
+| **Privacy**            | All processing on-device. No network calls. No telemetry. No paid APIs.                                                                                 |
+| **Portability**        | macOS 26+ only. Apple Silicon only. No fallback path for older OS / Intel.                                                                              |
 | **File compatibility** | Audio sidecars must be readable by `ffmpeg`, `afplay`, and our own offline `transcribe` without modification (except for repair-needing tail segments). |
 
 ---
@@ -400,23 +412,23 @@ And `chronicle transcribe -i session-003.wav -o out` succeeds without errors
 
 ### Risks
 
-| Risk | Severity | Likelihood | Mitigation |
-|------|----------|------------|------------|
-| **R-A1: Opus 24 kbps decode degrades `SpeechAnalyzer` accuracy vs WAV reference** | Medium | Low | P11 acceptance test: re-transcribe the 2026-05-13 6870 s mic-master via Opus 24 kbps round-trip and assert WER delta ≤ 1 % vs WAV baseline. If exceeded, fall back to Opus 32 kbps mono or raw-PCM scratch per [ADR-0002](../adr/ADR-0002-audio-storage-format.md). |
-| `SCStream` audio capture requires entitlement we can't easily provide for an unsigned binary | Medium | Medium | First implementation attempt validates with TCC prompt for Screen Recording; document the friction; provide ad-hoc signing instructions if needed. |
-| `SortformerDiarizer` adds per-buffer latency that pushes volatile updates beyond the 200 ms NFR | Medium | Low | Run the diarizer in a separate `Task` reading from the multicast stream; do not let it block the analyzer's stream. Measure on the 6870 s reference session. |
-| Foundation Models live tagging trips the safety guardrail (`Detected content likely to be unsafe`) on certain transcript chunks | Low | Medium | Catch the error, skip the chunk, log a warning to stderr, continue. Already seen on the mic JSON test. |
-| Audio rotation creates "gaps" between segments because `installTap` keeps delivering buffers during file swap | Medium | Medium | Lock the rotation in a serial queue; buffer the in-flight buffer until the new file is ready (≤ 50 ms swap). Worst case: one buffer (~85 ms) overlap, never a gap. CAF packet boundaries are independent so the Opus sink doesn't see this risk; only `WAVSidecarSink` (opt-in) does. |
-| Cross-process file races (two daemons writing the same sidecar file) | Low | Low | Each daemon writes its own sidecar set under a distinct subdirectory; `merge` does the unification offline. Document the convention. |
-| Language auto-detect false-flip mid-conversation due to a single foreign word | Medium | Medium | Mitigated by [ADR-0003](../adr/ADR-0003-locale-resolution-policy.md): mandatory candidate-set restriction (default `[en-US, pt-BR]`), 4-knob hysteresis (confidence ≥ 0.70, ≥ 3 consecutive finals, 30 s cooldown, ≥ 30 chars at new locale). Operator can disable detection entirely by pinning `--locale en-US`. |
+| Risk                                                                                                                            | Severity | Likelihood                    | Mitigation                                                                                                                                                                                                                                                                                                                                 |
+| ------------------------------------------------------------------------------------------------------------------------------- | -------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **R-A1: compressed audio decode degrades `SpeechAnalyzer` accuracy vs WAV reference**                                           | High     | Proven for Opus; low for ALAC | P11 rejected Opus as default after real 6870 s Zoom WER drift. Default is now ALAC-in-CAF with rounded Int16 source PCM per [ADR-0002](../adr/ADR-0002-audio-storage-format.md). Acceptance test: re-transcribe the 2026-05-13 reference after ALAC round-trip and assert WER delta ≤ 1 % vs WAV baseline; keep WAV/PCM as escape hatches. |
+| `SCStream` audio capture requires entitlement we can't easily provide for an unsigned binary                                    | Medium   | Medium                        | First implementation attempt validates with TCC prompt for Screen Recording; document the friction; provide ad-hoc signing instructions if needed.                                                                                                                                                                                         |
+| `SortformerDiarizer` adds per-buffer latency that pushes volatile updates beyond the 200 ms NFR                                 | Medium   | Low                           | Run the diarizer in a separate `Task` reading from the multicast stream; do not let it block the analyzer's stream. Measure on the 6870 s reference session.                                                                                                                                                                               |
+| Foundation Models live tagging trips the safety guardrail (`Detected content likely to be unsafe`) on certain transcript chunks | Low      | Medium                        | Catch the error, skip the chunk, log a warning to stderr, continue. Already seen on the mic JSON test.                                                                                                                                                                                                                                     |
+| Audio rotation creates "gaps" between segments because `installTap` keeps delivering buffers during file swap                   | Medium   | Medium                        | Lock the rotation in a serial queue; buffer the in-flight buffer until the new file is ready (≤ 50 ms swap). Worst case: one buffer (\~85 ms) overlap, never a gap. CAF packet boundaries are independent so the Opus sink doesn't see this risk; only `WAVSidecarSink` (opt-in) does.                                                     |
+| Cross-process file races (two daemons writing the same sidecar file)                                                            | Low      | Low                           | Each daemon writes its own sidecar set under a distinct subdirectory; `merge` does the unification offline. Document the convention.                                                                                                                                                                                                       |
+| Language auto-detect false-flip mid-conversation due to a single foreign word                                                   | Medium   | Medium                        | Mitigated by [ADR-0003](../adr/ADR-0003-locale-resolution-policy.md): mandatory candidate-set restriction (default `[en-US, pt-BR]`), 4-knob hysteresis (confidence ≥ 0.70, ≥ 3 consecutive finals, 30 s cooldown, ≥ 30 chars at new locale). Operator can disable detection entirely by pinning `--locale en-US`.                         |
 
 ### Assumptions
 
-- The operator runs the daemon under the Pi `process` tool (which sends `SIGTERM` on stop) or launchd; raw `kill -9` is the worst case to design for.
-- The Mac's clock is monotonic enough that ISO timestamps from two daemons can be ordered correctly by `merge`. (NTP-synced macOS clocks are.)
-- The `SystemLanguageModel` 23-locale set is sufficient for now; minority languages fall back to whisper.cpp via the offline `transcribe` path.
-- FluidAudio's `SortformerDiarizer` actually works as documented (up to 4 speakers, 480 ms latency). The offline `DiarizerManager` working is good evidence but we haven't validated streaming yet.
-- The disk has space. 24/7 capture at 32 KB/s = 2.6 GB/day of audio. We do not auto-prune; that is the storage-tier PRD's job.
+* The operator runs the daemon under the Pi `process` tool (which sends `SIGTERM` on stop) or launchd; raw `kill -9` is the worst case to design for.
+* The Mac's clock is monotonic enough that ISO timestamps from two daemons can be ordered correctly by `merge`. (NTP-synced macOS clocks are.)
+* The `SystemLanguageModel` 23-locale set is sufficient for now; minority languages fall back to whisper.cpp via the offline `transcribe` path.
+* FluidAudio's `SortformerDiarizer` actually works as documented (up to 4 speakers, 480 ms latency). The offline `DiarizerManager` working is good evidence but we haven't validated streaming yet.
+* The disk has space. 24/7 capture at 32 KB/s = 2.6 GB/day of audio. We do not auto-prune; that is the storage-tier PRD's job.
 
 ---
 
@@ -434,7 +446,7 @@ And `chronicle transcribe -i session-003.wav -o out` succeeds without errors
 
 **Rationale:** WAV remains the standard format every macOS tool reads. 60 s is short enough that any one incident loses at most a minute. Segments concatenate trivially via `ffmpeg -f concat`. The crash-recovery helper (FR-8) handles the tail segment if needed.
 
-**Future path:** when chronicle moves to fragmented MP4 + Opus audio for storage efficiency, swap `AVAudioFile` for `AVAssetWriter` with `movFragmentInterval` ≈ 1 s. Same segmentation principle, different container.
+**Current P11 path:** ADR-0002 supersedes segmented WAV as the default with ALAC-in-CAF, fed by rounded Int16 PCM. The highest-level Apple writer probe passed: `AVAudioFile(forWriting:)` with `kAudioFormatAppleLossless`, CAF output, `AVEncoderBitDepthHintKey: 16`, and `.pcmFormatInt16` buffers produced compact 16-bit-source ALAC that decoded byte-identically to the source PCM. `ExtAudioFile` is fallback-only for future OS regressions. Opus remains opt-in/export only after WER regression on the real reference.
 
 ---
 
@@ -448,7 +460,7 @@ And `chronicle transcribe -i session-003.wav -o out` succeeds without errors
 
 **Decision:** **JSONL append-only**, flushed every 50 events or every 1 s, whichever is sooner.
 
-**Rationale:** Standard, language-agnostic, jq-friendly. Append is atomic enough at this byte count (~200 bytes/event ≪ PIPE_BUF 4096). Recovery is `jq -c . trace.jsonl 2>/dev/null` (jq silently drops the trailing malformed line if any).
+**Rationale:** Standard, language-agnostic, jq-friendly. Append is atomic enough at this byte count (\~200 bytes/event ≪ PIPE\_BUF 4096). Recovery is `jq -c . trace.jsonl 2>/dev/null` (jq silently drops the trailing malformed line if any).
 
 **Future path:** if multiple daemons share a trace surface (unlikely), upgrade to a single-writer ingestion service that owns the JSONL file.
 
@@ -488,13 +500,13 @@ And `chronicle transcribe -i session-003.wav -o out` succeeds without errors
 
 **Options considered:**
 
-1. **Tag on every final.** Each final is short; tagging cost per call is ~5 s. Latency stack-up if speech is fast.
+1. **Tag on every final.** Each final is short; tagging cost per call is \~5 s. Latency stack-up if speech is fast.
 2. **Tag every N finals (debounced).** Reasonable middle ground; debounces but stays current.
 3. **Tag on a wall-clock interval (every 60 s).** Decouples from speech rate.
 
 **Decision:** **Every N finals (configurable, default N=3).**
 
-**Rationale:** N=3 gives ~30-90 s of new context per tagger call, which is the right granularity for human-readable tag drift. Wall-clock cadence sleeps when no one is talking, which is wasteful.
+**Rationale:** N=3 gives \~30-90 s of new context per tagger call, which is the right granularity for human-readable tag drift. Wall-clock cadence sleeps when no one is talking, which is wasteful.
 
 **Future path:** add a `--tag-every-seconds` flag for environments where speech rate is variable. Keep `--tag-every <N>` as the default behaviour.
 
@@ -506,58 +518,62 @@ The codebase is being restructured into a protocol-oriented core with thin
 CLI veneers per [ADR-0001](../adr/ADR-0001-modular-pipeline-architecture.md).
 FR-by-FR file mapping below reflects the post-refactor layout.
 
-| File | Change type | FR | Description |
-|------|-------------|-----|-------------|
-| `Sources/Chronicle/Chronicle.swift` | Modify | FR-3, FR-7, FR-8 | Register `sysaudio`, `merge`, `repair` |
-| `Sources/Chronicle/Subcommands/Mic.swift` | Refactor + extend | FR-1, FR-2, FR-4, FR-5, FR-6 | Becomes a ~60-line orchestration of `Core/` protocols |
-| `Sources/Chronicle/Subcommands/SysAudio.swift` | New | FR-3, FR-4, FR-5 | New CLI veneer; reuses the same pipeline as `Mic` |
-| `Sources/Chronicle/Subcommands/Live.swift` | Refactor + modify | FR-2 | File-driven veneer reusing `Core/Speech` |
-| `Sources/Chronicle/Subcommands/Transcribe.swift` | Refactor | n/a | Uses `Core/Speech.TranscriptionEngine` |
-| `Sources/Chronicle/Subcommands/Diarize.swift` | Refactor | n/a | Uses `Core/Diarize.OfflineDiarizer` |
-| `Sources/Chronicle/Subcommands/Tag.swift` | Refactor | FR-5 | Delegates to `Core/LLM.ContentTagger.tagText` |
-| `Sources/Chronicle/Subcommands/Summarize.swift` | Refactor | n/a | Delegates to `Core/LLM.Summarizer` |
-| `Sources/Chronicle/Subcommands/Translate.swift` | Refactor | FR-6 | Uses `Core/Speech.LocaleResolver` |
-| `Sources/Chronicle/Subcommands/OCR.swift` | Refactor | n/a | Unchanged behaviour, moved into Subcommands/ |
-| `Sources/Chronicle/Subcommands/Describe.swift` | Refactor | n/a | Reuses `Core/LLM.ModelHost` |
-| `Sources/Chronicle/Subcommands/Merge.swift` | New | FR-7 | Cross-stream merge of finals/jsonl |
-| `Sources/Chronicle/Subcommands/Repair.swift` | New | FR-1, FR-8 | WAV header repair |
-| `Sources/Chronicle/Core/Audio/AudioSource.swift` | New | FR-3, FR-4 | Protocol: yields `AnalyzerInput` + raw PCM |
-| `Sources/Chronicle/Core/Audio/MicAudioSource.swift` | New | FR-1 | `AVAudioEngine` impl |
-| `Sources/Chronicle/Core/Audio/SysAudioSource.swift` | New | FR-3 | `SCStream` impl |
-| `Sources/Chronicle/Core/Audio/FileAudioSource.swift` | New | n/a | `AVAudioFile` impl for file-driven runs |
-| `Sources/Chronicle/Core/Audio/BufferMulticast.swift` | New | FR-4, FR-5 | Lock-free SPMC fan-out, audio-thread safe |
-| `Sources/Chronicle/Core/Audio/BufferConverter.swift` | New | n/a | `AVAudioConverter` wrapper |
-| `Sources/Chronicle/Core/Speech/TranscriptionEngine.swift` | New | FR-2, FR-6 | Preset-agnostic `SpeechAnalyzer` wrapper |
-| `Sources/Chronicle/Core/Speech/LocaleResolver.swift` | New | FR-6 | `NLLanguageRecognizer` auto-detect |
-| `Sources/Chronicle/Core/Diarize/Diarizer.swift` | New | FR-4 | Protocol |
-| `Sources/Chronicle/Core/Diarize/OfflineDiarizer.swift` | New | n/a | FluidAudio batch impl |
-| `Sources/Chronicle/Core/Diarize/StreamingDiarizer.swift` | New | FR-4 | FluidAudio Sortformer impl |
-| `Sources/Chronicle/Core/LLM/ModelHost.swift` | New | FR-5 | Cached `LanguageModelSession` |
-| `Sources/Chronicle/Core/LLM/ContentTagger.swift` | New | FR-5 | `@Generable` + `tagText()` |
-| `Sources/Chronicle/Core/LLM/Summarizer.swift` | New | n/a | `@Generable` + `summarizeText()` |
-| `Sources/Chronicle/Core/LLM/ImageDescriber.swift` | New | n/a | Vision multi-request + FM narration |
-| `Sources/Chronicle/Core/Sinks/TranscriptionSink.swift` | New | FR-2, FR-4, FR-5 | Protocol: `didReceive(volatile|final)` |
-| `Sources/Chronicle/Core/Sinks/LiveFileSink.swift` | New | n/a | Atomic-rewrite `live.md` |
-| `Sources/Chronicle/Core/Sinks/FinalsAppendSink.swift` | New | n/a | Append-per-final timestamped log |
-| `Sources/Chronicle/Core/Sinks/JSONLTraceSink.swift` | New | FR-2 | Incremental JSONL trace |
-| `Sources/Chronicle/Core/Sinks/TagsJSONLSink.swift` | New | FR-5 | Tags every N finals |
-| `Sources/Chronicle/Core/Sinks/WAVSegmentSink.swift` | New | FR-1 | Rotating WAV writer with `rotate()` API |
-| `Sources/Chronicle/Core/Runtime/SignalHandler.swift` | New | n/a | `SIGINT`/`SIGTERM` one-shot helper |
-| `Sources/Chronicle/Core/Runtime/AtomicFile.swift` | New | FR-2 | Atomic-write + JSONL append primitives |
-| `Sources/Chronicle/Core/Runtime/LivePipeline.swift` | New | FR-1…FR-5 | Orchestrator: source → [consumers] → [sinks] |
-| `Tests/ChronicleTests/Audio/BufferMulticastTests.swift` | New | FR-4 | SPMC fan-out unit tests |
-| `Tests/ChronicleTests/Sinks/JSONLTraceSinkTests.swift` | New | FR-2 | Crash-recovery (kill mid-write) tests |
-| `Tests/ChronicleTests/Sinks/WAVSegmentSinkTests.swift` | New | FR-1 | Rotation timing + header validity tests |
-| `Tests/ChronicleTests/Subcommands/RepairTests.swift` | New | FR-8 | Repairs canned malformed WAVs |
-| `Tests/ChronicleTests/Subcommands/MergeTests.swift` | New | FR-7 | Chronological merge with canned finals files |
-| `Tests/ChronicleTests/Speech/LocaleResolverTests.swift` | New | FR-6 | Auto-detect convergence on synthetic inputs |
-| `Tests/ChronicleTests/Helpers/MockAudioSource.swift` | New | testing | Plays canned WAVs through the live pipeline for E2E coverage |
-| `Package.swift` | Modify | testing | Add `ChronicleTests` test target |
-| `Info.plist` | Modify | FR-3 | Add `NSScreenCaptureUsageDescription` |
-| `README.md` | Modify | all | Document new flags, layout, daemon model, recovery story |
-| `docs/prd/PRD-001-resilient-multi-source-daemon.md` | New | n/a | This document |
-| `docs/adr/ADR-0001-modular-pipeline-architecture.md` | New | n/a | Sister ADR for the structural decision |
-| `spikes/2026-05-13-daemon-live-mic.md` | Modify (later) | all | Add post-implementation receipts |
+| File                                                          | Change type       | FR                           | Description                                                  |          |
+| ------------------------------------------------------------- | ----------------- | ---------------------------- | ------------------------------------------------------------ | -------- |
+| `Sources/Chronicle/Chronicle.swift`                           | Modify            | FR-3, FR-7, FR-8             | Register `sysaudio`, `merge`, `repair`                       |          |
+| `Sources/Chronicle/Subcommands/Mic.swift`                     | Refactor + extend | FR-1, FR-2, FR-4, FR-5, FR-6 | Becomes a \~60-line orchestration of `Core/` protocols       |          |
+| `Sources/Chronicle/Subcommands/SysAudio.swift`                | New               | FR-3, FR-4, FR-5             | New CLI veneer; reuses the same pipeline as `Mic`            |          |
+| `Sources/Chronicle/Subcommands/Live.swift`                    | Refactor + modify | FR-2                         | File-driven veneer reusing `Core/Speech`                     |          |
+| `Sources/Chronicle/Subcommands/Transcribe.swift`              | Refactor          | n/a                          | Uses `Core/Speech.TranscriptionEngine`                       |          |
+| `Sources/Chronicle/Subcommands/Diarize.swift`                 | Refactor          | n/a                          | Uses `Core/Diarize.OfflineDiarizer`                          |          |
+| `Sources/Chronicle/Subcommands/Tag.swift`                     | Refactor          | FR-5                         | Delegates to `Core/LLM.ContentTagger.tagText`                |          |
+| `Sources/Chronicle/Subcommands/Summarize.swift`               | Refactor          | n/a                          | Delegates to `Core/LLM.Summarizer`                           |          |
+| `Sources/Chronicle/Subcommands/Translate.swift`               | Refactor          | FR-6                         | Uses `Core/Speech.LocaleResolver`                            |          |
+| `Sources/Chronicle/Subcommands/OCR.swift`                     | Refactor          | n/a                          | Unchanged behaviour, moved into Subcommands/                 |          |
+| `Sources/Chronicle/Subcommands/Describe.swift`                | Refactor          | n/a                          | Reuses `Core/LLM.ModelHost`                                  |          |
+| `Sources/Chronicle/Subcommands/Merge.swift`                   | New               | FR-7                         | Cross-stream merge of finals/jsonl                           |          |
+| `Sources/Chronicle/Subcommands/Repair.swift`                  | New               | FR-1, FR-8                   | WAV header repair                                            |          |
+| `Sources/Chronicle/Core/Audio/AudioSource.swift`              | New               | FR-3, FR-4                   | Protocol: yields `AnalyzerInput` + raw PCM                   |          |
+| `Sources/Chronicle/Core/Audio/MicAudioSource.swift`           | New               | FR-1                         | `AVAudioEngine` impl                                         |          |
+| `Sources/Chronicle/Core/Audio/SysAudioSource.swift`           | New               | FR-3                         | `SCStream` impl                                              |          |
+| `Sources/Chronicle/Core/Audio/FileAudioSource.swift`          | New               | n/a                          | `AVAudioFile` impl for file-driven runs                      |          |
+| `Sources/Chronicle/Core/Audio/BufferMulticast.swift`          | New               | FR-4, FR-5                   | Lock-free SPMC fan-out, audio-thread safe                    |          |
+| `Sources/Chronicle/Core/Audio/BufferConverter.swift`          | New               | n/a                          | `AVAudioConverter` wrapper                                   |          |
+| `Sources/Chronicle/Core/Speech/TranscriptionEngine.swift`     | New               | FR-2, FR-6                   | Preset-agnostic `SpeechAnalyzer` wrapper                     |          |
+| `Sources/Chronicle/Core/Speech/LocaleResolver.swift`          | New               | FR-6                         | `NLLanguageRecognizer` auto-detect                           |          |
+| `Sources/Chronicle/Core/Diarize/Diarizer.swift`               | New               | FR-4                         | Protocol                                                     |          |
+| `Sources/Chronicle/Core/Diarize/OfflineDiarizer.swift`        | New               | n/a                          | FluidAudio batch impl                                        |          |
+| `Sources/Chronicle/Core/Diarize/StreamingDiarizer.swift`      | New               | FR-4                         | FluidAudio Sortformer impl                                   |          |
+| `Sources/Chronicle/Core/LLM/ModelHost.swift`                  | New               | FR-5                         | Cached `LanguageModelSession`                                |          |
+| `Sources/Chronicle/Core/LLM/ContentTagger.swift`              | New               | FR-5                         | `@Generable` + `tagText()`                                   |          |
+| `Sources/Chronicle/Core/LLM/Summarizer.swift`                 | New               | n/a                          | `@Generable` + `summarizeText()`                             |          |
+| `Sources/Chronicle/Core/LLM/ImageDescriber.swift`             | New               | n/a                          | Vision multi-request + FM narration                          |          |
+| `Sources/Chronicle/Core/Sinks/TranscriptionSink.swift`        | New               | FR-2, FR-4, FR-5             | Protocol: \`didReceive(volatile                              | final)\` |
+| `Sources/Chronicle/Core/Sinks/LiveFileSink.swift`             | New               | n/a                          | Atomic-rewrite `live.md`                                     |          |
+| `Sources/Chronicle/Core/Sinks/FinalsAppendSink.swift`         | New               | n/a                          | Append-per-final timestamped log                             |          |
+| `Sources/Chronicle/Core/Sinks/JSONLTraceSink.swift`           | New               | FR-2                         | Incremental JSONL trace                                      |          |
+| `Sources/Chronicle/Core/Sinks/TagsJSONLSink.swift`            | New               | FR-5                         | Tags every N finals                                          |          |
+| `Sources/Chronicle/Core/Sinks/AVAudioFileALACSink.swift`      | New               | FR-1                         | Default ALAC-in-CAF sidecar via high-level `AVAudioFile`     |          |
+| `Sources/Chronicle/Core/Sinks/WAVSidecarSink.swift`           | New               | FR-1                         | Opt-in/debug WAV writer                                      |          |
+| `Sources/Chronicle/Core/Sinks/OpusCAFSink.swift`              | New               | FR-1                         | Opt-in/export Opus-in-CAF writer                             |          |
+| `Sources/Chronicle/Core/Sinks/RollingPCMScratchSink.swift`    | New               | FR-1                         | Bounded raw-PCM scratch ring                                 |          |
+| `Sources/Chronicle/Core/Runtime/SignalHandler.swift`          | New               | n/a                          | `SIGINT`/`SIGTERM` one-shot helper                           |          |
+| `Sources/Chronicle/Core/Runtime/AtomicFile.swift`             | New               | FR-2                         | Atomic-write + JSONL append primitives                       |          |
+| `Sources/Chronicle/Core/Runtime/LivePipeline.swift`           | New               | FR-1…FR-5                    | Orchestrator: source → \[consumers] → \[sinks]               |          |
+| `Tests/ChronicleTests/Audio/BufferMulticastTests.swift`       | New               | FR-4                         | SPMC fan-out unit tests                                      |          |
+| `Tests/ChronicleTests/Sinks/JSONLTraceSinkTests.swift`        | New               | FR-2                         | Crash-recovery (kill mid-write) tests                        |          |
+| `Tests/ChronicleTests/Sinks/AVAudioFileALACSinkTests.swift`   | New               | FR-1                         | ALAC/CAF writer readback test                                |          |
+| `Tests/ChronicleTests/Sinks/RollingPCMScratchSinkTests.swift` | New               | FR-1                         | Scratch rotation + TTL eviction tests                        |          |
+| `Tests/ChronicleTests/Subcommands/RepairTests.swift`          | New               | FR-8                         | Repairs canned malformed WAVs                                |          |
+| `Tests/ChronicleTests/Subcommands/MergeTests.swift`           | New               | FR-7                         | Chronological merge with canned finals files                 |          |
+| `Tests/ChronicleTests/Speech/LocaleResolverTests.swift`       | New               | FR-6                         | Auto-detect convergence on synthetic inputs                  |          |
+| `Tests/ChronicleTests/Helpers/MockAudioSource.swift`          | New               | testing                      | Plays canned WAVs through the live pipeline for E2E coverage |          |
+| `Package.swift`                                               | Modify            | testing                      | Add `ChronicleTests` test target                             |          |
+| `Info.plist`                                                  | Modify            | FR-3                         | Add `NSScreenCaptureUsageDescription`                        |          |
+| `README.md`                                                   | Modify            | all                          | Document new flags, layout, daemon model, recovery story     |          |
+| `docs/prd/PRD-001-resilient-multi-source-daemon.md`           | New               | n/a                          | This document                                                |          |
+| `docs/adr/ADR-0001-modular-pipeline-architecture.md`          | New               | n/a                          | Sister ADR for the structural decision                       |          |
+| `spikes/2026-05-13-daemon-live-mic.md`                        | Modify (later)    | all                          | Add post-implementation receipts                             |          |
 
 Every production file traces to at least one FR. Every FR has at least one
 production file and at least one test target. The refactor (P0) lands
@@ -568,15 +584,15 @@ new structure with its tests.
 
 ## 10. Dependencies & Constraints
 
-- **macOS 26+** for `SpeechAnalyzer` (`Speech` framework new API).
-- **Apple Silicon** for ANE acceleration; no Intel fallback.
-- **Apple Intelligence enabled** for FoundationModels (`tag`, `summarize`, `describe`).
-- **Translation language packs** pre-installed for `translate`.
-- **Microphone TCC** for `mic` (already wired).
-- **Screen Recording TCC** for `sysaudio` (new).
-- **FluidAudio 0.14.5+** for `SortformerDiarizer` (Swift Package).
-- **Xcode 26 / Swift 6.2+** for the build.
-- **`Info.plist` embedded via `-sectcreate`** (Package.swift already does this for Microphone; add Screen Recording).
+* **macOS 26+** for `SpeechAnalyzer` (`Speech` framework new API).
+* **Apple Silicon** for ANE acceleration; no Intel fallback.
+* **Apple Intelligence enabled** for FoundationModels (`tag`, `summarize`, `describe`).
+* **Translation language packs** pre-installed for `translate`.
+* **Microphone TCC** for `mic` (already wired).
+* **Screen Recording TCC** for `sysaudio` (new).
+* **FluidAudio 0.14.5+** for `SortformerDiarizer` (Swift Package).
+* **Xcode 26 / Swift 6.2+** for the build.
+* **`Info.plist` embedded via `-sectcreate`** (Package.swift already does this for Microphone; add Screen Recording).
 
 ---
 
@@ -584,15 +600,15 @@ new structure with its tests.
 
 Order each step so the previous one's receipts feed the next.
 
-1. **P0 — Modular refactor + test target** [DONE 2026-05-13]. Implemented [ADR-0001](../adr/ADR-0001-modular-pipeline-architecture.md): extracted `Core/Audio`, `Core/Speech`, `Core/Diarize`, `Core/LLM`, `Core/Sinks`, `Core/Runtime`; converted each subcommand to a thin veneer; added `ChronicleTests` Swift Package test target; verified behaviour parity (byte-identical transcribe.txt + diarize segments) against the 2026-05-13 Zoom session receipts.
+1. **P0 — Modular refactor + test target** \[DONE 2026-05-13]. Implemented [ADR-0001](../adr/ADR-0001-modular-pipeline-architecture.md): extracted `Core/Audio`, `Core/Speech`, `Core/Diarize`, `Core/LLM`, `Core/Sinks`, `Core/Runtime`; converted each subcommand to a thin veneer; added `ChronicleTests` Swift Package test target; verified behaviour parity (byte-identical transcribe.txt + diarize segments) against the 2026-05-13 Zoom session receipts.
 2. **P7 — FR-3: `sysaudio` subcommand** (promoted). Validates the `AudioSource` protocol from ADR-0001 against a real second implementation before the rest of the FRs build on it. Only `SysAudioSource` is new; sidecar sinks reused. Catches TCC / signing friction early; lets the upcoming P11 Opus parity test validate against two real sources.
-3. **P11 — FR-1 (Opus production sink) per [ADR-0002](../adr/ADR-0002-audio-storage-format.md) (amended 2026-05-13).** Implement `OpusCAFSink` + `RollingPCMScratchSink`, wire `--audio-format opus|wav|pcm` to the audio sinks, run the accuracy-parity test against the 2026-05-13 reference session and assert WER delta ≤ 1 % vs the WAV baseline. Flip the default from WAV to Opus-in-CAF once parity is confirmed. **Skips the transitional WAV-rotation step** (formerly P1) since CAF + Opus is crash-safe by construction. `.opus` (Ogg) consumers, if ever needed, use one-line `ffmpeg -i in.caf -c:a copy out.opus` rewrap.
+3. **P11 — FR-1 (ALAC production sink) per [ADR-0002](../adr/ADR-0002-audio-storage-format.md) (amended 2026-05-16).** Implement `AVAudioFileALACSink` + `RollingPCMScratchSink`, wire `--audio-format alac|wav|pcm|opus` to the audio sinks, run the accuracy-parity test against the 2026-05-13 reference session and assert WER delta ≤ 1 % vs the WAV baseline. Flip the default from WAV to ALAC-in-CAF once sidecar wiring is complete. **Skips the transitional WAV-rotation step** (formerly P1) because the verified default is Apple-native ALAC/CAF plus rolling raw scratch. Opus remains opt-in/export only after WER regression on the real reference.
 4. **P3 — FR-2: `JSONLTraceSink` resilience.** Incremental trace via `AtomicFile.appendJSONLine`. Unit + crash-recovery tests (`kill -9` simulation).
 5. **P4 — FR-6: locale auto-detect** per [ADR-0003](../adr/ADR-0003-locale-resolution-policy.md). `LocaleResolver` with candidate-set restriction + 4-knob hysteresis. Unit tests on synthetic NL inputs covering: correct in-set switch, suppression of out-of-set candidates, suppression during cooldown, suppression below min-chars, pin-mode bypass.
 6. **P5 — FR-4: live diarization.** Reuses the existing FluidAudio dep. `BufferMulticast` + `StreamingDiarizer` are unit-testable with `MockAudioSource`. Test against the 2026-05-13 Zoom session offline first, then live.
 7. **P6 — FR-5: live tagging.** Once FR-4 lands, tagging is the smallest layer on top via `ModelHost` + `TagsJSONLSink`.
 8. **P8 — FR-7: `merge` subcommand.** Pure-function; easy to leave for last and unit-test exhaustively.
-9. **P2 — FR-8: `chronicle repair`** (de-prioritised). Only needed for the `--audio-format wav` opt-in path; Opus-in-CAF needs no repair. Canned malformed-WAV corpus tests.
+9. **P2 — FR-8: `chronicle repair`** (de-prioritised). Mostly needed for the `--audio-format wav` opt-in path and unusual CAF tail recovery; ALAC/CAF plus raw scratch reduces the default repair surface. Canned malformed-WAV corpus tests.
 10. **P9 — Verification pass.** Run the §15 appendix end-to-end on a fresh session. Capture receipts.
 11. **P10 — Documentation pass.** Update README + research-notes + spike doc with the final source code + final numbers.
 
@@ -600,35 +616,35 @@ Order each step so the previous one's receipts feed the next.
 
 ## 12. Open Questions
 
-| # | Question | Owner | Due | Status |
-|---|----------|-------|-----|--------|
-| Q1 | Does the `SCStream` audio tap work for unsigned `swift build -c release` binaries, or do we need ad-hoc codesigning? | Victor | 2026-05-15 | Open |
-| Q2 | Does `SortformerDiarizer` actually meet its 480 ms latency claim on M4 Pro Tahoe, or does it backpressure on the buffer queue? | Victor | 2026-05-16 | Open |
-| Q3 | What's the right way to express "speaker 2" in `finals.md` while keeping the file diff-friendly when reprocessing? `[S2]` prefix or YAML frontmatter per line? | Victor | 2026-05-15 | **Resolved:** `[S<N>]` inline prefix, no frontmatter; keeps grep/jq-friendly and Obsidian-readable. |
-| Q4 | Should `chronicle merge` also produce a unified JSONL trace, or just the markdown? | Victor | 2026-05-17 | Open |
-| Q5 | If Foundation Models live tagging trips the unsafe-content guardrail repeatedly on a transcript, should we degrade to keyword extraction via `NaturalLanguage` instead of silently dropping? | Victor | 2026-05-18 | Open |
-| Q6 | Should the rotation timer be a wall-clock deadline or a per-segment audio-duration accumulator? Audio duration is more accurate; wall-clock is simpler. | Victor | 2026-05-15 | **Resolved:** Audio-duration accumulator. Wall-clock drifts if the engine briefly stalls; audio duration is what `AVAudioFile.length / sampleRate` gives us directly. |
+| #  | Question                                                                                                                                                                                     | Owner  | Due        | Status                                                                                                                                                                |
+| -- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Q1 | Does the `SCStream` audio tap work for unsigned `swift build -c release` binaries, or do we need ad-hoc codesigning?                                                                         | Victor | 2026-05-15 | Open                                                                                                                                                                  |
+| Q2 | Does `SortformerDiarizer` actually meet its 480 ms latency claim on M4 Pro Tahoe, or does it backpressure on the buffer queue?                                                               | Victor | 2026-05-16 | Open                                                                                                                                                                  |
+| Q3 | What's the right way to express "speaker 2" in `finals.md` while keeping the file diff-friendly when reprocessing? `[S2]` prefix or YAML frontmatter per line?                               | Victor | 2026-05-15 | **Resolved:** `[S<N>]` inline prefix, no frontmatter; keeps grep/jq-friendly and Obsidian-readable.                                                                   |
+| Q4 | Should `chronicle merge` also produce a unified JSONL trace, or just the markdown?                                                                                                           | Victor | 2026-05-17 | Open                                                                                                                                                                  |
+| Q5 | If Foundation Models live tagging trips the unsafe-content guardrail repeatedly on a transcript, should we degrade to keyword extraction via `NaturalLanguage` instead of silently dropping? | Victor | 2026-05-18 | Open                                                                                                                                                                  |
+| Q6 | Should the rotation timer be a wall-clock deadline or a per-segment audio-duration accumulator? Audio duration is more accurate; wall-clock is simpler.                                      | Victor | 2026-05-15 | **Resolved:** Audio-duration accumulator. Wall-clock drifts if the engine briefly stalls; audio duration is what `AVAudioFile.length / sampleRate` gives us directly. |
 
 ---
 
 ## 13. Related
 
-| Issue | Relationship |
-|-------|-------------|
-| [`docs/adr/ADR-0001-modular-pipeline-architecture.md`](../adr/ADR-0001-modular-pipeline-architecture.md) | structural ADR; constrains every FR in this PRD |
-| [`docs/adr/ADR-0002-audio-storage-format.md`](../adr/ADR-0002-audio-storage-format.md) | codec/container ADR for FR-1 — default Opus-in-CAF (amended 2026-05-13) + raw-PCM scratch + ALAC export |
-| [`docs/adr/ADR-0003-locale-resolution-policy.md`](../adr/ADR-0003-locale-resolution-policy.md) | locale-policy ADR for FR-6 — candidate-set restriction + 4-knob hysteresis |
-| chronicle-tool 0.1.0 (current spike state) | this PRD extends |
-| `chronicle/notes/research-notes.md` Tahoe surface map | this PRD operationalises |
-| Future PRD: chronicle storage tiers | depends on this PRD's segmented audio output |
-| Future PRD: chronicle agent / search layer | enabled by this PRD's resilient trace JSONL |
+| Issue                                                                                                    | Relationship                                                                                            |
+| -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| [`docs/adr/ADR-0001-modular-pipeline-architecture.md`](../adr/ADR-0001-modular-pipeline-architecture.md) | structural ADR; constrains every FR in this PRD                                                         |
+| [`docs/adr/ADR-0002-audio-storage-format.md`](../adr/ADR-0002-audio-storage-format.md)                   | codec/container ADR for FR-1 — default Opus-in-CAF (amended 2026-05-13) + raw-PCM scratch + ALAC export |
+| [`docs/adr/ADR-0003-locale-resolution-policy.md`](../adr/ADR-0003-locale-resolution-policy.md)           | locale-policy ADR for FR-6 — candidate-set restriction + 4-knob hysteresis                              |
+| chronicle-tool 0.1.0 (current spike state)                                                               | this PRD extends                                                                                        |
+| `chronicle/notes/research-notes.md` Tahoe surface map                                                    | this PRD operationalises                                                                                |
+| Future PRD: chronicle storage tiers                                                                      | depends on this PRD's segmented audio output                                                            |
+| Future PRD: chronicle agent / search layer                                                               | enabled by this PRD's resilient trace JSONL                                                             |
 
 ---
 
 ## 14. Changelog
 
-| Date | Change | Author |
-|------|--------|--------|
+| Date       | Change        | Author                                   |
+| ---------- | ------------- | ---------------------------------------- |
 | 2026-05-13 | Initial draft | Victor (drafted via the chronicle agent) |
 
 ---

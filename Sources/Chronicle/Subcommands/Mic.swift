@@ -46,8 +46,8 @@ struct Mic: AsyncParsableCommand {
   @Option(name: .long, help: "Also save the raw microphone audio sidecar to this path. Extension depends on --audio-format.")
   var saveAudio: String?
 
-  @Option(name: .long, help: "Audio sidecar codec: 'opus' (Opus 24 kbps in CAF, ADR-0002), 'wav' (lossless), or 'pcm' (rolling raw-PCM scratch, ADR-0002 sec. 2).")
-  var audioFormat: String = "wav"
+  @Option(name: .long, help: "Audio sidecar codec: 'alac' (default ALAC in CAF), 'wav' (lossless debug), 'pcm' (rolling raw-PCM scratch), or 'opus' (opt-in lossy CAF).")
+  var audioFormat: String = "alac"
 
   @Option(name: .long, help: "Opus target bitrate in bps (default 24000). Only meaningful when --audio-format=opus.")
   var opusBitRate: Int = OpusCAFSink.defaultBitRate
@@ -83,7 +83,11 @@ struct Mic: AsyncParsableCommand {
     // Optional raw-audio sidecar.
     let audioSink: AudioSidecarSink? = try makeAudioSidecarSink(
       path: saveAudio,
-      analyzerFormat: analyzerFormat
+      analyzerFormat: analyzerFormat,
+      audioFormat: audioFormat,
+      opusBitRate: opusBitRate,
+      scratchTtl: scratchTtl,
+      scratchRotate: scratchRotate
     )
 
     struct TraceEvent: Codable, Sendable {
@@ -159,7 +163,7 @@ struct Mic: AsyncParsableCommand {
       }
     }
 
-    // Drain PCM buffers into the optional audio sidecar (Opus / WAV /
+    // Drain PCM buffers into the optional audio sidecar (ALAC / WAV / Opus /
     // rolling PCM scratch) concurrently with analyzer consumption.
     // MicAudioSource already converts to analyzerFormat.
     let pcmTask = Task {
@@ -254,8 +258,11 @@ func makeAudioSidecarSink(
   guard let path else { return nil }
   let expanded = (path as NSString).expandingTildeInPath
   let url = URL(fileURLWithPath: expanded)
-  let kind = (audioFormat ?? "wav").lowercased()
+  let kind = (audioFormat ?? "alac").lowercased()
   switch kind {
+  case "alac":
+    FileHandle.standardError.write(Data("[audio] AVAudioFileALACSink -> \(url.path) (source=\(analyzerFormat))\n".utf8))
+    return try AVAudioFileALACSink(url: url, sourceFormat: analyzerFormat)
   case "opus":
     FileHandle.standardError.write(Data("[audio] OpusCAFSink -> \(url.path) (\(opusBitRate) bps, source=\(analyzerFormat))\n".utf8))
     return try OpusCAFSink(url: url, sourceFormat: analyzerFormat, bitRate: opusBitRate)
@@ -271,6 +278,6 @@ func makeAudioSidecarSink(
       rotateInterval: scratchRotate
     )
   default:
-    throw ValidationError("--audio-format must be one of {opus, wav, pcm}; got '\(kind)'")
+    throw ValidationError("--audio-format must be one of {alac, opus, wav, pcm}; got '\(kind)'")
   }
 }

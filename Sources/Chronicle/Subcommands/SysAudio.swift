@@ -31,8 +31,8 @@ struct SysAudio: AsyncParsableCommand {
   @Option(name: .long, help: "Also save the raw system-audio sidecar to this path. Extension depends on --audio-format.")
   var saveAudio: String?
 
-  @Option(name: .long, help: "Audio sidecar codec: 'opus' (Opus 24 kbps in CAF, ADR-0002), 'wav' (lossless), or 'pcm' (rolling raw-PCM scratch, ADR-0002 sec. 2).")
-  var audioFormat: String = "wav"
+  @Option(name: .long, help: "Audio sidecar codec: 'alac' (default ALAC in CAF), 'wav' (lossless debug), 'pcm' (rolling raw-PCM scratch), or 'opus' (opt-in lossy CAF).")
+  var audioFormat: String = "alac"
 
   @Option(name: .long, help: "Opus target bitrate in bps (default 24000). Only meaningful when --audio-format=opus.")
   var opusBitRate: Int = OpusCAFSink.defaultBitRate
