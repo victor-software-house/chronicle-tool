@@ -5,7 +5,7 @@ plan". Authoritative scope and acceptance criteria live in
 [`PRD-001`](prd/PRD-001-resilient-multi-source-daemon.md); this is the
 operator-facing dashboard.
 
-Last refresh: 2026-05-16 — P11 default changed from Opus-in-CAF to ALAC-in-CAF after real-reference verification. Opus failed the 6870 s Zoom WER parity gate; ALAC with rounded Int16 source preserved decoded PCM/WER while shrinking the reference to ~91.3 MB. Native 32-bit-float public speech search did not produce a suitable longer transcripted corpus and no longer blocks the decision. `AVAudioFile` ALAC/CAF probe passed on the 6870 s reference (`alac`, `s16p`, 16 kHz mono, 91,316,352 bytes, `cmp-ok` against source PCM), so `ExtAudioFile` remains fallback-only.
+Last refresh: 2026-05-17 — P11 ALAC production sidecar is implemented. Opus failed the 6870 s Zoom WER parity gate; ALAC with rounded Int16 source preserved decoded PCM/WER while shrinking the reference to ~91.3 MB. Native 32-bit-float public speech search did not produce a suitable longer transcripted corpus and no longer blocks the decision. `AVAudioFile` ALAC/CAF probe passed on the 6870 s reference (`alac`, `s16p`, 16 kHz mono, 91,316,352 bytes, `cmp-ok` against source PCM). Mic/sysaudio now default to composite ALAC + raw scratch, with audio-duration-based `--rotate-audio` segmenting for ALAC/WAV/Opus. Live mic smoke produced two readable ALAC CAF segments plus scratch PCM.
 
 ## Phase board
 
@@ -13,7 +13,7 @@ Last refresh: 2026-05-16 — P11 default changed from Opus-in-CAF to ALAC-in-CAF
 |---|---|---|---|---|
 | **P0** | Modular refactor + test target | — | ✔ **done** | Byte-identical parity vs 2026-05-13 spike on `transcribe` + `diarize`; 13 `Core/` modules; 11 subcommands as thin veneers; `ChronicleTests` target wired. |
 | **P7** | `chronicle sysaudio` subcommand | FR-3 | ✔ **done** | `SCStream` audio-only via `Core/Audio/SysAudioSource`; 4/4 TTS sentences captured exact; Info.plist `NSScreenCaptureUsageDescription` added. |
-| **P11** | ALAC production audio sink | FR-1 | ⏳ **in progress** | `Core/Sinks/AVAudioFileALACSink` + `Core/Sinks/RollingPCMScratchSink` (ADR-0002 amended 2026-05-16: ALAC default after Opus WER regression); `AVAudioFile` writer probe passed WER/byte-compare evidence. Current code flips `--audio-format` default to ALAC; remaining FR-1 work is composite default scratch + `--rotate-audio` segment wiring. `ExtAudioFile` is fallback only if `AVAudioFile` regresses. |
+| **P11** | ALAC production audio sink | FR-1 | ✔ **done** | `Core/Sinks/AVAudioFileALACSink` + `Core/Sinks/RollingPCMScratchSink` (ADR-0002 amended 2026-05-16: ALAC default after Opus WER regression); `AVAudioFile` writer probe passed WER/byte-compare evidence. Default `--audio-format` is composite ALAC + scratch; `--rotate-audio` segments ALAC/WAV/Opus by audio duration. Live mic smoke produced two readable ALAC CAF segments plus scratch PCM. |
 | P3 | JSONL incremental trace | FR-2 | ⏳ pending | `Core/Sinks/JSONLTraceSink` via `AtomicFile.appendJSONLine`; `kill -9` mid-write leaves ≤ 1 torn line. |
 | P4 | Locale auto-detect per ADR-0003 | FR-6 | ⏳ pending | `Core/Speech/LocaleResolver`; candidate-set restriction + 4-knob hysteresis; no "random Russian" by construction. |
 | P5 | Live diarization | FR-4 | ⏳ pending | `Core/Audio/BufferMulticast` + `Core/Diarize/StreamingDiarizer`; speakerId merged into finals by audio range. |

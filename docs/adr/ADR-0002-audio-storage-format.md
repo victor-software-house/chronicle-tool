@@ -295,9 +295,11 @@ Evidence recorded during P11:
 Updated decision:
 
 1. **Default live capture sidecar:** **ALAC-in-CAF** (`.caf`) fed by rounded
-   Int16 PCM in the analyzer's sample rate/channel shape.
-2. **Rolling raw scratch:** retain the bounded raw PCM ring for recent premium
-   STT bursts and crash/recovery headroom.
+   Int16 PCM in the analyzer's sample rate/channel shape, rotated by audio
+   duration (`--rotate-audio`, default 60 s).
+2. **Rolling raw scratch:** run the bounded raw PCM ring in parallel with the
+   default ALAC sidecar for recent premium-STT bursts and crash/recovery
+   headroom. `--audio-format pcm` remains available for scratch-only runs.
 3. **WAV:** retain as explicit `--audio-format wav` for debugging and broad tool
    compatibility; do not use as default.
 4. **Opus:** retain only as explicit opt-in/export. It is no longer a default or
@@ -329,33 +331,30 @@ future OS behavior breaks the high-level writer's 16-bit-source ALAC output.
 
 ### Positive
 
-* **Storage budget restored.** 260 MB/day instead of 2.6 GB/day — fits
-  the cost model in `research-notes.md` (\~hundreds of MB/day of durable
-  artefacts). Year-long retention becomes plausible.
-* **Crash-safe by construction.** Ogg pages are independently parseable;
-  the worst-case loss is the in-flight \~20 ms page. No `chronicle repair`
-  needed for the default codec.
-* **Premium-STT path stays cheap.** When we trigger a Scribe v2 pass on a
-  flagged segment, the upload payload is Opus 24 kbps = \~3 KB/s. Network
-  cost negligible.
-* **Lossless escape valve preserved.** Anything caught in the rolling
-  scratch can still be re-encoded losslessly on demand within the TTL —
-  matches the video-side "extract durable meaning, keep raw briefly"
-  posture.
-* **Model accuracy preserved.** Opus 24 kbps decode → PCM → analyzer is
-  within measurement noise of WAV → PCM → analyzer for speech
-  (RFC 6716 §5, Apple WWDC25 STT bench notes, FluidAudio benchmark
-  series).
+* **Storage budget improves without losing STT parity.** The verified ALAC path
+  is \~91.3 MB for the 6870 s reference, roughly \~1.15 GB/day at the same speech
+  density instead of 2.6 GB/day for WAV. This is larger than the rejected Opus
+  target, but it preserves the real-reference transcript while still cutting the
+  WAV footprint materially.
+* **Crash window is bounded by segment rotation and raw scratch.** ALAC/WAV/Opus
+  sidecars rotate by audio duration (`--rotate-audio`, default 60 s). The
+  parallel `RollingPCMScratchSink` is headerless, so recent PCM remains readable
+  even if the active CAF segment loses finalization metadata.
+* **Premium-STT path stays lossless for recent audio.** Triggered premium-STT
+  bursts read the rolling scratch within TTL instead of depending on the durable
+  compressed sidecar.
+* **Model accuracy preserved.** Rounded-Int16 ALAC decode matched the source PCM
+  control (`cmp-ok`) and kept WER at `0.0000` on the real 6870 s reference.
 
 ### Negative
 
-* **Encode CPU is non-zero** (\~0.05-0.1 % per stream on M4 Pro at
-  16 kHz mono). Mitigated by the fact that it's still 10× cheaper than
-  decoding video. Measured during P11.
-* **Ogg/Opus is less universally writable than WAV** for niche consumer
-  apps. Mitigated by ubiquitous decode support (every major player and
-  STT vendor reads it natively) and by retaining a `--save-audio …wav`
-  flag for the rare lossless-by-default request.
+* **ALAC is larger than the original Opus target.** The size target moves from
+  hundreds of MB/day to roughly \~1.15 GB/day at the reference's speech density.
+  The trade is deliberate: Opus failed WER; ALAC did not.
+* **Active CAF segment finalization still matters.** CAF is a better fit than
+  WAV, but the active segment can still lose final metadata on hard kill. The
+  mitigation is short rotation plus parallel raw scratch, not pretending the
+  current segment is immune to abrupt termination.
 * **Opus is lossy and failed Chronicle's real-reference WER gate.** It is
   retained only as an explicit opt-in/export path; it is not a default-tier
   mitigation anymore.

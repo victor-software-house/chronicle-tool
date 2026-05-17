@@ -150,18 +150,18 @@ The mic and sysaudio daemons capture audio via a sink protocol
 (`AudioSidecarSink`). The **production default sink is `AVAudioFileALACSink`**
 (ALAC-in-CAF fed by rounded Int16 PCM, per [ADR-0002](../adr/ADR-0002-audio-storage-format.md) amended 2026-05-16 after Opus failed the real-reference WER gate). `WAVSidecarSink` is retained for debugging and broad tool compatibility; `OpusCAFSink` is retained only as an explicit opt-in/export sink.
 
-Current P11 progress wires the default codec and proves the high-level ALAC
-writer. Segment rotation and parallel default raw-PCM scratch are still pending
-inside FR-1. Until composite sink wiring lands, `RollingPCMScratchSink` is
-selected explicitly with `--audio-format pcm`; it does not run concurrently with
-the default ALAC sidecar.
+Current P11 wiring composes the default ALAC sidecar with a parallel
+`RollingPCMScratchSink`, and rotates finalized ALAC/WAV/Opus sidecars by audio
+duration via `--rotate-audio` (default 60 s; `0` disables rotation). Explicit
+`--audio-format pcm` selects scratch-only mode.
 
 **Acceptance criteria:**
 
 ```gherkin
-Given the daemon is running with --save-audio session.caf --audio-format alac
+Given the daemon is running with --save-audio session.caf --audio-format alac --rotate-audio 60
 When audio streams and the daemon exits cleanly
-Then session.caf reopens with AVAudioFile as ALAC-in-CAF
+Then audio/session-000001.caf and later finalized segments reopen with AVAudioFile as ALAC-in-CAF
+And RollingPCMScratchSink writes bit-exact PCM under audio/scratch/session/
 And the on-disk size of the 6870 s Zoom reference is near the verified rounded-Int16 ALAC target (~91.3 MB)
 And decoded PCM matches the rounded Int16 source control
 And WER delta versus the WAV baseline is ≤ 1 %
@@ -177,15 +177,15 @@ And concatenating all three reconstructs the full session
 ```
 
 ```gherkin
-Given the daemon is running with --audio-format pcm during the current P11 step
+Given the daemon is running with --audio-format pcm
 When the operator triggers an on-demand premium-STT pass on a segment that finalised 90 seconds ago
 Then the segment is available in audio/scratch/ at bit-exact PCM
 And the daemon evicts scratch segments older than the configured TTL (default 300 s) automatically
 
-Given the later FR-1 composite sink wiring is complete
-When the daemon runs with the default ALAC sidecar
-Then RollingPCMScratchSink also runs in parallel by default
-And --rotate-audio cuts finalized ALAC segments at the configured audio-duration boundary
+Given the daemon runs with the default ALAC sidecar
+When incoming PCM duration crosses --rotate-audio
+Then a new numbered ALAC CAF segment starts at the next input buffer
+And each finalized segment reopens through AVAudioFile
 ```
 
 **Files:**
@@ -193,8 +193,9 @@ And --rotate-audio cuts finalized ALAC segments at the configured audio-duration
 * `Sources/Chronicle/Core/Sinks/AVAudioFileALACSink.swift` — production default: `AVAudioFile(forWriting:)` configured for CAF + `kAudioFormatAppleLossless`, `AVEncoderBitDepthHintKey: 16`, and rounded Int16 PCM buffers. Probe result on the 6870 s reference: `alac`, `s16p`, 16 kHz mono, 91,316,352 bytes, decoded PCM `cmp-ok`.
 * `Sources/Chronicle/Core/Sinks/WAVSidecarSink.swift` — debug/export sink.
 * `Sources/Chronicle/Core/Sinks/OpusCAFSink.swift` — opt-in/export sink only; rejected as default after WER regression on the 6870 s reference.
-* `Sources/Chronicle/Core/Sinks/RollingPCMScratchSink.swift` — bounded-size append-only ring of raw PCM, auto-prunes past TTL; currently selected with `--audio-format pcm`, later composed in parallel with default ALAC.
-* `Sources/Chronicle/Subcommands/Mic.swift` / `Sources/Chronicle/Subcommands/SysAudio.swift` — current P11 step wires `--audio-format`; remaining FR-1 work wires `--rotate-audio` and composite default scratch.
+* `Sources/Chronicle/Core/Sinks/RollingPCMScratchSink.swift` — bounded-size append-only ring of raw PCM, auto-prunes past TTL; runs in parallel with default ALAC and remains available as scratch-only `--audio-format pcm`.
+* `Sources/Chronicle/Core/Sinks/AudioSidecarCombinators.swift` — composite sink fan-out plus audio-duration-based rotating sidecar wrapper.
+* `Sources/Chronicle/Subcommands/Mic.swift` / `Sources/Chronicle/Subcommands/SysAudio.swift` — wire `--audio-format`, `--rotate-audio`, `--scratch-ttl`, and `--scratch-rotate` flags into the pipeline.
 * `Sources/Chronicle/Subcommands/Repair.swift` — WAV/tail repair (still relevant for the `--audio-format wav` opt-in path and unusual default-sidecar recovery cases).
 
 ---

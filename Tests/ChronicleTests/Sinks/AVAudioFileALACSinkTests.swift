@@ -41,8 +41,38 @@ struct AVAudioFileALACSinkTests {
     try file.write(from: buf)
   }
 
-  @Test("makeAudioSidecarSink accepts ALAC and defaults to it")
-  func factoryAcceptsALACAndDefaultsToIt() async throws {
+  private func sineBuffer(
+    seconds: Double,
+    sampleRate: Double = 16_000,
+    frequency: Double = 440.0,
+    amplitude: Float = 0.2
+  ) -> AVAudioPCMBuffer {
+    let fmt = AVAudioFormat(
+      commonFormat: .pcmFormatFloat32,
+      sampleRate: sampleRate,
+      channels: 1,
+      interleaved: false
+    )!
+    let frameCount = AVAudioFrameCount(sampleRate * seconds)
+    let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: frameCount)!
+    buf.frameLength = frameCount
+    let data = buf.floatChannelData![0]
+    for i in 0..<Int(frameCount) {
+      let s = sin(2.0 * .pi * frequency * Double(i) / sampleRate)
+      data[i] = amplitude * Float(s)
+    }
+    return buf
+  }
+
+  private func scratchURL(for sidecarURL: URL) -> URL {
+    sidecarURL
+      .deletingLastPathComponent()
+      .appendingPathComponent("scratch", isDirectory: true)
+      .appendingPathComponent(sidecarURL.deletingPathExtension().lastPathComponent, isDirectory: true)
+  }
+
+  @Test("makeAudioSidecarSink accepts ALAC and defaults to composite ALAC plus scratch")
+  func factoryAcceptsALACAndDefaultsToCompositeScratch() async throws {
     let format = AVAudioFormat(
       commonFormat: .pcmFormatFloat32,
       sampleRate: 16_000,
@@ -54,24 +84,69 @@ struct AVAudioFileALACSinkTests {
     defer {
       try? FileManager.default.removeItem(at: explicitURL)
       try? FileManager.default.removeItem(at: defaultURL)
+      try? FileManager.default.removeItem(at: scratchURL(for: explicitURL))
+      try? FileManager.default.removeItem(at: scratchURL(for: defaultURL))
     }
 
     let explicitCandidate = try makeAudioSidecarSink(
       path: explicitURL.path,
       analyzerFormat: format,
-      audioFormat: "alac"
+      audioFormat: "alac",
+      rotateAudio: 0
     )
     let explicit = try #require(explicitCandidate)
-    #expect(explicit is AVAudioFileALACSink)
+    #expect(explicit is CompositeAudioSidecarSink)
+    await explicit.append(sineBuffer(seconds: 0.1))
     await explicit.finish()
+    #expect(FileManager.default.fileExists(atPath: explicitURL.path))
+    #expect(FileManager.default.fileExists(atPath: scratchURL(for: explicitURL).appendingPathComponent("format.json").path))
 
     let defaultCandidate = try makeAudioSidecarSink(
       path: defaultURL.path,
-      analyzerFormat: format
+      analyzerFormat: format,
+      rotateAudio: 0
     )
     let defaultSink = try #require(defaultCandidate)
-    #expect(defaultSink is AVAudioFileALACSink)
+    #expect(defaultSink is CompositeAudioSidecarSink)
+    await defaultSink.append(sineBuffer(seconds: 0.1))
     await defaultSink.finish()
+    #expect(FileManager.default.fileExists(atPath: defaultURL.path))
+    #expect(FileManager.default.fileExists(atPath: scratchURL(for: defaultURL).appendingPathComponent("format.json").path))
+  }
+
+  @Test("rotating ALAC sidecar writes numbered CAF segments")
+  func rotatingALACWritesNumberedSegments() async throws {
+    let baseURL = tmpURL("rotating.alac.caf")
+    let firstURL = RotatingAudioSidecarSink.segmentURL(for: baseURL, index: 1)
+    let secondURL = RotatingAudioSidecarSink.segmentURL(for: baseURL, index: 2)
+    defer {
+      try? FileManager.default.removeItem(at: baseURL)
+      try? FileManager.default.removeItem(at: firstURL)
+      try? FileManager.default.removeItem(at: secondURL)
+      try? FileManager.default.removeItem(at: scratchURL(for: baseURL))
+    }
+
+    let buf = sineBuffer(seconds: 0.2)
+    let candidate = try makeAudioSidecarSink(
+      path: baseURL.path,
+      analyzerFormat: buf.format,
+      audioFormat: "alac",
+      rotateAudio: 0.1
+    )
+    let sink = try #require(candidate)
+    await sink.append(buf)
+    await sink.append(buf)
+    await sink.finish()
+
+    #expect(!FileManager.default.fileExists(atPath: baseURL.path))
+    #expect(FileManager.default.fileExists(atPath: firstURL.path))
+    #expect(FileManager.default.fileExists(atPath: secondURL.path))
+    #expect(FileManager.default.fileExists(atPath: scratchURL(for: baseURL).appendingPathComponent("format.json").path))
+
+    let firstReader = try AVAudioFile(forReading: firstURL)
+    let secondReader = try AVAudioFile(forReading: secondURL)
+    #expect(firstReader.fileFormat.streamDescription.pointee.mFormatID == kAudioFormatAppleLossless)
+    #expect(secondReader.fileFormat.streamDescription.pointee.mFormatID == kAudioFormatAppleLossless)
   }
 
   @Test("AVAudioFile writes ALAC-in-CAF that AVFoundation reopens")

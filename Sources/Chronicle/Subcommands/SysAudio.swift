@@ -37,11 +37,14 @@ struct SysAudio: AsyncParsableCommand {
   @Option(name: .long, help: "Opus target bitrate in bps (default 24000). Only meaningful when --audio-format=opus.")
   var opusBitRate: Int = OpusCAFSink.defaultBitRate
 
-  @Option(name: .long, help: "PCM scratch TTL in seconds (default 300). Only meaningful when --audio-format=pcm.")
+  @Option(name: .long, help: "PCM scratch TTL in seconds (default 300). Used by default ALAC scratch and --audio-format=pcm.")
   var scratchTtl: Double = RollingPCMScratchSink.defaultTTLSeconds
 
-  @Option(name: .long, help: "PCM scratch rotation interval in seconds (default 30). Only meaningful when --audio-format=pcm.")
+  @Option(name: .long, help: "PCM scratch rotation interval in seconds (default 30). Used by default ALAC scratch and --audio-format=pcm.")
   var scratchRotate: Double = RollingPCMScratchSink.defaultRotateSeconds
+
+  @Option(name: .long, help: "Audio sidecar rotation interval in seconds (default 60; 0 disables rotation). Applies to alac/wav/opus.")
+  var rotateAudio: Double = 60.0
 
   @Flag(name: .long, help: "Include audio from this process. Default is to exclude (prevents feedback loops).")
   var includeSelfAudio: Bool = false
@@ -84,7 +87,8 @@ struct SysAudio: AsyncParsableCommand {
       audioFormat: audioFormat,
       opusBitRate: opusBitRate,
       scratchTtl: scratchTtl,
-      scratchRotate: scratchRotate
+      scratchRotate: scratchRotate,
+      rotateAudio: rotateAudio
     )
 
     // Compose sidecar sinks.
@@ -148,8 +152,8 @@ struct SysAudio: AsyncParsableCommand {
       return (volatileCount, finalCount)
     }
 
-    // Drain PCM buffers into the optional audio sidecar (Opus / WAV /
-    // rolling PCM scratch) concurrently with analyzer consumption.
+    // Drain PCM buffers into the optional audio sidecar (ALAC / WAV /
+    // Opus / rolling PCM scratch) concurrently with analyzer consumption.
     let pcmTask = Task {
       for await ref in sysSource.pcmBuffers {
         if let sink = audioSink {

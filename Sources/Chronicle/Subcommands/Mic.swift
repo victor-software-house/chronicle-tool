@@ -52,11 +52,14 @@ struct Mic: AsyncParsableCommand {
   @Option(name: .long, help: "Opus target bitrate in bps (default 24000). Only meaningful when --audio-format=opus.")
   var opusBitRate: Int = OpusCAFSink.defaultBitRate
 
-  @Option(name: .long, help: "PCM scratch TTL in seconds (default 300). Only meaningful when --audio-format=pcm.")
+  @Option(name: .long, help: "PCM scratch TTL in seconds (default 300). Used by default ALAC scratch and --audio-format=pcm.")
   var scratchTtl: Double = RollingPCMScratchSink.defaultTTLSeconds
 
-  @Option(name: .long, help: "PCM scratch rotation interval in seconds (default 30). Only meaningful when --audio-format=pcm.")
+  @Option(name: .long, help: "PCM scratch rotation interval in seconds (default 30). Used by default ALAC scratch and --audio-format=pcm.")
   var scratchRotate: Double = RollingPCMScratchSink.defaultRotateSeconds
+
+  @Option(name: .long, help: "Audio sidecar rotation interval in seconds (default 60; 0 disables rotation). Applies to alac/wav/opus.")
+  var rotateAudio: Double = 60.0
 
   func run() async throws {
     guard #available(macOS 26.0, *) else {
@@ -87,7 +90,8 @@ struct Mic: AsyncParsableCommand {
       audioFormat: audioFormat,
       opusBitRate: opusBitRate,
       scratchTtl: scratchTtl,
-      scratchRotate: scratchRotate
+      scratchRotate: scratchRotate,
+      rotateAudio: rotateAudio
     )
 
     struct TraceEvent: Codable, Sendable {
@@ -253,22 +257,62 @@ func makeAudioSidecarSink(
   audioFormat: String? = nil,
   opusBitRate: Int = OpusCAFSink.defaultBitRate,
   scratchTtl: Double = RollingPCMScratchSink.defaultTTLSeconds,
-  scratchRotate: Double = RollingPCMScratchSink.defaultRotateSeconds
+  scratchRotate: Double = RollingPCMScratchSink.defaultRotateSeconds,
+  rotateAudio: Double = 60.0
 ) throws -> AudioSidecarSink? {
   guard let path else { return nil }
   let expanded = (path as NSString).expandingTildeInPath
   let url = URL(fileURLWithPath: expanded)
   let kind = (audioFormat ?? "alac").lowercased()
+
+  func scratchBase(for sidecarURL: URL) -> URL {
+    sidecarURL
+      .deletingLastPathComponent()
+      .appendingPathComponent("scratch", isDirectory: true)
+      .appendingPathComponent(sidecarURL.deletingPathExtension().lastPathComponent, isDirectory: true)
+  }
+
+  func maybeRotating(
+    label: String,
+    factory: @escaping @Sendable (URL) throws -> AudioSidecarSink
+  ) throws -> AudioSidecarSink {
+    if rotateAudio > 0 {
+      FileHandle.standardError.write(Data("[audio] \(label) rotating every \(rotateAudio)s from \(url.path)\n".utf8))
+      return try RotatingAudioSidecarSink(
+        baseURL: url,
+        rotateInterval: rotateAudio,
+        sourceFormat: analyzerFormat,
+        factory: factory
+      )
+    }
+    return try factory(url)
+  }
+
   switch kind {
   case "alac":
-    FileHandle.standardError.write(Data("[audio] AVAudioFileALACSink -> \(url.path) (source=\(analyzerFormat))\n".utf8))
-    return try AVAudioFileALACSink(url: url, sourceFormat: analyzerFormat)
+    let primary = try maybeRotating(label: "AVAudioFileALACSink") { segmentURL in
+      FileHandle.standardError.write(Data("[audio] AVAudioFileALACSink -> \(segmentURL.path) (source=\(analyzerFormat))\n".utf8))
+      return try AVAudioFileALACSink(url: segmentURL, sourceFormat: analyzerFormat)
+    }
+    let scratchURL = scratchBase(for: url)
+    FileHandle.standardError.write(Data("[audio] RollingPCMScratchSink -> \(scratchURL.path)/ (ttl=\(scratchTtl)s rotate=\(scratchRotate)s)\n".utf8))
+    let scratch = try RollingPCMScratchSink(
+      base: scratchURL,
+      sourceFormat: analyzerFormat,
+      ttl: scratchTtl,
+      rotateInterval: scratchRotate
+    )
+    return CompositeAudioSidecarSink([primary, scratch])
   case "opus":
-    FileHandle.standardError.write(Data("[audio] OpusCAFSink -> \(url.path) (\(opusBitRate) bps, source=\(analyzerFormat))\n".utf8))
-    return try OpusCAFSink(url: url, sourceFormat: analyzerFormat, bitRate: opusBitRate)
+    return try maybeRotating(label: "OpusCAFSink") { segmentURL in
+      FileHandle.standardError.write(Data("[audio] OpusCAFSink -> \(segmentURL.path) (\(opusBitRate) bps, source=\(analyzerFormat))\n".utf8))
+      return try OpusCAFSink(url: segmentURL, sourceFormat: analyzerFormat, bitRate: opusBitRate)
+    }
   case "wav":
-    FileHandle.standardError.write(Data("[audio] WAVSidecarSink -> \(url.path) (\(analyzerFormat))\n".utf8))
-    return try WAVSidecarSink(url: url, sourceFormat: analyzerFormat)
+    return try maybeRotating(label: "WAVSidecarSink") { segmentURL in
+      FileHandle.standardError.write(Data("[audio] WAVSidecarSink -> \(segmentURL.path) (\(analyzerFormat))\n".utf8))
+      return try WAVSidecarSink(url: segmentURL, sourceFormat: analyzerFormat)
+    }
   case "pcm":
     FileHandle.standardError.write(Data("[audio] RollingPCMScratchSink -> \(url.path)/ (ttl=\(scratchTtl)s rotate=\(scratchRotate)s)\n".utf8))
     return try RollingPCMScratchSink(
