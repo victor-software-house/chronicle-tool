@@ -94,9 +94,9 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
   public func stop() {
     guard started, !stopped else { return }
     stopped = true
+    teardownAndDrain(removeListener: true)
     analyzerBuilder.finish()
     pcmBuilder.finish()
-    teardownCoreAudio(removeListener: true)
   }
 
   private func cleanupAfterFailedStart() {
@@ -223,7 +223,7 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
     }
   }
 
-  private func teardownCoreAudio(removeListener: Bool) {
+  private func teardownCoreAudio(removeListener: Bool, releaseConverter: Bool = true) {
     if removeListener {
       removeDefaultOutputListener()
     }
@@ -240,8 +240,27 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
       AudioHardwareDestroyProcessTap(tapID)
       tapID = AudioObjectID(kAudioObjectUnknown)
     }
+    if releaseConverter {
+      converter = nil
+      sourceFormat = nil
+    }
+  }
+
+  private func teardownAndDrain(removeListener: Bool) {
+    // Stop/destroy IOProc before draining: AVAudioConverter is not thread-safe,
+    // so no IO callback may call `convert(_:)` after this point.
+    teardownCoreAudio(removeListener: removeListener, releaseConverter: false)
+    drainConverter()
     converter = nil
     sourceFormat = nil
+  }
+
+  private func drainConverter() {
+    guard let converter else { return }
+    for converted in converter.drain() {
+      analyzerBuilder.yield(AnalyzerInput(buffer: converted))
+      pcmBuilder.yield(PCMBufferRef(converted))
+    }
   }
 
   private func updatePeak(from converted: AVAudioPCMBuffer) {
@@ -325,7 +344,7 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
         "[sysaudio.tap] default output changed; rebuilding tap+aggregate\n".utf8
       ))
     }
-    teardownCoreAudio(removeListener: false)
+    teardownAndDrain(removeListener: false)
     hasValidBuffer = false
     do {
       try startCoreAudio()

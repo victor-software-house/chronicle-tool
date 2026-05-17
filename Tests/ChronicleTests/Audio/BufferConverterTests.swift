@@ -36,4 +36,37 @@ struct BufferConverterTests {
     #expect(output.frameLength > 0)
     #expect(output.int16ChannelData != nil)
   }
+
+  @Test("drains residual resampler frames after end of stream")
+  func drainsResidualResamplerFramesAfterEndOfStream() throws {
+    let sourceFormat = AVAudioFormat(
+      commonFormat: .pcmFormatFloat32,
+      sampleRate: 44_100,
+      channels: 1,
+      interleaved: false
+    )!
+    let destinationFormat = AVAudioFormat(
+      commonFormat: .pcmFormatFloat32,
+      sampleRate: 16_000,
+      channels: 1,
+      interleaved: false
+    )!
+    let converter = try #require(BufferConverter(from: sourceFormat, to: destinationFormat))
+    let input = try #require(AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: 4_410))
+    input.frameLength = 4_410
+    let samples = try #require(input.floatChannelData?[0])
+    for frame in 0..<Int(input.frameLength) {
+      samples[frame] = Float(sin(Double(frame) * 0.01))
+    }
+
+    let output = try #require(converter.convert(input))
+    let drained = converter.drain()
+    let drainedFrames = drained.reduce(AVAudioFrameCount(0)) { $0 + $1.frameLength }
+
+    #expect(output.frameLength > 0)
+    #expect(drainedFrames > 0)
+    #expect(output.frameLength + drainedFrames >= 1_590)
+    #expect(output.frameLength + drainedFrames <= 1_610)
+    #expect(converter.drain().isEmpty)
+  }
 }

@@ -12,6 +12,8 @@ public final class BufferConverter: @unchecked Sendable {
   public let sourceFormat: AVAudioFormat
   public let destinationFormat: AVAudioFormat
   private static let resamplerTailHeadroomFrames = AVAudioFrameCount(64)
+  private static let drainOutputCapacity = AVAudioFrameCount(4096)
+  private static let maxDrainIterations = 16
 
   private let converter: AVAudioConverter
 
@@ -26,9 +28,9 @@ public final class BufferConverter: @unchecked Sendable {
   /// or zero-frame output. Safe to call repeatedly from the audio-thread tap.
   ///
   /// This is a streaming, per-buffer helper: `AVAudioConverter` may keep a small
-  /// amount of resampler delay internally between calls. Live capture accepts
-  /// that sub-buffer residual today; a future buffer-pool / explicit flush path
-  /// should drain converter tail frames before finishing long captures.
+  /// amount of resampler delay internally between calls. Call `drain()` once no
+  /// more source buffers will arrive to flush those residual frames before
+  /// closing downstream streams.
   public func convert(_ input: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
     let capacity = AVAudioFrameCount(
       ceil(Double(input.frameLength) * destinationFormat.sampleRate / sourceFormat.sampleRate)
@@ -57,5 +59,50 @@ public final class BufferConverter: @unchecked Sendable {
     @unknown default:
       return nil
     }
+  }
+
+  /// Signal end-of-stream to the underlying converter and return any residual
+  /// output buffers it still holds (typically resampler delay). Call after the
+  /// audio engine/tap has stopped producing input and before finishing streams.
+  /// After `drain()` the converter must not be reused for `convert(_:)`; discard
+  /// this wrapper and build a fresh converter for later input.
+  public func drain() -> [AVAudioPCMBuffer] {
+    var drained: [AVAudioPCMBuffer] = []
+
+    for iteration in 0..<Self.maxDrainIterations {
+      guard let output = AVAudioPCMBuffer(
+        pcmFormat: destinationFormat,
+        frameCapacity: Self.drainOutputCapacity
+      ) else { break }
+
+      var error: NSError?
+      let status = converter.convert(to: output, error: &error) { _, outStatus in
+        outStatus.pointee = .endOfStream
+        return nil
+      }
+
+      guard error == nil else { break }
+      if output.frameLength > 0 {
+        drained.append(output)
+      }
+
+      switch status {
+      case .haveData:
+        if iteration == Self.maxDrainIterations - 1 {
+          FileHandle.standardError.write(Data(
+            "[BufferConverter] drain hit iteration cap; tail truncated\n".utf8
+          ))
+        }
+        continue
+      case .inputRanDry, .endOfStream:
+        return drained
+      case .error:
+        return drained
+      @unknown default:
+        return drained
+      }
+    }
+
+    return drained
   }
 }

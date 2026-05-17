@@ -101,6 +101,12 @@ public final class MicAudioSource: AudioSource, @unchecked Sendable {
     stopped = true
     engine.stop()
     inputNode.removeTap(onBus: 0)
+    // Stop engine + remove tap before draining: AVAudioConverter is not
+    // thread-safe, so no tap callback may call `convert(_:)` after this point.
+    for converted in converter.drain() {
+      analyzerBuilder.yield(AnalyzerInput(buffer: converted))
+      pcmBuilder.yield(PCMBufferRef(converted))
+    }
     analyzerBuilder.finish()
     pcmBuilder.finish()
   }
