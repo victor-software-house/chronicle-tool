@@ -267,8 +267,8 @@ And `jq -c . trace.jsonl 2>/dev/null | wc -l` is within 5 events of the true cou
 
 * `Sources/Chronicle/Core/Sinks/JSONLTraceSink.swift` appends compact source-aware JSONL with schema version, per-stream event ids, source/sourceKind, stream id, wallclock, monotonic offset, event kind, text, final state, locale, preset, optional speaker/audio/channel/export fields, and write/drop stats.
 * `AtomicFile.appendLine` now uses Darwin `O_APPEND` plus `flock(LOCK_EX)` so concurrent mic/sysaudio processes sharing one trace path cannot interleave JSON lines.
-* `chronicle mic -o`, `chronicle sysaudio -o`, and `chronicle live -o` all append `trace.jsonl`; `live` preserves audio ranges when SpeechAnalyzer provides finite timing.
-* `Tests/ChronicleTests/Sinks/JSONLTraceSinkTests.swift` covers valid JSONL, source fields, sysaudio metadata, event ordering, audio range preservation, torn trailing-line recovery, strict malformed-middle failure, stats, and concurrent writers sharing one path.
+* `chronicle mic -o`, `chronicle sysaudio -o`, and `chronicle live -o` all append `trace.jsonl`; each records fractional wallclock, monotonic offset, and optional SpeechAnalyzer audio ranges when finite timing is available.
+* `Tests/ChronicleTests/Sinks/JSONLTraceSinkTests.swift` covers valid JSONL, source fields, sysaudio metadata, event ordering, fractional wallclock preservation, audio range preservation, torn trailing-line recovery, strict malformed-middle failure, stats, and concurrent writers sharing one path.
 * File-driven smoke: `say -o /tmp/chronicle-fr2-smoke/input.aiff "chronicle trace sink smoke test"` then `.build/debug/chronicle live -i /tmp/chronicle-fr2-smoke/input.aiff -o /tmp/chronicle-fr2-smoke/trace.jsonl --locale en-US` wrote 13 valid JSONL events; `jq -c . trace.jsonl` passed; final event text was `Chronicle Trace sinks smoke test.`; `trace.dropped=0`.
 
 **Files:**
@@ -336,9 +336,12 @@ And the speaker count converges to 2 within the first ~10 seconds
 
 **Files:**
 
-* `Sources/Chronicle/Mic.swift` — add buffer multicast; spawn diarizer task.
-* `Sources/Chronicle/Diarize.swift` — extract `SortformerDiarizer` setup into a shared streaming helper.
-* `Sources/Chronicle/SysAudio.swift` — same flag.
+* `Sources/Chronicle/Core/Audio/BufferMulticast.swift` — fan analyzer, audio sidecar, and diarizer consumers without blocking the source callback.
+* `Sources/Chronicle/Core/Diarize/StreamingDiarizer.swift` — shared Sortformer-backed streaming helper behind a small protocol.
+* `Sources/Chronicle/Subcommands/Mic.swift` — add `--diarize`, spawn one diarizer for microphone stream, attach `speakerId` to trace/finals.
+* `Sources/Chronicle/Subcommands/SysAudio.swift` — same flag for system-output stream; keep diarizer per source, not on a raw mic+sys mix.
+* `Tests/ChronicleTests/Audio/BufferMulticastTests.swift` — fan-out, slow consumer, finish/drain semantics.
+* `Tests/ChronicleTests/Diarize/StreamingDiarizerTests.swift` — speaker alignment on canned ranges.
 
 ---
 
@@ -418,7 +421,7 @@ Then the switch is suppressed because the 30 s cooldown has not elapsed
 **Files:**
 
 * `Sources/Chronicle/Core/Speech/LocaleResolver.swift` — owns the candidate set, runs the hysteresis state machine, exposes `consider(final:) -> Locale?` returning a new locale only when all gates pass.
-* `Sources/Chronicle/Subcommands/Mic.swift` / `SysAudio.swift` / `Live.swift` — parse `--locale` grammar, build the resolver, swap transcribers on resolver output.
+* `Sources/Chronicle/Subcommands/Mic.swift` / `SysAudio.swift` / `Live.swift` — parse `--locale` grammar, build the resolver, emit locale control/state events to `JSONLTraceSink`, and swap transcribers on resolver output if the restart path is proven safe.
 * `~/.config/chronicle/locales.json` — optional operator-specific safe set; absence → built-in default `[en-US, pt-BR]`.
 * `Tests/ChronicleTests/Speech/LocaleResolverTests.swift` — unit tests covering in-set switch, out-of-set suppression, cooldown suppression, min-chars suppression, pin-mode bypass.
 
@@ -703,10 +706,10 @@ Order each step so the previous one's receipts feed the next.
 2. **P7 — FR-3: `sysaudio` subcommand** (promoted). Validates the `AudioSource` protocol from ADR-0001 against a real second implementation before the rest of the FRs build on it. `CoreAudioTapSource` is the active system-audio source; sidecar sinks reused. Catches TCC / signing friction early; lets the upcoming P11 audio parity test validate against two real sources.
 3. **P11 — FR-1 (ALAC production sink) per [ADR-0002](../adr/ADR-0002-audio-storage-format.md) (amended 2026-05-16).** Implement `AVAudioFileALACSink` + `RollingPCMScratchSink`, wire `--audio-format alac|wav|pcm|opus` to the audio sinks, run the accuracy-parity test against the 2026-05-13 reference session and assert WER delta ≤ 1 % vs the WAV baseline. Flip the default from WAV to ALAC-in-CAF once sidecar wiring is complete. **Skips the transitional WAV-rotation step** (formerly P1) because the verified default is Apple-native ALAC/CAF plus rolling raw scratch. Opus remains opt-in/export only after WER regression on the real reference.
 4. **Next functional batch — source-aware trace spine and transcript assembly** per [plan-functional-trace-merge-diarize-locale](../architecture/plan-functional-trace-merge-diarize-locale.md):
-   1. **P3 — FR-2: `JSONLTraceSink` resilience.** Incremental source-aware trace via append-only JSONL. Unit + crash-recovery tests (`kill -9` / torn trailing line simulation).
-   2. **P8 — FR-7: `merge` subcommand.** Build immediately on the trace schema so source-aware exports exist before diarization and locale add more metadata.
-   3. **P5 — FR-4: live diarization.** Reuses the existing FluidAudio dep. `BufferMulticast` + `StreamingDiarizer` are unit-testable with `MockAudioSource`. Test against the 2026-05-13 Zoom session offline first, then live.
-   4. **P4 — FR-6: locale auto-detect** per [ADR-0003](../adr/ADR-0003-locale-resolution-policy.md). `LocaleResolver` with candidate-set restriction + 4-knob hysteresis. Unit tests on synthetic NL inputs covering: correct in-set switch, suppression of out-of-set candidates, suppression during cooldown, suppression below min-chars, pin-mode bypass.
+   1. **P3 — FR-2: `JSONLTraceSink` resilience. Done in `36375a5`.** Incremental source-aware trace via append-only JSONL. Unit + crash-recovery tests (`kill -9` / torn trailing line simulation). Current receipts: 46-test suite pass, release build pass, help checks pass, specdocs pass, file-driven live smoke wrote 13 valid events with `trace.dropped=0`.
+   2. **P8 — FR-7: `merge` subcommand. Next.** Build immediately on the trace schema so source-aware exports exist before diarization and locale add more metadata.
+   3. **P5 — FR-4: live diarization. Pending.** Reuses the existing FluidAudio dep. `BufferMulticast` + `StreamingDiarizer` are unit-testable with `MockAudioSource`. Test against the 2026-05-13 Zoom session offline first, then live.
+   4. **P4 — FR-6: locale auto-detect. Pending.** Per [ADR-0003](../adr/ADR-0003-locale-resolution-policy.md). `LocaleResolver` with candidate-set restriction + 4-knob hysteresis. Unit tests on synthetic NL inputs covering: correct in-set switch, suppression of out-of-set candidates, suppression during cooldown, suppression below min-chars, pin-mode bypass.
 5. **P6 — FR-5: live tagging.** Once the trace spine, merge, diarization, and locale state are in place, tagging is the smallest layer on top via `ModelHost` + `TagsJSONLSink`.
 6. **P2 — FR-8: `chronicle repair`** (de-prioritised). Mostly needed for the `--audio-format wav` opt-in path and unusual CAF tail recovery; ALAC/CAF plus raw scratch reduces the default repair surface. Canned malformed-WAV corpus tests.
 7. **P9 — Verification pass.** Run the §15 appendix end-to-end on a fresh session. Capture receipts.

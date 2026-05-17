@@ -5,7 +5,7 @@ plan". Authoritative scope and acceptance criteria live in
 [`PRD-001`](prd/PRD-001-resilient-multi-source-daemon.md); this is the
 operator-facing dashboard.
 
-Last refresh: 2026-05-17 — FR-2 JSONL trace is implemented. `chronicle mic -o`, `chronicle sysaudio -o`, and `chronicle live -o` now append source-aware `trace.jsonl` events through `JSONLTraceSink`; the sink uses locked `O_APPEND` line writes, reports trace write/drop stats, and recovers from one torn trailing line. File-driven `chronicle live` smoke over a `say` fixture wrote 13 valid JSONL events with `trace.dropped=0`. Earlier same-day sysaudio work replaced SCStream with `CoreAudioTapSource` per [ADR-0004](adr/ADR-0004-tahoe-system-audio-capture.md), and P11 ALAC production sidecar remains the default audio storage path per [ADR-0005](adr/ADR-0005-audio-sidecar-reuse-boundary.md).
+Last refresh: 2026-05-17 — FR-2 JSONL trace is implemented and pushed as `36375a5 feat: add source-aware JSONL trace`. `chronicle mic -o`, `chronicle sysaudio -o`, and `chronicle live -o` now append source-aware `trace.jsonl` events through `JSONLTraceSink`; the sink uses locked `O_APPEND` line writes, reports trace write/drop stats, fail-fasts on dropped trace writes, stores fractional wallclock + monotonic offset + optional analyzer audio ranges, and recovers from one torn trailing line. File-driven `chronicle live` smoke over a `say` fixture wrote 13 valid JSONL events with `trace.dropped=0`. The 1–4 functional batch is **not finished**: FR-7 merge, FR-4 streaming diarization, and FR-6 LocaleResolver remain open. Earlier same-day sysaudio work replaced SCStream with `CoreAudioTapSource` per [ADR-0004](adr/ADR-0004-tahoe-system-audio-capture.md), and P11 ALAC production sidecar remains the default audio storage path per [ADR-0005](adr/ADR-0005-audio-sidecar-reuse-boundary.md).
 
 ## Phase board
 
@@ -24,6 +24,17 @@ Last refresh: 2026-05-17 — FR-2 JSONL trace is implemented. `chronicle mic -o`
 | P1 | WAV transitional rotation | FR-1 | ✘ skipped | Superseded by P11; was meant as a stepping stone toward Opus. |
 | P9 | End-to-end verification | — | ⏳ pending | Run PRD-001 §15 appendix on a fresh session; capture receipts. |
 | P10 | Post-impl documentation | — | ⏳ pending | Update README + research-notes + a verification spike doc with the final numbers. |
+
+## Functional batch checkpoint
+
+Current priority batch state:
+
+1. **FR-2 / #23 — done.** Commit `36375a5` added the source-aware JSONL trace spine, locked append primitive, monotonic clock helper, `TranscriptionSink.didReceiveResult`, CLI wiring for `mic` / `sysaudio` / `live`, tests, docs, and smoke receipts.
+2. **FR-7 / #28 — next.** Implement `chronicle merge` over `trace.jsonl` first, with `finals.md` fallback. It must preserve source labels, locale, speaker labels when present, and stable ordering. This is the correct next restart point after context compaction.
+3. **FR-4 / #25 — pending.** Implement `BufferMulticast` and `StreamingDiarizer` after merge. Keep one diarizer per source command; attach `speakerId` to trace/finals by aligning against trace timing metadata.
+4. **FR-6 / #24 — pending.** Implement `LocaleResolver` after trace/merge/diarize. Use ADR-0003 candidate-set restriction + hysteresis; record locale state/switches in trace.
+
+Do not mark the batch complete until #28, #25, and #24 are also done, verified, committed, pushed, and task-marked complete.
 
 ## What "done" means for each phase
 
@@ -97,7 +108,7 @@ TCC resolves a stable identity. See AGENTS.md.
 
 ## How to pick the next thing to do
 
-Default order is the table above. The current functional batch is planned in [`plan-functional-trace-merge-diarize-locale`](architecture/plan-functional-trace-merge-diarize-locale.md): FR-2 trace is done; next is FR-7 merge, then FR-4 diarization, then FR-6 locale. If you have a real reason to deviate:
+Default order is the table above. The current functional batch is planned in [`plan-functional-trace-merge-diarize-locale`](architecture/plan-functional-trace-merge-diarize-locale.md): FR-2 trace is done; next is FR-7 merge, then FR-4 diarization, then FR-6 locale. After compaction or restart, resume at #28 unless the operator explicitly changes priority. If you have a real reason to deviate:
 
 - The protocol-oriented core (ADR-0001) means **any single phase is
   cheap to land** because every other phase composes against the same
