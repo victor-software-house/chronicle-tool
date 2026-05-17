@@ -17,6 +17,16 @@ public protocol TranscriptionSink: Sendable {
   /// A finalised segment was emitted. Finals are immutable.
   func didReceiveFinal(_ text: String, wallclockOffsetMs: Double, wallclock: Date) async
 
+  /// A transcription result with optional audio timing metadata was emitted.
+  /// Sinks that do not care about timing route through the volatile/final hooks.
+  func didReceiveResult(
+    _ text: String,
+    isFinal: Bool,
+    wallclockOffsetMs: Double,
+    wallclock: Date,
+    audioRange: TraceAudioRange?
+  ) async
+
   /// Pipeline is shutting down. Flush + close.
   func finish() async
 }
@@ -26,5 +36,18 @@ public protocol TranscriptionSink: Sendable {
 extension TranscriptionSink {
   public func didReceiveVolatile(_ text: String, wallclockOffsetMs: Double) async {}
   public func didReceiveFinal(_ text: String, wallclockOffsetMs: Double, wallclock: Date) async {}
+  public func didReceiveResult(
+    _ text: String,
+    isFinal: Bool,
+    wallclockOffsetMs: Double,
+    wallclock: Date,
+    audioRange: TraceAudioRange?
+  ) async {
+    if isFinal {
+      await didReceiveFinal(text, wallclockOffsetMs: wallclockOffsetMs, wallclock: wallclock)
+    } else {
+      await didReceiveVolatile(text, wallclockOffsetMs: wallclockOffsetMs)
+    }
+  }
   public func finish() async {}
 }

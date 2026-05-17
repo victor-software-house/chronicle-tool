@@ -5,7 +5,7 @@ plan". Authoritative scope and acceptance criteria live in
 [`PRD-001`](prd/PRD-001-resilient-multi-source-daemon.md); this is the
 operator-facing dashboard.
 
-Last refresh: 2026-05-17 — `chronicle sysaudio` now uses `CoreAudioTapSource` (CoreAudio process tap + private aggregate device) per [ADR-0004](adr/ADR-0004-tahoe-system-audio-capture.md), replacing the SCStream path in the CLI. Live smoke through `chronicle.app` captured TTS via CoreAudio tap, emitted a final transcript, wrote readable ALAC-in-CAF, and wrote raw scratch PCM. P11 ALAC production sidecar is implemented and the reuse boundary is documented in [ADR-0005](adr/ADR-0005-audio-sidecar-reuse-boundary.md). Opus failed the 6870 s Zoom WER parity gate; ALAC with rounded Int16 source preserved decoded PCM/WER while shrinking the reference to ~91.3 MB. `chronicle scratch-export` automates raw-PCM scratch recovery to WAV or ALAC-in-CAF.
+Last refresh: 2026-05-17 — FR-2 JSONL trace is implemented. `chronicle mic -o`, `chronicle sysaudio -o`, and `chronicle live -o` now append source-aware `trace.jsonl` events through `JSONLTraceSink`; the sink uses locked `O_APPEND` line writes, reports trace write/drop stats, and recovers from one torn trailing line. File-driven `chronicle live` smoke over a `say` fixture wrote 13 valid JSONL events with `trace.dropped=0`. Earlier same-day sysaudio work replaced SCStream with `CoreAudioTapSource` per [ADR-0004](adr/ADR-0004-tahoe-system-audio-capture.md), and P11 ALAC production sidecar remains the default audio storage path per [ADR-0005](adr/ADR-0005-audio-sidecar-reuse-boundary.md).
 
 ## Phase board
 
@@ -15,10 +15,10 @@ Last refresh: 2026-05-17 — `chronicle sysaudio` now uses `CoreAudioTapSource` 
 | **P7** | `chronicle sysaudio` subcommand | FR-3 | ✔ **done** | `CoreAudioTapSource` via CoreAudio process tap (`CATapDescription` + private aggregate device) feeds the same `SpeechAnalyzer` pipeline as mic; live TTS smoke produced a final transcript and wrote readable ALAC + scratch sidecars. |
 | **P11** | ALAC production audio sink | FR-1 | ✔ **done** | `Core/Sinks/AVAudioFileALACSink` + `Core/Sinks/RollingPCMScratchSink` (ADR-0002 amended 2026-05-16: ALAC default after Opus WER regression; ADR-0005 documents the reuse-boundary audit); `AVAudioFile` writer probe passed WER/byte-compare evidence. Default `--audio-format` is composite ALAC + scratch; `--rotate-audio` segments ALAC/WAV/Opus by audio duration. Live mic smoke produced two readable ALAC CAF segments plus scratch PCM. |
 | **P2a** | Scratch export recovery | FR-8 | ✔ **done** | `chronicle scratch-export <scratch-dir> -o recovered.wav|.caf` reads `format.json`, validates canonical interleaved raw PCM, requires contiguous `.pcm` segments, trims partial trailing frames, and writes WAV or ALAC-in-CAF. |
-| P3 | JSONL incremental trace | FR-2 | ⏳ next batch #1 | `Core/Sinks/JSONLTraceSink` appends source-aware `trace.jsonl`; torn trailing line recovery; schema becomes spine for merge/diarize/locale. |
-| P8 | `chronicle merge` | FR-7 | ⏳ next batch #2 | Chronological merge of N trace/finals inputs preserving source, locale, and speaker labels. |
-| P5 | Live diarization | FR-4 | ⏳ next batch #3 | `Core/Audio/BufferMulticast` + `Core/Diarize/StreamingDiarizer`; speakerId merged into trace/finals by audio range. |
-| P4 | Locale auto-detect per ADR-0003 | FR-6 | ⏳ next batch #4 | `Core/Speech/LocaleResolver`; candidate-set restriction + 4-knob hysteresis; trace records locale state/switches. |
+| **P3** | JSONL incremental trace | FR-2 | ✔ **done** | `Core/Sinks/JSONLTraceSink` appends source-aware `trace.jsonl`; locked append prevents multi-process line interleaving; torn trailing line recovery; schema is spine for merge/diarize/locale. |
+| P8 | `chronicle merge` | FR-7 | ⏳ next batch #1 | Chronological merge of N trace/finals inputs preserving source, locale, and speaker labels. |
+| P5 | Live diarization | FR-4 | ⏳ next batch #2 | `Core/Audio/BufferMulticast` + `Core/Diarize/StreamingDiarizer`; speakerId merged into trace/finals by audio range. |
+| P4 | Locale auto-detect per ADR-0003 | FR-6 | ⏳ next batch #3 | `Core/Speech/LocaleResolver`; candidate-set restriction + 4-knob hysteresis; trace records locale state/switches. |
 | P6 | Live tagging via `--tag-every N` | FR-5 | ⏳ after functional batch | `Core/Sinks/TagsJSONLSink` + cached `ContentTagger.tagText`; guardrail violations skip + continue. |
 | P2b | Legacy WAV tail repair | FR-8 | ⏳ pending | `chronicle repair <wav>` rewrites malformed/stale WAV headers for old incident artefacts and `--audio-format wav` opt-in tails. |
 | P1 | WAV transitional rotation | FR-1 | ✘ skipped | Superseded by P11; was meant as a stepping stone toward Opus. |
@@ -89,7 +89,7 @@ TCC resolves a stable identity. See AGENTS.md.
 | Protocol | Today's impls | Future impls |
 |---|---|---|
 | `AudioSource` | `MicAudioSource` (AVAudioEngine), `CoreAudioTapSource` (CoreAudio process tap) | `FileAudioSource` (P5 testing); RTSP / Bluetooth (post-PRD) |
-| `TranscriptionSink` | `LiveFileSink`, `FinalsAppendSink` | `JSONLTraceSink` (P3), `TagsJSONLSink` (P6) |
+| `TranscriptionSink` | `LiveFileSink`, `FinalsAppendSink`, `JSONLTraceSink` | `TagsJSONLSink` (P6) |
 | audio sidecar sink (`AudioSidecarSink`) | `AVAudioFileALACSink` + `RollingPCMScratchSink` default; `WAVSidecarSink` and `OpusCAFSink` opt-in | source-native hi-fi sidecar is deferred indefinitely / watchlist only (#79); `ExtAudioFile` ALAC fallback only if `AVAudioFile` regresses |
 | `OfflineDiarizing` | `OfflineDiarizer` (FluidAudio VBx) | — |
 | (planned) `StreamingDiarizing` | — | `StreamingDiarizer` (FluidAudio Sortformer, P5) |
@@ -97,13 +97,13 @@ TCC resolves a stable identity. See AGENTS.md.
 
 ## How to pick the next thing to do
 
-Default order is the table above. The current functional batch is planned in [`plan-functional-trace-merge-diarize-locale`](architecture/plan-functional-trace-merge-diarize-locale.md): FR-2 trace first, FR-7 merge second, FR-4 diarization third, FR-6 locale fourth. If you have a real reason to deviate:
+Default order is the table above. The current functional batch is planned in [`plan-functional-trace-merge-diarize-locale`](architecture/plan-functional-trace-merge-diarize-locale.md): FR-2 trace is done; next is FR-7 merge, then FR-4 diarization, then FR-6 locale. If you have a real reason to deviate:
 
 - The protocol-oriented core (ADR-0001) means **any single phase is
   cheap to land** because every other phase composes against the same
   protocols.
 - Phases that prerequisite each other are explicit:
-  - P8 (merge) now follows P3 immediately because trace schema should prove source-aware export before speaker/locale metadata lands.
+  - P8 (merge) now follows completed P3 because trace schema should prove source-aware export before speaker/locale metadata lands.
   - P5 (live diarize) needs `BufferMulticast`; land it after trace/merge so speaker labels flow into a durable source-aware event shape.
   - P4 (locale auto-detect) can run after trace/merge so locale state and switches are debuggable from the same event spine.
   - P6 (live tagging) reads `TranscriptionSink` finals; it composes onto any P3 / P4 / P5 outcome without coupling.
@@ -131,11 +131,11 @@ Open phases map to bare numeric task IDs in the Pi task tracker:
 | P11 ALAC production | #32 | archived/done |
 | P2a scratch export | #22 | done |
 | P1 WAV transitional reconciliation | #21 | open |
-| P3 JSONL | #23 | open |
+| P3 JSONL | #23 | done |
 | P4 LocaleResolver | #24 | open |
 | P5 streaming diarize | #25 | open |
 | P6 live tagging | #26 | open |
-| P8 merge | #28 | open |
+| P8 merge | #28 | open — next |
 | P9 verification | #29 | open |
 | P10 docs receipts | #30 | open |
 | CoreAudioTapSource cleanup | #55 | done |

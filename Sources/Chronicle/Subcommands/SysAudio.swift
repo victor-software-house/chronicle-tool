@@ -19,6 +19,9 @@ struct SysAudio: AsyncParsableCommand {
   @Option(name: .long, help: "Locale, e.g. en-US. Locale auto-detect (ADR-0003) lands with FR-6/P4.")
   var locale: String?
 
+  @Option(name: [.long, .customShort("o")], help: "Append source-aware volatile + final events to this JSONL trace path.")
+  var output: String?
+
   @Option(name: .long, help: "Stop after this many seconds (0 = run until SIGINT/SIGTERM).")
   var seconds: Int = 0
 
@@ -66,6 +69,7 @@ struct SysAudio: AsyncParsableCommand {
       preset: .progressiveTranscription,
       tag: "sysaudio"
     )
+    let supported = txEngine.locale
     let transcriber = txEngine.transcriber
     let analyzer = txEngine.analyzer
     guard let analyzerFormat = txEngine.analyzerFormat else {
@@ -96,6 +100,22 @@ struct SysAudio: AsyncParsableCommand {
 
     // Compose sidecar sinks.
     var sinks: [TranscriptionSink] = []
+    let traceSink: JSONLTraceSink?
+    if let output = self.output {
+      let url = URL(fileURLWithPath: (output as NSString).expandingTildeInPath)
+      FileHandle.standardError.write(Data("[INFO] [sysaudio] appending JSONL trace to \(url.path)\n".utf8))
+      let sink = try JSONLTraceSink(
+        url: url,
+        source: "sysaudio",
+        sourceKind: .systemOutput,
+        locale: supported.identifier,
+        preset: TranscriptionEngine.presetName(.progressiveTranscription)
+      )
+      traceSink = sink
+      sinks.append(sink)
+    } else {
+      traceSink = nil
+    }
     if let path = self.live {
       let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
       FileHandle.standardError.write(Data("[sysaudio] live transcript file: \(url.path)\n".utf8))
@@ -109,7 +129,7 @@ struct SysAudio: AsyncParsableCommand {
     let composedSinks = sinks
 
     let inline = self.inline
-    let startWall = Date()
+    let startMonotonic = ContinuousClock.now
 
     let consumeTask = Task {
       var lastVolatileLineLength = 0
@@ -118,18 +138,32 @@ struct SysAudio: AsyncParsableCommand {
       for try await result in transcriber.results {
         let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty { continue }
-        let offsetMs = Date().timeIntervalSince(startWall) * 1000.0
+        let offsetMs = MonotonicClock.milliseconds(since: startMonotonic)
         let wallclock = Date()
+        let start = CMTimeGetSeconds(result.range.start)
+        let end = CMTimeGetSeconds(result.range.end)
+        let audioRange = start.isFinite && end.isFinite
+          ? TraceAudioRange(startSeconds: start, endSeconds: end)
+          : nil
+        for sink in composedSinks {
+          await sink.didReceiveResult(
+            text,
+            isFinal: result.isFinal,
+            wallclockOffsetMs: offsetMs,
+            wallclock: wallclock,
+            audioRange: audioRange
+          )
+        }
+        if let traceSink {
+          let stats = await traceSink.stats()
+          if stats.droppedEvents > 0 {
+            throw JSONLTraceSinkFailure(stats: stats)
+          }
+        }
         if result.isFinal {
           finalCount += 1
-          for sink in composedSinks {
-            await sink.didReceiveFinal(text, wallclockOffsetMs: offsetMs, wallclock: wallclock)
-          }
         } else {
           volatileCount += 1
-          for sink in composedSinks {
-            await sink.didReceiveVolatile(text, wallclockOffsetMs: offsetMs)
-          }
         }
         if inline {
           if result.isFinal {
@@ -200,7 +234,25 @@ struct SysAudio: AsyncParsableCommand {
         try await analyzer.cancelAndFinishNow()
       }
     }
-    let (volatileCount, finalCount) = try await consumeTask.value
+    let counts: (volatile: Int, final: Int)
+    do {
+      counts = try await consumeTask.value
+    } catch {
+      _ = await pcmTask.value
+      if let audioSink {
+        await audioSink.finish()
+      }
+      for sink in composedSinks {
+        await sink.finish()
+      }
+      if let traceSink {
+        let stats = await traceSink.stats()
+        FileHandle.standardError.write(Data(
+          "[sysaudio] trace.written=\(stats.writtenEvents) trace.dropped=\(stats.droppedEvents)\n".utf8
+        ))
+      }
+      throw error
+    }
     _ = await pcmTask.value
     if let audioSink {
       await audioSink.finish()
@@ -210,7 +262,16 @@ struct SysAudio: AsyncParsableCommand {
     }
 
     FileHandle.standardError.write(Data(
-      "[sysaudio] done. volatile=\(volatileCount) final=\(finalCount)\n".utf8
+      "[sysaudio] done. volatile=\(counts.volatile) final=\(counts.final)\n".utf8
     ))
+    if let traceSink {
+      let stats = await traceSink.stats()
+      FileHandle.standardError.write(Data(
+        "[sysaudio] trace.written=\(stats.writtenEvents) trace.dropped=\(stats.droppedEvents)\n".utf8
+      ))
+      if stats.droppedEvents > 0 {
+        throw ExitCode(3)
+      }
+    }
   }
 }

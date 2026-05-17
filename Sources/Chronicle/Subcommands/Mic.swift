@@ -28,7 +28,7 @@ struct Mic: AsyncParsableCommand {
   @Option(name: .long, help: "Locale, e.g. en-US.")
   var locale: String?
 
-  @Option(name: [.long, .customShort("o")], help: "Optional output JSON path (volatile + final event trace).")
+  @Option(name: [.long, .customShort("o")], help: "Append source-aware volatile + final events to this JSONL trace path.")
   var output: String?
 
   @Option(name: .long, help: "Stop after this many seconds (0 = run until SIGINT).")
@@ -97,22 +97,28 @@ struct Mic: AsyncParsableCommand {
       rotateAudio: rotateAudio
     )
 
-    struct TraceEvent: Codable, Sendable {
-      let wallclockOffsetMs: Double
-      let isFinal: Bool
-      let text: String
-    }
-    actor TraceCollector {
-      var events: [TraceEvent] = []
-      func append(_ e: TraceEvent) { events.append(e) }
-    }
-    let trace = TraceCollector()
-    let startWall = Date()
+    let startMonotonic = ContinuousClock.now
 
     let inline = self.inline
 
     // Compose sidecar sinks.
     var sinks: [TranscriptionSink] = []
+    let traceSink: JSONLTraceSink?
+    if let output = self.output {
+      let url = URL(fileURLWithPath: (output as NSString).expandingTildeInPath)
+      FileHandle.standardError.write(Data("[INFO] [mic] appending JSONL trace to \(url.path)\n".utf8))
+      let sink = try JSONLTraceSink(
+        url: url,
+        source: "mic",
+        sourceKind: .microphone,
+        locale: supported.identifier,
+        preset: TranscriptionEngine.presetName(.progressiveTranscription)
+      )
+      traceSink = sink
+      sinks.append(sink)
+    } else {
+      traceSink = nil
+    }
     if let path = self.live {
       let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
       FileHandle.standardError.write(Data("[mic] live transcript file: \(url.path)\n".utf8))
@@ -127,24 +133,37 @@ struct Mic: AsyncParsableCommand {
 
     let consumeTask = Task {
       var lastVolatileLineLength = 0
+      var volatileCount = 0
+      var finalCount = 0
       for try await result in transcriber.results {
         let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty { continue }
-        let offsetMs = Date().timeIntervalSince(startWall) * 1000.0
+        let offsetMs = MonotonicClock.milliseconds(since: startMonotonic)
         let wallclock = Date()
-        await trace.append(TraceEvent(
-          wallclockOffsetMs: offsetMs,
-          isFinal: result.isFinal,
-          text: text
-        ))
+        let start = CMTimeGetSeconds(result.range.start)
+        let end = CMTimeGetSeconds(result.range.end)
+        let audioRange = start.isFinite && end.isFinite
+          ? TraceAudioRange(startSeconds: start, endSeconds: end)
+          : nil
+        for sink in composedSinks {
+          await sink.didReceiveResult(
+            text,
+            isFinal: result.isFinal,
+            wallclockOffsetMs: offsetMs,
+            wallclock: wallclock,
+            audioRange: audioRange
+          )
+        }
+        if let traceSink {
+          let stats = await traceSink.stats()
+          if stats.droppedEvents > 0 {
+            throw JSONLTraceSinkFailure(stats: stats)
+          }
+        }
         if result.isFinal {
-          for sink in composedSinks {
-            await sink.didReceiveFinal(text, wallclockOffsetMs: offsetMs, wallclock: wallclock)
-          }
+          finalCount += 1
         } else {
-          for sink in composedSinks {
-            await sink.didReceiveVolatile(text, wallclockOffsetMs: offsetMs)
-          }
+          volatileCount += 1
         }
         if inline {
           if result.isFinal {
@@ -168,6 +187,7 @@ struct Mic: AsyncParsableCommand {
           }
         }
       }
+      return (volatileCount, finalCount)
     }
 
     // Drain PCM buffers into the optional audio sidecar (ALAC / WAV / Opus /
@@ -211,7 +231,25 @@ struct Mic: AsyncParsableCommand {
         try await analyzer.cancelAndFinishNow()
       }
     }
-    try await consumeTask.value
+    let counts: (volatile: Int, final: Int)
+    do {
+      counts = try await consumeTask.value
+    } catch {
+      _ = await pcmTask.value
+      if let audioSink {
+        await audioSink.finish()
+      }
+      for sink in composedSinks {
+        await sink.finish()
+      }
+      if let traceSink {
+        let stats = await traceSink.stats()
+        FileHandle.standardError.write(Data(
+          "[mic] trace.written=\(stats.writtenEvents) trace.dropped=\(stats.droppedEvents)\n".utf8
+        ))
+      }
+      throw error
+    }
     _ = await pcmTask.value
     if let audioSink {
       await audioSink.finish()
@@ -220,35 +258,19 @@ struct Mic: AsyncParsableCommand {
       await sink.finish()
     }
 
-    let events = await trace.events
-    let volatileCount = events.filter { !$0.isFinal }.count
-    let finalCount = events.filter { $0.isFinal }.count
     FileHandle.standardError.write(Data(
-      "[mic] done. volatile=\(volatileCount) final=\(finalCount)\n".utf8
+      "[mic] done. volatile=\(counts.volatile) final=\(counts.final)\n".utf8
     ))
-
-    if let output {
-      struct Doc: Codable {
-        let locale: String
-        let preset: String
-        let elapsedSeconds: Double
-        let volatileEvents: Int
-        let finalEvents: Int
-        let events: [TraceEvent]
+    if let traceSink {
+      let stats = await traceSink.stats()
+      FileHandle.standardError.write(Data(
+        "[mic] trace.written=\(stats.writtenEvents) trace.dropped=\(stats.droppedEvents)\n".utf8
+      ))
+      if stats.droppedEvents > 0 {
+        throw ExitCode(3)
       }
-      let doc = Doc(
-        locale: supported.identifier,
-        preset: "progressiveTranscription",
-        elapsedSeconds: Date().timeIntervalSince(startWall),
-        volatileEvents: volatileCount,
-        finalEvents: finalCount,
-        events: events
-      )
-      let encoder = JSONEncoder()
-      encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-      try encoder.encode(doc).write(to: URL(fileURLWithPath: (output as NSString).expandingTildeInPath))
-      FileHandle.standardError.write(Data("[mic] wrote \(output)\n".utf8))
     }
+
   }
 }
 

@@ -263,13 +263,24 @@ And at most one trailing line is partially written
 And `jq -c . trace.jsonl 2>/dev/null | wc -l` is within 5 events of the true count
 ```
 
+**Implemented receipts (2026-05-17):**
+
+* `Sources/Chronicle/Core/Sinks/JSONLTraceSink.swift` appends compact source-aware JSONL with schema version, per-stream event ids, source/sourceKind, stream id, wallclock, monotonic offset, event kind, text, final state, locale, preset, optional speaker/audio/channel/export fields, and write/drop stats.
+* `AtomicFile.appendLine` now uses Darwin `O_APPEND` plus `flock(LOCK_EX)` so concurrent mic/sysaudio processes sharing one trace path cannot interleave JSON lines.
+* `chronicle mic -o`, `chronicle sysaudio -o`, and `chronicle live -o` all append `trace.jsonl`; `live` preserves audio ranges when SpeechAnalyzer provides finite timing.
+* `Tests/ChronicleTests/Sinks/JSONLTraceSinkTests.swift` covers valid JSONL, source fields, sysaudio metadata, event ordering, audio range preservation, torn trailing-line recovery, strict malformed-middle failure, stats, and concurrent writers sharing one path.
+* File-driven smoke: `say -o /tmp/chronicle-fr2-smoke/input.aiff "chronicle trace sink smoke test"` then `.build/debug/chronicle live -i /tmp/chronicle-fr2-smoke/input.aiff -o /tmp/chronicle-fr2-smoke/trace.jsonl --locale en-US` wrote 13 valid JSONL events; `jq -c . trace.jsonl` passed; final event text was `Chronicle Trace sinks smoke test.`; `trace.dropped=0`.
+
 **Files:**
 
 * `Sources/Chronicle/Core/Sinks/JSONLTraceSink.swift` — append-only source-aware trace sink.
+* `Sources/Chronicle/Core/Runtime/AtomicFile.swift` — locked append primitive used by JSONL and line sinks.
+* `Sources/Chronicle/Core/Runtime/MonotonicClock.swift` — monotonic offset helper for trace event timing.
+* `Sources/Chronicle/Core/Sinks/TranscriptionSink.swift` — result hook for sinks that need optional audio timing metadata.
 * `Sources/Chronicle/Subcommands/Mic.swift` — wire `-o trace.jsonl` into the live result loop.
 * `Sources/Chronicle/Subcommands/SysAudio.swift` — same pattern with `source=sysaudio` / system-output metadata.
-* `Sources/Chronicle/Subcommands/Live.swift` — same pattern for file-driven runs if the command keeps trace support.
-* `Tests/ChronicleTests/Sinks/JSONLTraceSinkTests.swift` — JSONL validity, source fields, ordering, and trailing-line recovery.
+* `Sources/Chronicle/Subcommands/Live.swift` — same pattern for file-driven runs.
+* `Tests/ChronicleTests/Sinks/JSONLTraceSinkTests.swift` — JSONL validity, source fields, ordering, concurrency, stats, and trailing-line recovery.
 
 ---
 

@@ -103,15 +103,15 @@ swift build -c release
   --locale en-US
 
 # Live microphone (Ctrl-C to stop, or --seconds N to auto-stop).
-.build/release/chronicle mic --locale en-US --seconds 30 -o out/mic.json
+.build/release/chronicle mic --locale en-US --seconds 30 -o out/mic.trace.jsonl
 
-# Live mic as a daemon: lossless audio + rolling live snapshot + final-only log + JSON trace.
+# Live mic as a daemon: lossless audio + rolling live snapshot + final-only log + JSONL trace.
 .build/release/chronicle mic \
   --locale pt-BR \
   --live out/live.md \
   --append out/finals.md \
   --save-audio out/audio.wav \
-  -o out/trace.json
+  -o out/trace.jsonl
 
 # Live system-audio capture (everything playing through the default output device).
 .build/release/chronicle sysaudio \
@@ -170,9 +170,9 @@ AudioSource (MicAudioSource | CoreAudioTapSource)
   → fan-out via two AsyncStreams:
       ├─ AsyncStream<AnalyzerInput> → SpeechAnalyzer + .progressiveTranscription [ANE]
       │    → volatile / final events → TranscriptionSink fan-out:
-      │        ├─ LiveFileSink     → live.md     (atomic rewrite per event, ~150 ms cadence)
-      │        ├─ FinalsAppendSink → finals.md   (timestamped append per phrase)
-      │        └─ [JSONLTraceSink — P3]
+      │        ├─ LiveFileSink     → live.md      (atomic rewrite per event, ~150 ms cadence)
+      │        ├─ FinalsAppendSink → finals.md    (timestamped append per phrase)
+      │        └─ JSONLTraceSink   → trace.jsonl  (source-aware append-only event stream)
       └─ AsyncStream<PCMBufferRef>  → audio sidecar sinks (default: ALAC-in-CAF + raw PCM scratch).
 ```
 
@@ -218,19 +218,19 @@ For a chronicle-style 24/7 setup, run as a background process:
 ```sh
 # via pi process tool (preferred — captures stdout/stderr, alerts on failure):
 process action=start name=chronicle-mic-live \
-  command='cd <repo> && exec .build/release/chronicle mic --locale pt-BR --live <vault>/live.md --append <vault>/finals.md --save-audio <vault>/audio.wav -o <vault>/trace.json'
+  command='cd <repo> && exec .build/release/chronicle mic --locale pt-BR --live <vault>/live.md --append <vault>/finals.md --save-audio <vault>/audio.wav -o <vault>/trace.jsonl'
 
 # or raw nohup if you prefer:
 nohup .build/release/chronicle mic --locale pt-BR \
   --live  ~/chronicle/live.md \
   --append ~/chronicle/finals.md \
   --save-audio ~/chronicle/audio.wav \
-  -o ~/chronicle/trace.json &> ~/chronicle/daemon.log &
+  -o ~/chronicle/trace.jsonl &> ~/chronicle/daemon.log &
 ```
 
 The daemon handles `SIGTERM` cleanly —
 `finalizeAndFinishThroughEndOfInput()` flushes the last in-flight volatile
-into a final before closing, so `finals.md` and the JSON trace stay
+into a final before closing, so `finals.md` and the JSONL trace stay
 consistent.
 
 ## Architecture
@@ -270,7 +270,8 @@ Sources/Chronicle/
     ├── Sinks/
     │   ├── TranscriptionSink.swift    protocol: didReceiveVolatile/Final/finish
     │   ├── LiveFileSink.swift         atomic-rewrite live.md
-    │   └── FinalsAppendSink.swift     timestamped append finals.md
+    │   ├── FinalsAppendSink.swift     timestamped append finals.md
+    │   └── JSONLTraceSink.swift       source-aware append-only trace.jsonl
     └── Runtime/
         ├── SignalHandler.swift        SIGINT/SIGTERM one-shot wait
         └── AtomicFile.swift           atomic-write + append-line primitives
