@@ -265,8 +265,12 @@ Future phases plug into the existing protocols:
   `Core/Diarize/StreamingDiarizer.swift` consuming `PCMBufferRef`.
 - **P6 (FR-5) live tagging** — `Core/Sinks/TagsJSONLSink.swift` calling
   the existing `ContentTagger.tagText`.
-- **P11 (FR-1 production) Opus codec** — `Core/Sinks/OpusOggSink.swift`
-  + `Core/Sinks/RollingPCMScratchSink.swift`.
+- **P11 (FR-1 production) ALAC audio sidecar** —
+  `Core/Sinks/AVAudioFileALACSink.swift` +
+  `Core/Sinks/RollingPCMScratchSink.swift` +
+  `Core/Sinks/AudioSidecarCombinators.swift`.
+  The default `--audio-format alac` writes rotated ALAC-in-CAF segments and a
+  parallel raw-PCM scratch ring.
 
 Diarization is the only non-Apple dependency:
 [FluidAudio](https://github.com/FluidInference/FluidAudio) — Apple ships no
@@ -278,16 +282,75 @@ public diarizer on Tahoe 26.
 swift test
 ```
 
-`Tests/ChronicleTests/` uses Swift Testing (`@Test`). 21 tests across 5
-suites (`OpusCAFSink`, `RollingPCMScratchSink`, `TCCPreflight`,
-`AsyncTimeout`, `EncodeOpus round-trip`). More tests land alongside each
-FR per the PRD-001 file breakdown (`JSONLTraceSinkTests`,
+`Tests/ChronicleTests/` uses Swift Testing (`@Test`). 24 tests across 6
+suites (`AVAudioFile ALAC sink`, `OpusCAFSink`, `RollingPCMScratchSink`,
+`TCCPreflight`, `AsyncTimeout`, `EncodeOpus round-trip`). More tests land
+alongside each FR per the PRD-001 file breakdown (`JSONLTraceSinkTests`,
 `LocaleResolverTests`, `CoreAudioTapSourceTests`, etc.).
 
-## P11 verification — Opus round-trip WER parity (#50)
+## P11 audio sidecar — ALAC default + scratch recovery
 
-Offline test that proves the production `OpusCAFSink` round-trip does not
-degrade transcription accuracy beyond the PRD-001 FR-1 tolerance.
+The default live audio sidecar is ALAC-in-CAF, written through Apple's
+high-level `AVAudioFile` API. Chronicle feeds it rounded Int16 PCM in the
+analyzer format. Opus remains available only as an explicit opt-in/export path
+because it failed the long-reference WER gate.
+
+```sh
+chronicle mic \
+  --save-audio audio/session.caf \
+  --audio-format alac \
+  --rotate-audio 60 \
+  --scratch-ttl 300 \
+  --scratch-rotate 30
+```
+
+Default outputs:
+
+```text
+audio/session-000001.caf       finalized ALAC segment
+audio/session-000002.caf       finalized ALAC segment
+audio/session-000003.caf       active ALAC segment while running
+
+audio/scratch/session/format.json
+audio/scratch/session/000000.pcm
+audio/scratch/session/000001.pcm
+...
+```
+
+Important crash model:
+
+* `--rotate-audio 60` bounds the **active ALAC segment's finalization exposure**
+  to roughly one minute.
+* It does **not** mean Chronicle expects to lose one minute of audio.
+* The parallel scratch tier is raw, headerless PCM. It has no finalization step;
+  bytes that reached disk remain usable after `SIGKILL` or a crash.
+* If the active CAF segment is unreadable, recover recent audio from
+  `audio/scratch/<session>/*.pcm` within the scratch TTL.
+* Actual unrecoverable loss should be the final buffer/write that did not reach
+  disk, not the whole active ALAC segment.
+
+Manual scratch recovery until `chronicle repair` grows scratch export:
+
+```sh
+cat audio/scratch/session/*.pcm > /tmp/recovered.s16le
+ffmpeg -f s16le -ar 16000 -ac 1 -i /tmp/recovered.s16le recovered.wav
+```
+
+If `format.json` says `commonFormat` is `float32`, use `-f f32le` instead of
+`-f s16le`.
+
+Verification receipts:
+
+* `AVAudioFile` ALAC probe on the 6870 s Zoom reference:
+  `alac`, `s16p`, 16 kHz mono, 91,316,352 bytes, decoded PCM `cmp-ok`.
+* Live mic smoke with `--rotate-audio 1` produced two readable ALAC CAF segments
+  plus scratch PCM.
+
+## Historical P11 verification — rejected Opus round-trip WER parity (#50)
+
+Offline test that proved the proposed `OpusCAFSink` default degraded
+transcription accuracy beyond the PRD-001 FR-1 tolerance. Kept as a regression
+and comparison harness; not the default-format gate anymore.
 
 ```sh
 swift build -c release
@@ -318,9 +381,9 @@ Overridable knobs (env vars):
 | `LOCALE` | `en-US` | SpeechAnalyzer locale |
 | `ACCEPT_THRESHOLD` | `0.01` | WER pass gate |
 
-Once `verify-opus-parity.sh` exits 0 against the 2026-05-13 reference, the
-P11 default-format flip (`--audio-format wav` → `opus`, task #51) is
-unblocked.
+This harness is retained to guard the rejected Opus path and to reproduce the
+failure if the decision is challenged again. It is no longer a release gate for
+the default sidecar.
 
 ## See also
 

@@ -155,6 +155,16 @@ Current P11 wiring composes the default ALAC sidecar with a parallel
 duration via `--rotate-audio` (default 60 s; `0` disables rotation). Explicit
 `--audio-format pcm` selects scratch-only mode.
 
+Crash model: `--rotate-audio 60` bounds the active ALAC segment's finalization
+exposure to roughly one minute, but it does **not** mean Chronicle expects to
+lose one minute of audio. The parallel scratch tier is append-only raw PCM with
+no header/finalization step. If the active CAF is unreadable after a hard kill,
+the recent audio is still recoverable from `audio/scratch/<session>/*.pcm` up to
+the scratch TTL. Actual unrecoverable loss is limited to the final buffer/write
+that did not reach disk, not the whole active ALAC segment. Automated scratch
+export/repair remains future FR-8 work; manual ffmpeg recovery is possible from
+the manifest today.
+
 **Acceptance criteria:**
 
 ```gherkin
@@ -162,6 +172,7 @@ Given the daemon is running with --save-audio session.caf --audio-format alac --
 When audio streams and the daemon exits cleanly
 Then audio/session-000001.caf and later finalized segments reopen with AVAudioFile as ALAC-in-CAF
 And RollingPCMScratchSink writes bit-exact PCM under audio/scratch/session/
+And a hard kill can damage only the active CAF segment's finalization metadata while recent scratch PCM remains decodable from the last successful write
 And the on-disk size of the 6870 s Zoom reference is near the verified rounded-Int16 ALAC target (~91.3 MB)
 And decoded PCM matches the rounded Int16 source control
 And WER delta versus the WAV baseline is ≤ 1 %
@@ -188,6 +199,18 @@ Then a new numbered ALAC CAF segment starts at the next input buffer
 And each finalized segment reopens through AVAudioFile
 ```
 
+**Manual scratch recovery until FR-8 automation lands:**
+
+```sh
+# Inspect audio/scratch/session/format.json first. For today's default analyzer
+# format this is usually 16 kHz mono Int16, so ffmpeg input is s16le.
+cat audio/scratch/session/*.pcm > /tmp/recovered.s16le
+ffmpeg -f s16le -ar 16000 -ac 1 -i /tmp/recovered.s16le recovered.wav
+
+# If format.json says commonFormat=float32, use:
+ffmpeg -f f32le -ar 16000 -ac 1 -i /tmp/recovered.f32le recovered.wav
+```
+
 **Files:**
 
 * `Sources/Chronicle/Core/Sinks/AVAudioFileALACSink.swift` — production default: `AVAudioFile(forWriting:)` configured for CAF + `kAudioFormatAppleLossless`, `AVEncoderBitDepthHintKey: 16`, and rounded Int16 PCM buffers. Probe result on the 6870 s reference: `alac`, `s16p`, 16 kHz mono, 91,316,352 bytes, decoded PCM `cmp-ok`.
@@ -196,7 +219,7 @@ And each finalized segment reopens through AVAudioFile
 * `Sources/Chronicle/Core/Sinks/RollingPCMScratchSink.swift` — bounded-size append-only ring of raw PCM, auto-prunes past TTL; runs in parallel with default ALAC and remains available as scratch-only `--audio-format pcm`.
 * `Sources/Chronicle/Core/Sinks/AudioSidecarCombinators.swift` — composite sink fan-out plus audio-duration-based rotating sidecar wrapper.
 * `Sources/Chronicle/Subcommands/Mic.swift` / `Sources/Chronicle/Subcommands/SysAudio.swift` — wire `--audio-format`, `--rotate-audio`, `--scratch-ttl`, and `--scratch-rotate` flags into the pipeline.
-* `Sources/Chronicle/Subcommands/Repair.swift` — WAV/tail repair (still relevant for the `--audio-format wav` opt-in path and unusual default-sidecar recovery cases).
+* `Sources/Chronicle/Subcommands/Repair.swift` — WAV/tail repair (still relevant for the `--audio-format wav` opt-in path and unusual default-sidecar recovery cases). Future FR-8 work should add scratch export from `audio/scratch/<session>/format.json` + `.pcm` segments so operators do not need manual ffmpeg commands.
 
 ---
 

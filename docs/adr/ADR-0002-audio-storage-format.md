@@ -339,7 +339,10 @@ future OS behavior breaks the high-level writer's 16-bit-source ALAC output.
 * **Crash window is bounded by segment rotation and raw scratch.** ALAC/WAV/Opus
   sidecars rotate by audio duration (`--rotate-audio`, default 60 s). The
   parallel `RollingPCMScratchSink` is headerless, so recent PCM remains readable
-  even if the active CAF segment loses finalization metadata.
+  even if the active CAF segment loses finalization metadata. The 60 s number is
+  the maximum *durable sidecar finalization exposure*, not the expected audio
+  loss. With scratch present, actual unrecoverable loss should be limited to the
+  last buffer/write that did not reach disk, within the scratch TTL.
 * **Premium-STT path stays lossless for recent audio.** Triggered premium-STT
   bursts read the rolling scratch within TTL instead of depending on the durable
   compressed sidecar.
