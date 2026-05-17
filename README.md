@@ -19,8 +19,9 @@ One Swift 6 binary, multiple subcommands, each exercising one Apple-official Tah
 | `summarize` | `FoundationModels.SystemLanguageModel.default` + `@Generable` | 2 – 6 s for 0.3-4 k char transcript (session cached via `ModelHost`) | $0 |
 | `translate` | `Translation.TranslationSession` + `NaturalLanguage.NLLanguageRecognizer` | 1 – 22 s | $0 (after one-time language-pack install) |
 | `describe` | `Vision` 7-request fan-out + `FoundationModels` `@Generable` narration | 1 – 2.5 s per image | $0 |
+| `encode-opus` | `AVFoundation.AVAudioConverter` (Opus) + `AudioFileWritePackets` (CAF) via `OpusCAFSink` | **145 ×** rt on 5 s sine (debug build); P11 verification helper | $0 |
 
-All eleven subcommands run on the Neural Engine, all are validated against
+All twelve subcommands run on the Neural Engine, all are validated against
 real chronicle data captured during the 2026-05-13 Zoom spike. See the
 per-POC receipts under [`spikes/`](spikes/) for the spike-era exact numbers; the
 P0 modular refactor preserved byte-identical outputs for `transcribe`
@@ -277,10 +278,49 @@ public diarizer on Tahoe 26.
 swift test
 ```
 
-`Tests/ChronicleTests/` uses Swift Testing (`@Test`). Currently a smoke
-placeholder; per-module tests land alongside each FR per the PRD-001 file
-breakdown (`WAVSegmentSinkTests`, `JSONLTraceSinkTests`,
-`LocaleResolverTests`, `OpusAccuracyParityTests`, etc.).
+`Tests/ChronicleTests/` uses Swift Testing (`@Test`). 21 tests across 5
+suites (`OpusCAFSink`, `RollingPCMScratchSink`, `TCCPreflight`,
+`AsyncTimeout`, `EncodeOpus round-trip`). More tests land alongside each
+FR per the PRD-001 file breakdown (`JSONLTraceSinkTests`,
+`LocaleResolverTests`, `CoreAudioTapSourceTests`, etc.).
+
+## P11 verification — Opus round-trip WER parity (#50)
+
+Offline test that proves the production `OpusCAFSink` round-trip does not
+degrade transcription accuracy beyond the PRD-001 FR-1 tolerance.
+
+```sh
+swift build -c release
+brew install uv          # one-time, for the jiwer script
+scripts/verify-opus-parity.sh
+```
+
+What it does, by step:
+
+1. **encode** — `chronicle encode-opus` streams the reference WAV through
+   `OpusCAFSink @ 24 kbps` and writes `out/parity/mic-master.opus.caf`.
+2. **transcribe** — `chronicle transcribe` consumes the CAF artefact via
+   `AVAudioFile(forReading:)` (Apple decodes Opus-in-CAF to 48 kHz Float32
+   transparently) and writes `out/parity/transcribe-opus.{txt,json}`.
+3. **wer** — `scripts/wer.py` (uv-inline jiwer) compares the hypothesis
+   transcript against `out/full-session/transcribe.txt` (the WAV baseline)
+   and prints a one-line metric plus a JSON receipt. The script exits
+   non-zero if WER exceeds `ACCEPT_THRESHOLD` (default `0.01`, i.e. 1 %).
+
+Overridable knobs (env vars):
+
+| Var | Default | Purpose |
+|---|---|---|
+| `REF_WAV` | `~/Movies/pi-captures/sessions/2026-05-13-zoom-3h/audio/mic-master.wav` | input reference |
+| `REF_TXT` | `out/full-session/transcribe.txt` | baseline transcript |
+| `BITRATE` | `24000` | Opus encode bitrate (bits/sec) |
+| `OUT_DIR` | `out/parity` | artefact destination |
+| `LOCALE` | `en-US` | SpeechAnalyzer locale |
+| `ACCEPT_THRESHOLD` | `0.01` | WER pass gate |
+
+Once `verify-opus-parity.sh` exits 0 against the 2026-05-13 reference, the
+P11 default-format flip (`--audio-format wav` → `opus`, task #51) is
+unblocked.
 
 ## See also
 

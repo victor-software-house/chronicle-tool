@@ -5,7 +5,7 @@ plan". Authoritative scope and acceptance criteria live in
 [`PRD-001`](prd/PRD-001-resilient-multi-source-daemon.md); this is the
 operator-facing dashboard.
 
-Last refresh: 2026-05-15 rev-b (round-2 deeper survey of 22+ 2026-dated repos: muesli weakened to feature-flag transitional, 5 new convergence refs, 3 new signed-app counter-examples, new gotcha #6 Tahoe device-change-storm → cleanup item #12).
+Last refresh: 2026-05-16 — P11 verification infra landed (#50): `chronicle encode-opus` subcommand wraps `OpusCAFSink` for offline re-encode; `scripts/verify-opus-parity.sh` orchestrates encode → `transcribe` → WER gate; `scripts/wer.py` (uv-inline jiwer) computes the metric; in-process round-trip test asserts `AVAudioFile(forReading:)` decodes the production sink artefact end-to-end (21 tests pass).
 
 ## Phase board
 
@@ -13,7 +13,7 @@ Last refresh: 2026-05-15 rev-b (round-2 deeper survey of 22+ 2026-dated repos: m
 |---|---|---|---|---|
 | **P0** | Modular refactor + test target | — | ✔ **done** | Byte-identical parity vs 2026-05-13 spike on `transcribe` + `diarize`; 13 `Core/` modules; 11 subcommands as thin veneers; `ChronicleTests` target wired. |
 | **P7** | `chronicle sysaudio` subcommand | FR-3 | ✔ **done** | `SCStream` audio-only via `Core/Audio/SysAudioSource`; 4/4 TTS sentences captured exact; Info.plist `NSScreenCaptureUsageDescription` added. |
-| **P11** | Opus production audio sink | FR-1 | ⏳ **in progress** | `Core/Sinks/OpusCAFSink` + `Core/Sinks/RollingPCMScratchSink` (ADR-0002 amended 2026-05-13: CAF default, not Ogg); WER delta ≤ 1 % vs WAV baseline on the 6870 s reference; default flips WAV → Opus-in-CAF after parity confirmed. |
+| **P11** | Opus production audio sink | FR-1 | ⏳ **in progress** | `Core/Sinks/OpusCAFSink` + `Core/Sinks/RollingPCMScratchSink` (ADR-0002 amended 2026-05-13: CAF default, not Ogg); WER delta ≤ 1 % vs WAV baseline on the 6870 s reference; default flips WAV → Opus-in-CAF after parity confirmed. **Verification infra ready 2026-05-16**: `scripts/verify-opus-parity.sh` (operator-run, ~6-7 min on M-series). |
 | P3 | JSONL incremental trace | FR-2 | ⏳ pending | `Core/Sinks/JSONLTraceSink` via `AtomicFile.appendJSONLine`; `kill -9` mid-write leaves ≤ 1 torn line. |
 | P4 | Locale auto-detect per ADR-0003 | FR-6 | ⏳ pending | `Core/Speech/LocaleResolver`; candidate-set restriction + 4-knob hysteresis; no "random Russian" by construction. |
 | P5 | Live diarization | FR-4 | ⏳ pending | `Core/Audio/BufferMulticast` + `Core/Diarize/StreamingDiarizer`; speakerId merged into finals by audio range. |
