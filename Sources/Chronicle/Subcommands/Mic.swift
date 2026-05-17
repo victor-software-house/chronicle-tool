@@ -61,6 +61,9 @@ struct Mic: AsyncParsableCommand {
   @Option(name: .long, help: "Audio sidecar rotation interval in seconds (default 60; 0 disables rotation). Applies to alac/wav/opus.")
   var rotateAudio: Double = 60.0
 
+  @Flag(name: .long, help: "Live speaker diarization via FluidAudio Sortformer. Attaches speakerId to JSONL trace events and prefixes finals with the speaker label.")
+  var diarize: Bool = false
+
   func run() async throws {
     guard #available(macOS 26.0, *) else {
       throw ValidationError("Requires macOS 26.0+.")
@@ -100,6 +103,27 @@ struct Mic: AsyncParsableCommand {
     let startMonotonic = ContinuousClock.now
 
     let inline = self.inline
+
+    // Optional live diarizer. When enabled, route PCM buffers through a
+    // multicast so the sidecar consumer and the diarizer each get an
+    // independent stream without re-reading the source.
+    let diarizer: SortformerStreamingDiarizer? = diarize
+      ? SortformerStreamingDiarizer(logTag: "mic.diarize")
+      : nil
+    let pcmMulticast: BufferMulticast<PCMBufferRef>?
+    let sidecarStream: AsyncStream<PCMBufferRef>
+    let diarizerStream: AsyncStream<PCMBufferRef>?
+    if let _ = diarizer {
+      let mc = BufferMulticast<PCMBufferRef>()
+      pcmMulticast = mc
+      sidecarStream = mc.subscribe()
+      diarizerStream = mc.subscribe()
+      FileHandle.standardError.write(Data("[mic] diarization enabled (Sortformer streaming)\n".utf8))
+    } else {
+      pcmMulticast = nil
+      sidecarStream = micSource.pcmBuffers
+      diarizerStream = nil
+    }
 
     // Compose sidecar sinks.
     var sinks: [TranscriptionSink] = []
@@ -145,13 +169,20 @@ struct Mic: AsyncParsableCommand {
         let audioRange = start.isFinite && end.isFinite
           ? TraceAudioRange(startSeconds: start, endSeconds: end)
           : nil
+        let speakerId: String?
+        if let diarizer, let audioRange {
+          speakerId = await diarizer.speakerId(forRange: audioRange)
+        } else {
+          speakerId = nil
+        }
         for sink in composedSinks {
           await sink.didReceiveResult(
             text,
             isFinal: result.isFinal,
             wallclockOffsetMs: offsetMs,
             wallclock: wallclock,
-            audioRange: audioRange
+            audioRange: audioRange,
+            speakerId: speakerId
           )
         }
         if let traceSink {
@@ -194,12 +225,38 @@ struct Mic: AsyncParsableCommand {
     // rolling PCM scratch) concurrently with analyzer consumption.
     // MicAudioSource already converts to analyzerFormat.
     let pcmTask = Task {
-      for await ref in micSource.pcmBuffers {
+      for await ref in sidecarStream {
         if let sink = audioSink {
           await sink.append(ref.buffer)
         }
       }
     }
+
+    // When diarization is enabled, fan the same PCM stream from the source
+    // into the multicast and feed the diarizer subscription.
+    let multicastFanTask: Task<Void, Never>? = pcmMulticast.map { mc in
+      Task {
+        for await ref in micSource.pcmBuffers {
+          mc.yield(ref)
+        }
+        mc.finish()
+      }
+    }
+    let diarizerTask: Task<Void, Never>? = (diarizer.flatMap { d in
+      diarizerStream.map { stream in
+        Task {
+          for await ref in stream {
+            do {
+              try await d.ingest(ref)
+            } catch {
+              FileHandle.standardError.write(Data(
+                "[mic.diarize] ingest failed: \(error)\n".utf8
+              ))
+            }
+          }
+        }
+      }
+    })
 
     try await micSource.start()
     FileHandle.standardError.write(Data("[mic] engine started; speak into the mic. Ctrl-C to stop.\n".utf8))
@@ -236,6 +293,9 @@ struct Mic: AsyncParsableCommand {
       counts = try await consumeTask.value
     } catch {
       _ = await pcmTask.value
+      await multicastFanTask?.value
+      await diarizerTask?.value
+      if let diarizer { await diarizer.finish() }
       if let audioSink {
         await audioSink.finish()
       }
@@ -251,6 +311,9 @@ struct Mic: AsyncParsableCommand {
       throw error
     }
     _ = await pcmTask.value
+    await multicastFanTask?.value
+    await diarizerTask?.value
+    if let diarizer { await diarizer.finish() }
     if let audioSink {
       await audioSink.finish()
     }

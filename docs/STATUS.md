@@ -5,7 +5,7 @@ plan". Authoritative scope and acceptance criteria live in
 [`PRD-001`](prd/PRD-001-resilient-multi-source-daemon.md); this is the
 operator-facing dashboard.
 
-Last refresh: 2026-05-17 — FR-2 JSONL trace is pushed as `36375a5 feat: add source-aware JSONL trace` and FR-7 merge has just landed. `chronicle merge` consumes one or more source-aware `trace.jsonl` inputs (preferred) and/or legacy `finals.md` files, sorts by wallclock with stable tie-breaks on source path then event id, preserves source/locale/speaker labels, and emits a `[wallclock] [source] (speaker, locale) text` log or a markdown table via `--format markdown`. File-driven end-to-end smoke piped two `say` fixtures through `chronicle live -o` then merged the two `trace.jsonl` files into one chronological transcript. Earlier same-day work replaced SCStream sysaudio with `CoreAudioTapSource` per [ADR-0004](adr/ADR-0004-tahoe-system-audio-capture.md) and P11 ALAC production sidecar remains the default audio storage path per [ADR-0005](adr/ADR-0005-audio-sidecar-reuse-boundary.md). The 1–4 functional batch is still **not finished**: FR-4 streaming diarization and FR-6 LocaleResolver remain open.
+Last refresh: 2026-05-17 — FR-2 JSONL trace (`36375a5`), FR-7 merge (`a4078ce`), and FR-4 streaming diarization have all landed. `chronicle mic --diarize` and `chronicle sysaudio --diarize` now fan their analyzer PCM stream through a new `BufferMulticast` into a `SortformerStreamingDiarizer` (FluidAudio CoreML, Neural Engine), look up each result's speaker via a `DiarizationTimelineLookup` keyed off the analyzer's `audioRange` midpoint, and attach `speakerId` to JSONL trace events and `[Sx]` prefixes to `finals.md` lines. `chronicle merge` already surfaces `(speaker, locale)` once events carry the field. Earlier same-day work replaced SCStream sysaudio with `CoreAudioTapSource` per [ADR-0004](adr/ADR-0004-tahoe-system-audio-capture.md) and P11 ALAC production sidecar remains the default audio storage path per [ADR-0005](adr/ADR-0005-audio-sidecar-reuse-boundary.md). The 1–4 functional batch is still **not finished**: FR-6 LocaleResolver remains open.
 
 ## Phase board
 
@@ -17,8 +17,8 @@ Last refresh: 2026-05-17 — FR-2 JSONL trace is pushed as `36375a5 feat: add so
 | **P2a** | Scratch export recovery | FR-8 | ✔ **done** | `chronicle scratch-export <scratch-dir> -o recovered.wav|.caf` reads `format.json`, validates canonical interleaved raw PCM, requires contiguous `.pcm` segments, trims partial trailing frames, and writes WAV or ALAC-in-CAF. |
 | **P3** | JSONL incremental trace | FR-2 | ✔ **done** | `Core/Sinks/JSONLTraceSink` appends source-aware `trace.jsonl`; locked append prevents multi-process line interleaving; torn trailing line recovery; schema is spine for merge/diarize/locale. |
 | P8 | `chronicle merge` | FR-7 | ✔ **done** | `Subcommands/Merge.swift` reads N source-aware `trace.jsonl` and/or `finals.md` inputs, sorts by wallclock with stable tie-breaks, preserves source/locale/speaker labels; default `log` output, optional `--format markdown` table. |
-| P5 | Live diarization | FR-4 | ⏳ next batch #1 | `Core/Audio/BufferMulticast` + `Core/Diarize/StreamingDiarizer`; speakerId merged into trace/finals by audio range. |
-| P4 | Locale auto-detect per ADR-0003 | FR-6 | ⏳ next batch #2 | `Core/Speech/LocaleResolver`; candidate-set restriction + 4-knob hysteresis; trace records locale state/switches. |
+| P5 | Live diarization | FR-4 | ✔ **done** | `Core/Audio/BufferMulticast.swift` fan-out, `Core/Diarize/StreamingDiarizer.swift` with `SortformerStreamingDiarizer` and `DiarizationTimelineLookup`; `--diarize` wired into `mic` and `sysaudio`; speakerId in JSONL trace + `[Sx]` finals.md prefix. |
+| P4 | Locale auto-detect per ADR-0003 | FR-6 | ⏳ next batch #1 | `Core/Speech/LocaleResolver`; candidate-set restriction + 4-knob hysteresis; trace records locale state/switches. |
 | P6 | Live tagging via `--tag-every N` | FR-5 | ⏳ after functional batch | `Core/Sinks/TagsJSONLSink` + cached `ContentTagger.tagText`; guardrail violations skip + continue. |
 | P2b | Legacy WAV tail repair | FR-8 | ⏳ pending | `chronicle repair <wav>` rewrites malformed/stale WAV headers for old incident artefacts and `--audio-format wav` opt-in tails. |
 | P1 | WAV transitional rotation | FR-1 | ✘ skipped | Superseded by P11; was meant as a stepping stone toward Opus. |
@@ -31,10 +31,10 @@ Current priority batch state:
 
 1. **FR-2 / #23 — done.** Commit `36375a5` added the source-aware JSONL trace spine, locked append primitive, monotonic clock helper, `TranscriptionSink.didReceiveResult`, CLI wiring for `mic` / `sysaudio` / `live`, tests, docs, and smoke receipts.
 2. **FR-7 / #28 — done.** `chronicle merge` lands `Subcommands/Merge.swift` with `MergeService`, `FinalsMarkdownReader`, and `MergeRenderer` (log/markdown), plus `Tests/ChronicleTests/Subcommands/MergeTests.swift`. Consumes `trace.jsonl` (preferred) and legacy `finals.md` together; preserves source/locale/speaker labels; tolerates torn trailing JSONL lines with a stderr warning.
-3. **FR-4 / #25 — next.** Implement `BufferMulticast` and `StreamingDiarizer`. Keep one diarizer per source command; attach `speakerId` to trace/finals by aligning against trace timing metadata so `chronicle merge` can surface speakers immediately.
-4. **FR-6 / #24 — pending.** Implement `LocaleResolver` after diarize. Use ADR-0003 candidate-set restriction + hysteresis; record locale state/switches in trace events so merge already prints them.
+3. **FR-4 / #25 — done.** `Core/Audio/BufferMulticast.swift` fans the source PCM stream to sidecar + diarizer subscribers with a bounded per-subscriber queue. `Core/Diarize/StreamingDiarizer.swift` exposes the `StreamingDiarizing` protocol, the pure `DiarizationTimelineLookup` value type for midpoint speaker lookup, and the `SortformerStreamingDiarizer` actor that loads FluidAudio Sortformer CoreML lazily, converts each `AVAudioPCMBuffer` to 16 kHz mono float, throttles `process()` every ~1 s, and refreshes the lookup snapshot. `Mic.swift` and `SysAudio.swift` now accept `--diarize`; on each result they query `speakerId(forRange:)` and pass it into `TranscriptionSink.didReceiveResult`, so `JSONLTraceSink` records it and `FinalsAppendSink` prefixes finals with `[Sx]`.
+4. **FR-6 / #24 — next.** Implement `LocaleResolver` after diarize. Use ADR-0003 candidate-set restriction + hysteresis; record locale state/switches in trace events so merge already prints them.
 
-Do not mark the batch complete until #25 and #24 are also done, verified, committed, pushed, and task-marked complete.
+Do not mark the batch complete until #24 is also done, verified, committed, pushed, and task-marked complete.
 
 ## What "done" means for each phase
 
@@ -108,7 +108,7 @@ TCC resolves a stable identity. See AGENTS.md.
 
 ## How to pick the next thing to do
 
-Default order is the table above. The current functional batch is planned in [`plan-functional-trace-merge-diarize-locale`](architecture/plan-functional-trace-merge-diarize-locale.md): FR-2 trace and FR-7 merge are done; next is FR-4 diarization, then FR-6 locale. After compaction or restart, resume at #25 unless the operator explicitly changes priority. If you have a real reason to deviate:
+Default order is the table above. The current functional batch is planned in [`plan-functional-trace-merge-diarize-locale`](architecture/plan-functional-trace-merge-diarize-locale.md): FR-2 trace, FR-7 merge, and FR-4 streaming diarization are done; next is FR-6 locale. After compaction or restart, resume at #24 unless the operator explicitly changes priority. If you have a real reason to deviate:
 
 - The protocol-oriented core (ADR-0001) means **any single phase is
   cheap to land** because every other phase composes against the same
@@ -143,8 +143,8 @@ Open phases map to bare numeric task IDs in the Pi task tracker:
 | P2a scratch export | #22 | done |
 | P1 WAV transitional reconciliation | #21 | open |
 | P3 JSONL | #23 | done |
-| P4 LocaleResolver | #24 | open |
-| P5 streaming diarize | #25 | open — next |
+| P4 LocaleResolver | #24 | open — next |
+| P5 streaming diarize | #25 | done |
 | P6 live tagging | #26 | open |
 | P8 merge | #28 | done |
 | P9 verification | #29 | open |

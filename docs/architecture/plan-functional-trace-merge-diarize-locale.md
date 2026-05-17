@@ -24,36 +24,37 @@ The implementation should prefer small shared Core helpers over a full `LivePipe
 
 ## Current Checkpoint — 2026-05-17
 
-Phase 1 (FR-2) and phase 2 (FR-7) are implemented. The batch is not complete.
+Phases 1 (FR-2), 2 (FR-7), and 3 (FR-4) are implemented. The batch is not complete.
 
-| Batch item | Task | FR                         | Status  | Commit                                       | Current evidence                                                                                                                                                                                                                                                  |
-| ---------- | ---- | -------------------------- | ------- | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1          | #23  | FR-2 JSONL trace           | Done    | `36375a5 feat: add source-aware JSONL trace` | `swift test`, `swift build -c release`, help checks, `git diff --check`, `specdocs_validate`, file-driven live smoke with a 13-event valid `trace.jsonl`.                                                                                                         |
-| 2          | #28  | FR-7 merge                 | Done    | this commit                                  | 10 new `MergeTests` plus full `swift test` (56 tests) green, `swift build -c release` green, `chronicle merge --help`, synthetic JSONL+finals.md smoke, end-to-end smoke with two `chronicle live -o` runs over `say` fixtures merged into one chronological log. |
-| 3          | #25  | FR-4 streaming diarization | Next    | —                                            | Not started. Must attach `speakerId` into FR-2 events and finals; `chronicle merge` already preserves `speakerId` end-to-end once events carry it.                                                                                                                |
-| 4          | #24  | FR-6 locale resolver       | Pending | —                                            | Not started. Must emit locale state/switches into trace; restart path can be staged if risky.                                                                                                                                                                     |
+| Batch item | Task | FR                         | Status | Commit                                                                | Current evidence                                                                                                                                                                                                                                                                  |
+| ---------- | ---- | -------------------------- | ------ | --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1          | #23  | FR-2 JSONL trace           | Done   | `36375a5 feat: add source-aware JSONL trace`                          | `swift test`, `swift build -c release`, help checks, `git diff --check`, `specdocs_validate`, file-driven live smoke with a 13-event valid `trace.jsonl`.                                                                                                                         |
+| 2          | #28  | FR-7 merge                 | Done   | `a4078ce feat: add chronicle merge for source-aware trace and finals` | 10 new `MergeTests` plus full `swift test` (56 tests) green, `swift build -c release` green, `chronicle merge --help`, synthetic JSONL+finals.md smoke, end-to-end smoke with two `chronicle live -o` runs over `say` fixtures merged into one chronological log.                 |
+| 3          | #25  | FR-4 streaming diarization | Done   | this commit                                                           | New `BufferMulticast` (6 tests), `DiarizationTimelineLookup` (7 tests), `JSONLTraceSink.didReceiveResult(speakerId:)` propagation test (1), `swift test` 70/70 green, `swift build -c release` green, `chronicle mic --help` / `chronicle sysaudio --help` both show `--diarize`. |
+| 4          | #24  | FR-6 locale resolver       | Next   | —                                                                     | Not started. Must emit locale state/switches into trace; restart path can be staged if risky.                                                                                                                                                                                     |
 
-FR-2 changed the shared live result surface: `TranscriptionSink.didReceiveResult(_:isFinal:wallclockOffsetMs:wallclock:audioRange:)` now carries optional analyzer timing metadata. `JSONLTraceSink` uses it; `LiveFileSink` and `FinalsAppendSink` inherit default forwarding to their existing volatile/final hooks. Future FR-4/FR-6 work should use this hook instead of adding parallel result loops.
+FR-2 changed the shared live result surface: `TranscriptionSink.didReceiveResult(_:isFinal:wallclockOffsetMs:wallclock:audioRange:speakerId:)` now carries optional analyzer timing metadata and an optional speaker label. `JSONLTraceSink` uses both; `FinalsAppendSink` overrides `didReceiveResult` to prefix finals with `[Sx]` when a `speakerId` is present; other sinks fall through to the default protocol forwarder. Future FR-6 work should use this hook instead of adding parallel result loops.
 
 FR-2 also hardened shared append semantics in `AtomicFile.appendLine`: Darwin uses `O_APPEND`, `flock(LOCK_EX)`, EINTR retry, partial-write looping, and `write == 0` failure. That affects `JSONLTraceSink` and existing line append sinks. Merge assumes each complete line is one event, and tolerates at most one torn trailing line per JSONL input.
 
 FR-7 added `Sources/Chronicle/Subcommands/Merge.swift` with helper types `MergedRecord`, `MergeOutcome`, `MergeService`, `MergeInputFormat`, `MergeOutputFormat`, `FinalsMarkdownReader`, and `MergeRenderer`. Default output is a plain log (`[wallclock] [source] (speaker, locale) text`); `--format markdown` produces a markdown table. Stable sort key is `(wallclock, sourcePath, eventId)`; `--source-alias <path>=<name>` overrides source labels for finals.md fallback or for renamed JSONL files; `--include-volatile` is opt-in. Concurrent-writer JSONL files (`chronicle mic -o trace.jsonl` and `chronicle sysaudio -o trace.jsonl` sharing one path) merge into one chronological output because the trace itself is already source-tagged per event.
 
+FR-4 added `Sources/Chronicle/Core/Audio/BufferMulticast.swift` (generic `BufferMulticast<Element>` with per-subscriber bounded queues, `subscribe()`, `yield(_:)`, and `finish()`) and `Sources/Chronicle/Core/Diarize/StreamingDiarizer.swift` (the `StreamingDiarizing` protocol, the pure `DiarizationTimelineLookup` value type that answers `speakerId(forRange:)` by midpoint inclusion, and the `SortformerStreamingDiarizer` actor that wraps FluidAudio's `SortformerDiarizer` plus an `AVAudioConverter` to 16 kHz mono float and throttles `process()` every \~1 s). `Mic.swift` and `SysAudio.swift` now accept `--diarize`: when set, they wrap `pcmBuffers` in a `BufferMulticast<PCMBufferRef>` so the sidecar and the diarizer each get an independent stream, query `diarizer.speakerId(forRange:)` on each result, and pass the speaker label through `TranscriptionSink.didReceiveResult`. `JSONLTraceSink` records the field; `FinalsAppendSink` prefixes finals with `[Sx]`. Speaker IDs are best-effort across a streaming session (Sortformer's own state updater). Live smoke against real audio is deferred to operator-driven follow-up; mic permission and a multi-MB CoreML download make CI smoke impractical.
+
 ## Resume After Compaction
 
-Start with #25. Do not claim the 1–4 batch is finished until #25 and #24 are also implemented, validated, committed, pushed, and task-marked complete.
+Start with #24. Do not claim the 1–4 batch is finished until #24 is also implemented, validated, committed, pushed, and task-marked complete.
 
 Minimum restart sequence:
 
-1. `set_session_context(status="working", tabTopic="Live Diarize", workLabel="fr4 diarize")`.
-2. `TaskWrite` #25 → `in_progress`.
-3. Read this file, PRD-001 FR-4, `docs/STATUS.md`, `Sources/Chronicle/Core/Audio/AudioSourceOutputStreams.swift`, `Sources/Chronicle/Subcommands/Diarize.swift`, and the existing FluidAudio diarizer wiring.
-4. Decide whether `Core/Audio/BufferMulticast.swift` is needed or whether existing `AudioSourceOutputStreams` can support analyzer + sidecar + diarizer consumers.
-5. Add `Core/Diarize/StreamingDiarizer.swift` behind a small protocol and wire `--diarize` to `chronicle mic` and `chronicle sysaudio`.
-6. Attach `speakerId` to `JSONLTraceSink` events; FR-7 already surfaces speakers in merged output.
-7. Add unit tests for multicast fan-out, slow consumer, finish/drain semantics, and speaker alignment on canned ranges.
-8. Validate `swift test`, `swift build -c release`, `git diff --check`, `specdocs_validate`, `chronicle mic --help` / `chronicle sysaudio --help`.
-9. Commit/push, then mark #25 complete.
+1. `set_session_context(status="working", tabTopic="Locale Resolver", workLabel="fr6 locale")`.
+2. `TaskWrite` #24 → `in_progress`.
+3. Read this file, PRD-001 FR-6, `docs/adr/ADR-0003-locale-resolution-policy.md`, `docs/STATUS.md`, `Sources/Chronicle/Subcommands/Mic.swift`, `Sources/Chronicle/Subcommands/SysAudio.swift`, and the existing `TranscriptionEngine` locale wiring.
+4. Add `Sources/Chronicle/Core/Speech/LocaleResolver.swift` implementing ADR-0003 candidate-set restriction + 4-knob hysteresis (`--locale-min-finals`, `--locale-confidence`, `--locale-cooldown-sec`, `--locale-min-chars`).
+5. Wire `--locale auto[:set|*]` into mic/sysaudio; on switch, emit a `control` trace event and restart the transcriber.
+6. Unit tests cover candidate restriction, hysteresis, cooldown, single-loanword suppression, and `control`-event emission.
+7. Validate `swift test`, `swift build -c release`, `git diff --check`, `specdocs_validate`, `chronicle mic --help`, `chronicle sysaudio --help`.
+8. Commit/push, then mark #24 complete.
 
 ## Components
 
@@ -139,9 +140,9 @@ Minimum restart sequence:
 | Phase | Component                               | Dependencies                                                              | Estimated Scope | Status            |
 | ----- | --------------------------------------- | ------------------------------------------------------------------------- | --------------- | ----------------- |
 | 1     | TraceEvent schema + `JSONLTraceSink`    | Existing `AtomicFile`, `TranscriptionSink`, `Mic.swift`, `SysAudio.swift` | M               | Done in `36375a5` |
-| 2     | `chronicle merge` over JSONL/finals     | Phase 1 trace schema                                                      | M               | Done              |
-| 3     | `BufferMulticast` + `StreamingDiarizer` | Phase 1 trace fields, Phase 2 merge can inspect output                    | L               | Next              |
-| 4     | `LocaleResolver` + locale trace events  | Phase 1 trace fields; ADR-0003                                            | L               | Pending           |
+| 2     | `chronicle merge` over JSONL/finals     | Phase 1 trace schema                                                      | M               | Done in `a4078ce` |
+| 3     | `BufferMulticast` + `StreamingDiarizer` | Phase 1 trace fields, Phase 2 merge can inspect output                    | L               | Done              |
+| 4     | `LocaleResolver` + locale trace events  | Phase 1 trace fields; ADR-0003                                            | L               | Next              |
 | 5     | Batch smoke + docs receipts             | Phases 1-4                                                                | M               | Pending           |
 
 ## Risks and Mitigations

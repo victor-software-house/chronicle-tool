@@ -58,6 +58,9 @@ struct SysAudio: AsyncParsableCommand {
   @Flag(name: .long, help: "Log CoreAudioTapSource buffer diagnostics every ~1.2s (buffer count + peak amplitude). Useful when audio appears silent.")
   var verbose: Bool = false
 
+  @Flag(name: .long, help: "Live speaker diarization via FluidAudio Sortformer. Attaches speakerId to JSONL trace events and prefixes finals with the speaker label.")
+  var diarize: Bool = false
+
   func run() async throws {
     guard #available(macOS 26.0, *) else {
       throw ValidationError("Requires macOS 26.0+.")
@@ -131,6 +134,27 @@ struct SysAudio: AsyncParsableCommand {
     let inline = self.inline
     let startMonotonic = ContinuousClock.now
 
+    // Optional live diarizer. When enabled, route PCM buffers through a
+    // multicast so the sidecar consumer and the diarizer each get an
+    // independent stream without re-reading the source.
+    let diarizer: SortformerStreamingDiarizer? = diarize
+      ? SortformerStreamingDiarizer(logTag: "sysaudio.diarize")
+      : nil
+    let pcmMulticast: BufferMulticast<PCMBufferRef>?
+    let sidecarStream: AsyncStream<PCMBufferRef>
+    let diarizerStream: AsyncStream<PCMBufferRef>?
+    if let _ = diarizer {
+      let mc = BufferMulticast<PCMBufferRef>()
+      pcmMulticast = mc
+      sidecarStream = mc.subscribe()
+      diarizerStream = mc.subscribe()
+      FileHandle.standardError.write(Data("[sysaudio] diarization enabled (Sortformer streaming)\n".utf8))
+    } else {
+      pcmMulticast = nil
+      sidecarStream = sysSource.pcmBuffers
+      diarizerStream = nil
+    }
+
     let consumeTask = Task {
       var lastVolatileLineLength = 0
       var volatileCount = 0
@@ -145,13 +169,20 @@ struct SysAudio: AsyncParsableCommand {
         let audioRange = start.isFinite && end.isFinite
           ? TraceAudioRange(startSeconds: start, endSeconds: end)
           : nil
+        let speakerId: String?
+        if let diarizer, let audioRange {
+          speakerId = await diarizer.speakerId(forRange: audioRange)
+        } else {
+          speakerId = nil
+        }
         for sink in composedSinks {
           await sink.didReceiveResult(
             text,
             isFinal: result.isFinal,
             wallclockOffsetMs: offsetMs,
             wallclock: wallclock,
-            audioRange: audioRange
+            audioRange: audioRange,
+            speakerId: speakerId
           )
         }
         if let traceSink {
@@ -192,12 +223,38 @@ struct SysAudio: AsyncParsableCommand {
     // Drain PCM buffers into the optional audio sidecar (ALAC / WAV /
     // Opus / rolling PCM scratch) concurrently with analyzer consumption.
     let pcmTask = Task {
-      for await ref in sysSource.pcmBuffers {
+      for await ref in sidecarStream {
         if let sink = audioSink {
           await sink.append(ref.buffer)
         }
       }
     }
+
+    // When diarization is enabled, fan the same PCM stream from the source
+    // into the multicast and feed the diarizer subscription.
+    let multicastFanTask: Task<Void, Never>? = pcmMulticast.map { mc in
+      Task {
+        for await ref in sysSource.pcmBuffers {
+          mc.yield(ref)
+        }
+        mc.finish()
+      }
+    }
+    let diarizerTask: Task<Void, Never>? = (diarizer.flatMap { d in
+      diarizerStream.map { stream in
+        Task {
+          for await ref in stream {
+            do {
+              try await d.ingest(ref)
+            } catch {
+              FileHandle.standardError.write(Data(
+                "[sysaudio.diarize] ingest failed: \(error)\n".utf8
+              ))
+            }
+          }
+        }
+      }
+    })
 
     do {
       try await sysSource.start()
@@ -239,6 +296,9 @@ struct SysAudio: AsyncParsableCommand {
       counts = try await consumeTask.value
     } catch {
       _ = await pcmTask.value
+      await multicastFanTask?.value
+      await diarizerTask?.value
+      if let diarizer { await diarizer.finish() }
       if let audioSink {
         await audioSink.finish()
       }
@@ -254,6 +314,9 @@ struct SysAudio: AsyncParsableCommand {
       throw error
     }
     _ = await pcmTask.value
+    await multicastFanTask?.value
+    await diarizerTask?.value
+    if let diarizer { await diarizer.finish() }
     if let audioSink {
       await audioSink.finish()
     }

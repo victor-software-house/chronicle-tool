@@ -19,12 +19,17 @@ public protocol TranscriptionSink: Sendable {
 
   /// A transcription result with optional audio timing metadata was emitted.
   /// Sinks that do not care about timing route through the volatile/final hooks.
+  ///
+  /// `speakerId`, when present, is the live diarizer's best guess for the
+  /// midpoint of `audioRange`. Sinks that do not care about speakers can
+  /// ignore it.
   func didReceiveResult(
     _ text: String,
     isFinal: Bool,
     wallclockOffsetMs: Double,
     wallclock: Date,
-    audioRange: TraceAudioRange?
+    audioRange: TraceAudioRange?,
+    speakerId: String?
   ) async
 
   /// Pipeline is shutting down. Flush + close.
@@ -41,7 +46,8 @@ extension TranscriptionSink {
     isFinal: Bool,
     wallclockOffsetMs: Double,
     wallclock: Date,
-    audioRange: TraceAudioRange?
+    audioRange: TraceAudioRange?,
+    speakerId: String?
   ) async {
     if isFinal {
       await didReceiveFinal(text, wallclockOffsetMs: wallclockOffsetMs, wallclock: wallclock)

@@ -247,4 +247,43 @@ struct JSONLTraceSinkTests {
     #expect(result.events.filter { $0.source == "sysaudio" }.count == 50)
     #expect(!result.recoveredTrailingLine)
   }
+
+  @Test("didReceiveResult propagates speakerId into the JSONL event")
+  func speakerIdPropagates() async throws {
+    let dir = try tmpDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let traceURL = dir.appendingPathComponent("trace.jsonl")
+
+    let sink = try JSONLTraceSink(
+      url: traceURL,
+      source: "mic",
+      sourceKind: .microphone,
+      streamId: "diarize-stream",
+      locale: "en-US",
+      preset: "progressiveTranscription"
+    )
+
+    await sink.didReceiveResult(
+      "hello",
+      isFinal: true,
+      wallclockOffsetMs: 100.0,
+      wallclock: Date(timeIntervalSince1970: 1_700_010_000),
+      audioRange: TraceAudioRange(startSeconds: 0.0, endSeconds: 1.0),
+      speakerId: "S1"
+    )
+    await sink.didReceiveResult(
+      "world",
+      isFinal: true,
+      wallclockOffsetMs: 200.0,
+      wallclock: Date(timeIntervalSince1970: 1_700_010_001),
+      audioRange: TraceAudioRange(startSeconds: 1.0, endSeconds: 2.0),
+      speakerId: nil
+    )
+
+    let result = try JSONLTraceSink.readRecoveringEvents(from: traceURL)
+    #expect(result.events.count == 2)
+    #expect(result.events[0].speakerId == "S1")
+    #expect(result.events[1].speakerId == nil)
+    #expect(result.events[0].audioRange == TraceAudioRange(startSeconds: 0.0, endSeconds: 1.0))
+  }
 }

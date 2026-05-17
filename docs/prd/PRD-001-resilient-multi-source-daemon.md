@@ -334,14 +334,30 @@ And the JSONL trace event objects carry a "speakerId" field
 And the speaker count converges to 2 within the first ~10 seconds
 ```
 
+**Implemented receipts (2026-05-17):**
+
+* `Sources/Chronicle/Core/Audio/BufferMulticast.swift` ships the generic `BufferMulticast<Element>` with `subscribe()` / `yield(_:)` / `finish()` and per-subscriber bounded queues (`bufferingOldest`) so a slow diarizer cannot block the sidecar or the source callback.
+* `Sources/Chronicle/Core/Diarize/StreamingDiarizer.swift` ships the `StreamingDiarizing` protocol, the pure `DiarizationTimelineLookup` value type (midpoint-inclusion lookup over `[DiarizationSegment]`), and the `SortformerStreamingDiarizer` actor that wraps FluidAudio's `SortformerDiarizer`, lazily downloads Sortformer CoreML models, runs an `AVAudioConverter` to 16 kHz mono float, throttles `process()` every \~1 s, and rebuilds the timeline-lookup snapshot from `finalizedSegments + tentativeSegments` after each update / `finalizeSession()`.
+* `Sources/Chronicle/Subcommands/Mic.swift` and `Sources/Chronicle/Subcommands/SysAudio.swift` accept `--diarize`. When set, they wrap `pcmBuffers` in a `BufferMulticast<PCMBufferRef>` so the existing sidecar consumer and the new diarizer consumer each get an independent stream. On each result, the subcommand queries `diarizer.speakerId(forRange:)` against the analyzer's audio range and passes the speaker label through `TranscriptionSink.didReceiveResult(..., speakerId:)`.
+* `TranscriptionSink.didReceiveResult` gained an additional `speakerId: String?` parameter. `JSONLTraceSink` records it in `TraceEvent.speakerId`; `FinalsAppendSink` overrides the default forwarder to prefix finals with `[Sx] ` when a speaker label is present; other sinks fall through to the existing volatile/final hooks unchanged.
+* `Tests/ChronicleTests/Audio/BufferMulticastTests.swift` covers single-subscriber pass-through, multi-subscriber fan-out, slow-subscriber drop, finish/drain semantics, late subscriber after finish, and subscriber-count lifecycle (6 tests).
+* `Tests/ChronicleTests/Diarize/StreamingDiarizerTests.swift` covers `DiarizationTimelineLookup` midpoint coverage, gap nil, exclusive end boundary, empty timeline, automatic sorting, exact start/end-boundary semantics, and overlapping segments (7 tests).
+* `Tests/ChronicleTests/Sinks/JSONLTraceSinkTests.swift` adds a `didReceiveResult` propagation test that asserts `speakerId` reaches the persisted JSONL event.
+* Live smoke against real microphone or system audio is deferred to operator-driven follow-up: mic permission plus a multi-MB FluidAudio Sortformer model download make CI smoke impractical; the alignment lookup and CLI plumbing are exercised by the unit tests above.
+
 **Files:**
 
 * `Sources/Chronicle/Core/Audio/BufferMulticast.swift` — fan analyzer, audio sidecar, and diarizer consumers without blocking the source callback.
-* `Sources/Chronicle/Core/Diarize/StreamingDiarizer.swift` — shared Sortformer-backed streaming helper behind a small protocol.
-* `Sources/Chronicle/Subcommands/Mic.swift` — add `--diarize`, spawn one diarizer for microphone stream, attach `speakerId` to trace/finals.
-* `Sources/Chronicle/Subcommands/SysAudio.swift` — same flag for system-output stream; keep diarizer per source, not on a raw mic+sys mix.
+* `Sources/Chronicle/Core/Diarize/StreamingDiarizer.swift` — streaming Sortformer-backed diarizer plus the pure `DiarizationTimelineLookup` value type.
+* `Sources/Chronicle/Core/Sinks/TranscriptionSink.swift` — protocol gained a `speakerId` parameter on `didReceiveResult`.
+* `Sources/Chronicle/Core/Sinks/JSONLTraceSink.swift` — records the new `speakerId` field.
+* `Sources/Chronicle/Core/Sinks/FinalsAppendSink.swift` — prefixes finals with `[Sx] ` when a speaker label is present.
+* `Sources/Chronicle/Subcommands/Mic.swift` — adds `--diarize`, spawns one diarizer for the microphone stream, attaches `speakerId` to trace/finals.
+* `Sources/Chronicle/Subcommands/SysAudio.swift` — same flag for the system-output stream; keeps the diarizer per source, not on a raw mic+sys mix.
+* `Sources/Chronicle/Subcommands/Live.swift` — forwards `speakerId: nil` through the new protocol so file-driven runs keep working.
 * `Tests/ChronicleTests/Audio/BufferMulticastTests.swift` — fan-out, slow consumer, finish/drain semantics.
-* `Tests/ChronicleTests/Diarize/StreamingDiarizerTests.swift` — speaker alignment on canned ranges.
+* `Tests/ChronicleTests/Diarize/StreamingDiarizerTests.swift` — timeline-lookup boundaries and alignment on canned ranges.
+* `Tests/ChronicleTests/Sinks/JSONLTraceSinkTests.swift` — `didReceiveResult(speakerId:)` propagation.
 
 ---
 
@@ -719,7 +735,7 @@ Order each step so the previous one's receipts feed the next.
 4. **Next functional batch — source-aware trace spine and transcript assembly** per [plan-functional-trace-merge-diarize-locale](../architecture/plan-functional-trace-merge-diarize-locale.md):
    1. **P3 — FR-2: `JSONLTraceSink` resilience. Done in `36375a5`.** Incremental source-aware trace via append-only JSONL. Unit + crash-recovery tests (`kill -9` / torn trailing line simulation). Current receipts: 46-test suite pass, release build pass, help checks pass, specdocs pass, file-driven live smoke wrote 13 valid events with `trace.dropped=0`.
    2. **P8 — FR-7: `merge` subcommand. Done.** `chronicle merge` consumes source-aware `trace.jsonl` (preferred) and legacy `finals.md` files, sorts by wallclock with stable tie-breaks, preserves source/locale/speaker labels, and renders log or markdown table output. End-to-end smoke verified two `chronicle live -o` traces merge into one chronological transcript.
-   3. **P5 — FR-4: live diarization. Next.** Reuses the existing FluidAudio dep. `BufferMulticast` + `StreamingDiarizer` are unit-testable with `MockAudioSource`. Test against the 2026-05-13 Zoom session offline first, then live. Once events carry `speakerId`, `chronicle merge` already prefixes finals with the speaker.
+   3. **P5 — FR-4: live diarization. Done.** `BufferMulticast` + `SortformerStreamingDiarizer` + `DiarizationTimelineLookup` are in place; `--diarize` is wired into `mic` and `sysaudio`; JSONL events carry `speakerId` and `finals.md` lines are prefixed with `[Sx]`; `chronicle merge` surfaces speakers in its log/markdown outputs.
    4. **P4 — FR-6: locale auto-detect. Pending.** Per [ADR-0003](../adr/ADR-0003-locale-resolution-policy.md). `LocaleResolver` with candidate-set restriction + 4-knob hysteresis. Unit tests on synthetic NL inputs covering: correct in-set switch, suppression of out-of-set candidates, suppression during cooldown, suppression below min-chars, pin-mode bypass.
 5. **P6 — FR-5: live tagging.** Once the trace spine, merge, diarization, and locale state are in place, tagging is the smallest layer on top via `ModelHost` + `TagsJSONLSink`.
 6. **P2 — FR-8: `chronicle repair`** (de-prioritised). Mostly needed for the `--audio-format wav` opt-in path and unusual CAF tail recovery; ALAC/CAF plus raw scratch reduces the default repair surface. Canned malformed-WAV corpus tests.

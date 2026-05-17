@@ -282,13 +282,15 @@ public actor JSONLTraceSink: TranscriptionSink {
     isFinal: Bool,
     wallclockOffsetMs: Double,
     wallclock: Date,
-    audioRange: TraceAudioRange?
+    audioRange: TraceAudioRange?,
+    speakerId: String?
   ) async {
     record(
       eventKind: isFinal ? .final : .volatile,
       text: text,
       monotonicOffsetMs: wallclockOffsetMs,
       wallclock: wallclock,
+      speakerId: speakerId,
       audioRange: audioRange
     )
   }

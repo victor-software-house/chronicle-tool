@@ -94,7 +94,8 @@ struct Live: AsyncParsableCommand {
             isFinal: result.isFinal,
             wallclockOffsetMs: offset,
             wallclock: wallclock,
-            audioRange: audioRange
+            audioRange: audioRange,
+            speakerId: nil
           )
         }
         if let traceSink {

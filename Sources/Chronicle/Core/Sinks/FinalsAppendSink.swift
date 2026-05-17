@@ -26,4 +26,18 @@ public actor FinalsAppendSink: TranscriptionSink {
     let line = "[\(isoFormatter.string(from: wallclock))] \(text)"
     try? AtomicFile.appendLine(line, to: url)
   }
+
+  public func didReceiveResult(
+    _ text: String,
+    isFinal: Bool,
+    wallclockOffsetMs: Double,
+    wallclock: Date,
+    audioRange: TraceAudioRange?,
+    speakerId: String?
+  ) async {
+    guard isFinal else { return }
+    let prefix = speakerId.map { "[\($0)] " } ?? ""
+    let line = "[\(isoFormatter.string(from: wallclock))] \(prefix)\(text)"
+    try? AtomicFile.appendLine(line, to: url)
+  }
 }
