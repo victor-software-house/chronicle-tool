@@ -86,9 +86,11 @@ run requires the operator to grant TCC to this bundle** (one-time):
    .build/release/chronicle.app/Contents/MacOS/chronicle sysaudio ...
    ```
 
-Without the grant, `chronicle sysaudio` fails fast in ~5 s with a clear
-`audioCaptureSilent` error pointing back to this section — it does
-**not** hang.
+Without the grant, `chronicle sysaudio` fails while creating or validating the
+CoreAudio tap with a clear System Audio Recording remediation. If the tap starts
+while no app is producing audio, Chronicle keeps running, logs a warning after
+~5 s, and re-warns every ~30 s instead of treating idle output as a permission
+failure.
 
 ### Robustness layer (Core/Audio/CoreAudioTapSource + Core/Runtime/AsyncTimeout)
 
@@ -97,7 +99,7 @@ Defensive layers around the live audio pipeline; do not remove without replacing
 | Layer | Defense |
 |---|---|
 | **L1.** `.app` bundle + `NSAudioCaptureUsageDescription` / `NSMicrophoneUsageDescription` | Gives Tahoe TCC a stable identity for system audio and mic prompts. |
-| **L2.** `CoreAudioTapSource.start()` first-valid-buffer watchdog (5 s) | Catches missing System Audio Recording permission or dead tap startup. Throws `audioCaptureSilent`. |
+| **L2.** CoreAudio tap startup validation + idle warning | Invalid tap setup fails with System Audio Recording remediation; idle output logs a ~5 s warning, then re-warns every ~30 s, but keeps capture running until audio starts. |
 | **L3.** Bounded `analyzer.finalizeAndFinishThroughEndOfInput()` (5 s + 2 s) | If the analyzer received only degenerate input, finalize would otherwise hang; we time out and fall through to `cancelAndFinishNow`. |
 
 ### Known cleanup debt from 2026-05-14 live-capture incident

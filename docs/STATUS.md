@@ -75,7 +75,7 @@ Three defensive layers prevent live audio capture failures from hanging the daem
 | Layer | Lives in | Catches |
 |---|---|---|
 | L1 stable bundle identity | `scripts/make-app.sh` + `Info.plist` | TCC prompts/grants for Microphone and System Audio Recording attach to `chronicle.app`, not a transient bare binary. |
-| L2 first-valid-buffer watchdog (5 s) | `Core/Audio/CoreAudioTapSource.swift` | Tap startup with no valid PCM flow (missing System Audio Recording grant, dead aggregate, or output routing issue). Throws `audioCaptureSilent`. |
+| L2 CoreAudio tap startup validation + idle warning | `Core/Audio/CoreAudioTapSource.swift` | Invalid tap setup fails with System Audio Recording remediation; idle output logs a ~5 s warning, then re-warns every ~30 s, while keeping capture running until audio starts. |
 | L3 bounded analyzer finalize (5 s + 2 s) | `Subcommands/Mic.swift` + `Subcommands/SysAudio.swift` | SpeechAnalyzer hung at shutdown after degenerate input. Falls through to `cancelAndFinishNow`. |
 
 Production operator path requires a proper `.app` bundle (built via

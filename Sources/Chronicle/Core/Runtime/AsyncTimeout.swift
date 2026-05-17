@@ -14,9 +14,9 @@ import Foundation
 /// responds to Task cancellation. Truly leaked OS continuations are
 /// **not** rescuable here — the inner await never resumes and Task
 /// cancellation has no entry point. For those system APIs, pair this
-/// timeout with a non-blocking preflight check or a post-start watchdog
-/// (`CoreAudioTapSource` uses a first-valid-buffer watchdog). This timeout
-/// wrapper acts as a defense-in-depth net for the cancellation-aware
+/// timeout with a non-blocking preflight check or post-start telemetry
+/// (`CoreAudioTapSource` keeps idle taps running and warns until audio flows).
+/// This timeout wrapper acts as a defense-in-depth net for the cancellation-aware
 /// majority of system APIs.
 ///
 /// Example:

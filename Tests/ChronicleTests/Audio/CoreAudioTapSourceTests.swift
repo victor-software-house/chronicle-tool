@@ -65,4 +65,21 @@ struct CoreAudioTapSourceTests {
       #expect(String(describing: error).contains("invalid audio format"))
     }
   }
+
+  @Test("formats no-buffer startup warning as non-fatal idle telemetry")
+  func formatsNoBufferWarningAsNonFatalIdleTelemetry() {
+    let warning = CoreAudioTapSource.noValidBuffersWarning(context: "startup", waitedSeconds: 5.0)
+
+    #expect(warning.contains("warning"))
+    #expect(warning.contains("still running"))
+    #expect(warning.contains("waiting for system audio"))
+    let recurringWarning = CoreAudioTapSource.noValidBuffersWarning(
+      context: "startup",
+      waitedSeconds: CoreAudioTapSource.recurringNoBufferWarningSeconds
+    )
+
+    #expect(!warning.contains("System Audio Recording permission is required"))
+    #expect(CoreAudioTapSource.recurringNoBufferWarningSeconds > CoreAudioTapSource.noBufferWarningSeconds)
+    #expect(recurringWarning.contains("\(CoreAudioTapSource.recurringNoBufferWarningSeconds)s"))
+  }
 }

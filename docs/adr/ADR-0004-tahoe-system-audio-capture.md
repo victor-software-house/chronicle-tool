@@ -414,7 +414,7 @@ There is no public TCC preflight API for `kTCCServiceAudioCapture`. Evidence:
 * OMI source comment: "For Core Audio Taps, there's no explicit permission API. The system will prompt when we first try to create a tap."
 * Kaset uses `CGPreflightScreenCaptureAccess()` as a proxy and notes the limitation.
 
-Chronicle decision: rely on `NSAudioCaptureUsageDescription` + first-use prompt + first-valid-buffer watchdog. **No private TCC SPI in shipped builds.** A `--verbose` diagnostic should report what permission state is observable from public API.
+Chronicle decision: rely on `NSAudioCaptureUsageDescription` + first-use prompt + tap-format validation. No-buffer startup is treated as idle output: Chronicle warns but keeps capture running until system audio flows. **No private TCC SPI in shipped builds.** A `--verbose` diagnostic should report what permission state is observable from public API.
 
 ### Synchronous-IPC reality
 
@@ -462,7 +462,7 @@ recent-audio recovery tier.
 ### Negative
 
 * CoreAudio tap implementation is lower-level and easier to leak resources. Mitigation: wrap tap + aggregate + IO proc in one `CoreAudioTapSource` owner with idempotent cleanup in every failure path; add startup orphan sweep.
-* No public system-audio TCC preflight API. Mitigation: include `NSAudioCaptureUsageDescription`, rely on first-start prompt, keep a first-valid-buffer watchdog.
+* No public system-audio TCC preflight API. Mitigation: include `NSAudioCaptureUsageDescription`, rely on first-start prompt, validate the tap ASBD, and keep no-buffer startup non-fatal so idle output does not masquerade as denial.
 * Compressed sidecar resilience comes from rotation/finalization plus raw scratch, not from assuming the active CAF is crash-proof. Mitigation: ALAC/WAV/Opus rotate by duration; raw scratch remains the recent-audio recovery tier.
 * Default-output-device change requires a listener + rebuild path. Mitigation: implement at the same time as `CoreAudioTapSource`.
 * Long-session all-zero-buffer drift mode requires RMS heartbeat. Mitigation: ship as `--verbose` diagnostic first; promote to auto-rebuild after observing real-world cadence.

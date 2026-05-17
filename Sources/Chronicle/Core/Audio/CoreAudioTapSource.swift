@@ -25,7 +25,8 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
 
   public let verbose: Bool
 
-  public static let firstValidBufferTimeoutSeconds: Double = 5.0
+  public static let noBufferWarningSeconds: Double = 5.0
+  public static let recurringNoBufferWarningSeconds: Double = 30.0
 
   private static let aggregateUIDBase = "com.victor-software-house.chronicle.sysaudio."
 
@@ -44,6 +45,7 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
   private var stopped = false
   private var rebuilding = false
   private var sawIOCallback = false
+  private var noBufferWarningGeneration = 0
 
   public init(
     analyzerFormat: AVAudioFormat,
@@ -77,14 +79,7 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
       throw error
     }
 
-    let watchStart = Date()
-    while !hasValidBuffer && Date().timeIntervalSince(watchStart) < Self.firstValidBufferTimeoutSeconds {
-      try? await Task.sleep(nanoseconds: 100_000_000)
-    }
-    if !hasValidBuffer {
-      stop()
-      throw CoreAudioTapSourceError.audioCaptureSilent(waitedSeconds: Self.firstValidBufferTimeoutSeconds)
-    }
+    scheduleNoBufferWarning(context: "startup")
   }
 
   public func stop() {
@@ -337,7 +332,7 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
     hasValidBuffer = false
     do {
       try startCoreAudio()
-      scheduleRebuildWatchdog()
+      scheduleNoBufferWarning(context: "rebuild")
     } catch {
       FileHandle.standardError.write(Data(
         "[sysaudio.tap] rebuild failed: \(error); stopping source\n".utf8
@@ -349,14 +344,26 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
     rebuilding = false
   }
 
-  private func scheduleRebuildWatchdog() {
-    listenerQueue.asyncAfter(deadline: .now() + Self.firstValidBufferTimeoutSeconds) { [weak self] in
-      guard let self, self.started, !self.stopped, !self.hasValidBuffer else { return }
-      FileHandle.standardError.write(Data(
-        "[sysaudio.tap] rebuild produced no valid buffers within \(Self.firstValidBufferTimeoutSeconds)s; stopping source\n".utf8
-      ))
-      self.stop()
+  private func scheduleNoBufferWarning(context: String) {
+    listenerQueue.async { [weak self] in
+      guard let self else { return }
+      self.noBufferWarningGeneration += 1
+      self.scheduleNoBufferWarning(context: context, delaySeconds: Self.noBufferWarningSeconds, generation: self.noBufferWarningGeneration)
     }
+  }
+
+  private func scheduleNoBufferWarning(context: String, delaySeconds: Double, generation: Int) {
+    listenerQueue.asyncAfter(deadline: .now() + delaySeconds) { [weak self] in
+      guard let self, self.started, !self.stopped, !self.hasValidBuffer, generation == self.noBufferWarningGeneration else { return }
+      FileHandle.standardError.write(Data(
+        Self.noValidBuffersWarning(context: context, waitedSeconds: delaySeconds).utf8
+      ))
+      self.scheduleNoBufferWarning(context: context, delaySeconds: Self.recurringNoBufferWarningSeconds, generation: generation)
+    }
+  }
+
+  static func noValidBuffersWarning(context: String, waitedSeconds: Double) -> String {
+    "[sysaudio.tap] warning: no valid buffers after \(waitedSeconds)s during \(context); still running and waiting for system audio\n"
   }
 
   private static func destroyStaleAggregateDevices() throws {
@@ -551,7 +558,6 @@ public enum CoreAudioTapSourceError: Error, CustomStringConvertible {
   case formatCreationFailed
   case converterUnavailable(from: AVAudioFormat, to: AVAudioFormat)
   case noDefaultOutputDevice
-  case audioCaptureSilent(waitedSeconds: Double)
 
   public var description: String {
     switch self {
@@ -567,8 +573,6 @@ public enum CoreAudioTapSourceError: Error, CustomStringConvertible {
       return "Could not build AVAudioConverter from CoreAudio tap format \(from) to analyzer format \(to)."
     case .noDefaultOutputDevice:
       return "No default output audio device is available."
-    case .audioCaptureSilent(let waitedSeconds):
-      return "CoreAudio tap started but delivered no valid audio buffers within \(waitedSeconds)s. \(Self.audioCaptureRemediation)"
     }
   }
 
