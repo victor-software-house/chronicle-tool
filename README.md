@@ -11,7 +11,7 @@ One Swift 6 binary, multiple subcommands, each exercising one Apple-official Tah
 | `transcribe` | `Speech.SpeechAnalyzer` + `SpeechTranscriber(.transcription)` | **273 ×** rt on 6870 s WAV (P0 parity: byte-identical) | $0 |
 | `live` | `Speech.SpeechAnalyzer` + `SpeechTranscriber(.progressiveTranscription)` (file) | **91 ×** rt, 856 volatile + 40 final events | $0 |
 | `mic` | `AVAudioEngine` input tap → `SpeechAnalyzer.start(inputSequence:)` | real-time mic stream | $0 |
-| `sysaudio` | `ScreenCaptureKit.SCStream` (audio-only) → `SpeechAnalyzer.start(inputSequence:)` | real-time system audio mix | $0 |
+| `sysaudio` | `CoreAudioTapSource` process tap → `SpeechAnalyzer.start(inputSequence:)` | real-time system audio mix smoke-tested with TTS | $0 |
 | `classify` | `SoundAnalysis.SNClassifyImageRequest` (built-in classifier v1) | **584 ×** rt | $0 |
 | `diarize` | FluidAudio (CoreML, Neural Engine) — only non-Apple dep | **787 ×** rt (post-refactor 872 ×), 5 speakers / 91 segments, byte-identical to spike | $0 |
 | `ocr` | `Vision.RecognizeDocumentsRequest` (Tahoe) / `RecognizeTextRequest` | 0.5 – 4 s per 2992×1934 image | $0 |
@@ -67,8 +67,7 @@ data, commit style), see [`AGENTS.md`](AGENTS.md).
   missing.
 - **`.app` bundle required for `mic` / `sysaudio`** — macOS Sequoia/Tahoe
   attributes audio TCC to a stable bundle identity. The bare
-  `swift build` binary has `Info.plist=not bound` and SCStream silently
-  delivers garbage placeholder buffers. Build the proper bundle:
+  `swift build` binary has `Info.plist=not bound`; build the proper bundle:
 
   ```sh
   scripts/make-app.sh
@@ -161,11 +160,12 @@ produces a single output directory per session. Total wall-clock for the
 
 Both `mic` and `sysaudio` are long-lived daemons that share the same
 pipeline shape. They differ only in the `AudioSource` implementation:
-`mic` taps `AVAudioEngine.inputNode`, `sysaudio` taps `SCStream` for the
-system default-output mix.
+`mic` taps `AVAudioEngine.inputNode`, `sysaudio` uses a CoreAudio process
+tap (`CATapDescription` + private aggregate device) for the system
+output mix.
 
 ```text
-AudioSource (MicAudioSource | SysAudioSource)
+AudioSource (MicAudioSource | CoreAudioTapSource)
   → BufferConverter (→ 16 kHz Int16 mono)
   → fan-out via two AsyncStreams:
       ├─ AsyncStream<AnalyzerInput> → SpeechAnalyzer + .progressiveTranscription [ANE]
@@ -191,13 +191,13 @@ shape follows [ADR-0001](docs/adr/ADR-0001-modular-pipeline-architecture.md).
 
 ### `sysaudio` capture scope
 
-`SCStream` captures the mix going to the macOS **default audio output
-device** at the time of capture. Apps routing audio to other devices (a
-specific HDMI out, an audio interface bypass, etc.) **bypass** capture.
-`--include-self-audio` opts chronicle's own audio back in (default is
-excluded to prevent feedback loops). When the captured WAV is silent but
-the daemon is otherwise healthy, run with `--verbose` to see per-buffer
-amplitude diagnostics every ~1.2 s.
+`CoreAudioTapSource` captures the mix flowing through the macOS **default
+audio output device** at the time of capture. Apps routing audio to other
+devices (a specific HDMI out, an audio interface bypass, etc.) may bypass
+capture. `--include-self-audio` opts chronicle's own audio back in (default
+is excluded to prevent feedback loops). When capture appears silent but the
+daemon is otherwise healthy, run with `--verbose` to see per-buffer amplitude
+diagnostics every ~1.2 s.
 
 ## Running it under the Pi process tool
 
@@ -244,7 +244,8 @@ Sources/Chronicle/
     ├── Audio/
     │   ├── AudioSource.swift      protocol: AsyncStreams of AnalyzerInput + PCMBufferRef
     │   ├── MicAudioSource.swift   AVAudioEngine impl
-    │   ├── SysAudioSource.swift   ScreenCaptureKit / SCStream impl
+    │   ├── CoreAudioTapSource.swift CoreAudio process tap impl
+    │   ├── SysAudioSource.swift   deprecated ScreenCaptureKit / SCStream impl
     │   └── BufferConverter.swift  AVAudioConverter wrapper
     ├── Speech/
     │   └── TranscriptionEngine.swift  SpeechTranscriber + SpeechAnalyzer factory
@@ -265,8 +266,8 @@ Sources/Chronicle/
 ```
 
 `Package.swift` embeds `Info.plist` via `-sectcreate` so the OS recognises
-the binary as a real app for TCC dialogs (required for the Microphone
-prompt on `mic` and the Screen Recording attribution on `sysaudio`).
+the binary as a real app for TCC dialogs (required for Microphone and
+System Audio Recording prompts).
 
 Future phases plug into the existing protocols:
 
@@ -299,11 +300,11 @@ public diarizer on Tahoe 26.
 swift test
 ```
 
-`Tests/ChronicleTests/` uses Swift Testing (`@Test`). 34 tests across 7
-suites (`AVAudioFile ALAC sink`, `OpusCAFSink`, `RollingPCMScratchSink`,
-`ScratchExporter`, `TCCPreflight`, `AsyncTimeout`, `EncodeOpus round-trip`).
-More tests land alongside each FR per the PRD-001 file breakdown
-(`JSONLTraceSinkTests`, `LocaleResolverTests`, `CoreAudioTapSourceTests`, etc.).
+`Tests/ChronicleTests/` uses Swift Testing (`@Test`). 40 tests across 9
+suites (`AVAudioFile ALAC sink`, `BufferConverter`, `CoreAudioTapSource`,
+`OpusCAFSink`, `RollingPCMScratchSink`, `ScratchExporter`, `TCCPreflight`,
+`AsyncTimeout`, `EncodeOpus round-trip`). More tests land alongside each FR per
+PRD-001 file breakdown (`JSONLTraceSinkTests`, `LocaleResolverTests`, etc.).
 
 ## P11 audio sidecar — ALAC default + scratch recovery
 

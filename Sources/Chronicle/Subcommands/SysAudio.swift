@@ -3,17 +3,17 @@ import AVFoundation
 import Foundation
 import Speech
 
-/// Live system-audio transcription via `SCStream` + `SpeechAnalyzer`
-/// progressive preset. Captures every app's audio output (system mix) and
-/// produces the same sidecar artefacts as `chronicle mic` (live snapshot
-/// + timestamped finals).
+/// Live system-audio transcription via CoreAudio process tap +
+/// `SpeechAnalyzer` progressive preset. Captures every app's audio output
+/// (system mix) and produces the same sidecar artefacts as `chronicle mic`
+/// (live snapshot + timestamped finals).
 ///
-/// Requires Screen Recording permission (`NSScreenCaptureUsageDescription`
-/// is set in Info.plist; macOS will prompt on first run).
+/// Requires System Audio Recording permission (`NSAudioCaptureUsageDescription`
+/// is set in Info.plist; macOS will prompt on first tap creation).
 struct SysAudio: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
     commandName: "sysaudio",
-    abstract: "Live system-audio transcription via ScreenCaptureKit + SpeechAnalyzer (on-device, requires Screen Recording permission)."
+    abstract: "Live system-audio transcription via CoreAudio process tap + SpeechAnalyzer (on-device, requires System Audio Recording permission)."
   )
 
   @Option(name: .long, help: "Locale, e.g. en-US. Locale auto-detect (ADR-0003) lands with FR-6/P4.")
@@ -52,7 +52,7 @@ struct SysAudio: AsyncParsableCommand {
   @Flag(name: .long, help: "Render volatile updates inline (TTY repaint) instead of one line each.")
   var inline: Bool = false
 
-  @Flag(name: .long, help: "Log SysAudioSource buffer diagnostics every ~1.2s (buffer count + peak amplitude). Useful when audio appears silent.")
+  @Flag(name: .long, help: "Log CoreAudioTapSource buffer diagnostics every ~1.2s (buffer count + peak amplitude). Useful when audio appears silent.")
   var verbose: Bool = false
 
   func run() async throws {
@@ -73,11 +73,11 @@ struct SysAudio: AsyncParsableCommand {
     }
     FileHandle.standardError.write(Data("[sysaudio] analyzerFormat=\(analyzerFormat)\n".utf8))
 
-    let sysSource = SysAudioSource(
+    let sysSource = CoreAudioTapSource(
       analyzerFormat: analyzerFormat,
-      excludeCurrentProcessAudio: !includeSelfAudio
+      excludeCurrentProcessAudio: !includeSelfAudio,
+      verbose: verbose
     )
-    sysSource.verbose = verbose
 
     // Optional raw-audio sidecar (writes the analyzer-format buffer; not
     // the SCStream native format).
@@ -164,7 +164,7 @@ struct SysAudio: AsyncParsableCommand {
 
     do {
       try await sysSource.start()
-    } catch let e as SysAudioSourceError {
+    } catch let e as CoreAudioTapSourceError {
       FileHandle.standardError.write(Data("[sysaudio] error: \(e.description)\n".utf8))
       throw ExitCode(2)
     }

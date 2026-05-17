@@ -2,11 +2,11 @@ import Foundation
 import AVFoundation
 import CoreGraphics
 
-/// Non-blocking TCC preflight checks for the audio capture surfaces
-/// chronicle uses. Each helper returns the current grant state without
-/// triggering a permission prompt and without making any blocking API
-/// call — safe to invoke before the real audio API (which, in the
-/// SCStream case, hangs forever on a leaked continuation if TCC is unset).
+/// Non-blocking TCC preflight checks for chronicle's capture surfaces.
+/// `microphone()` remains active for `MicAudioSource`. `screenRecording()`
+/// is retained for deprecated `SysAudioSource` / ScreenCaptureKit reference
+/// tests only; production `sysaudio` uses `CoreAudioTapSource` and the System
+/// Audio Recording first-use prompt instead.
 public enum TCCPreflight {
 
   /// Permission state for an audio capture surface.
@@ -24,8 +24,8 @@ public enum TCCPreflight {
 
   // MARK: - Screen Recording
 
-  /// Check Screen Recording TCC grant for this process. Used by
-  /// `SysAudioSource` before calling `SCStream.startCapture()`.
+  /// Check Screen Recording TCC grant for this process. Legacy helper for
+  /// deprecated `SysAudioSource` before calling `SCStream.startCapture()`.
   ///
   /// `CGPreflightScreenCaptureAccess` is a non-blocking lookup against
   /// the TCC database. Documented in Apple's Tahoe ScreenCaptureKit
@@ -39,8 +39,8 @@ public enum TCCPreflight {
   }
 
   /// Trigger the macOS permission prompt for Screen & System Audio Recording.
-  /// Call once at first launch; the system shows a dialog asking the user to
-  /// allow the app. No-op if already granted.
+  /// Legacy helper for the deprecated SCStream path. Production system-audio
+  /// capture prompts through CoreAudio process tap creation.
   @discardableResult
   public static func requestScreenRecording() -> Bool {
     CGRequestScreenCaptureAccess()

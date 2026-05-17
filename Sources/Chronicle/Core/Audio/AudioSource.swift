@@ -5,8 +5,8 @@ import Speech
 /// Source of audio buffers that the live transcription pipeline can consume.
 ///
 /// Conforming sources:
-/// - Configure their underlying capture mechanism (`AVAudioEngine`, `SCStream`,
-///   `AVAudioFile`, network, etc.) and resolve a *capture* format.
+/// - Configure their underlying capture mechanism (`AVAudioEngine`, CoreAudio
+///   process tap, `AVAudioFile`, network, etc.) and resolve a *capture* format.
 /// - Resolve an *analyzer* format compatible with the supplied transcribers
 ///   (almost always 16 kHz Int16 mono per `SpeechAnalyzer.bestAvailableAudioFormat`).
 /// - Yield converted `AnalyzerInput` values on `analyzerInputs` for the
@@ -40,8 +40,8 @@ public protocol AudioSource: AnyObject, Sendable {
   var pcmBuffers: AsyncStream<PCMBufferRef> { get }
 
   /// Begin capture. Idempotent: calling twice is a no-op. `async` so
-  /// sources that wrap async-throwing APIs (`SCStream.startCapture`) can
-  /// conform; sync sources (`AVAudioEngine.start`) simply don't await.
+  /// sources that wrap async-throwing system APIs can conform; sync sources
+  /// (`AVAudioEngine.start`) simply don't await.
   func start() async throws
 
   /// End capture. Idempotent. Closes the underlying streams so async

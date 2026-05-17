@@ -30,7 +30,7 @@ Sources/Chronicle/
 ├── Chronicle.swift           @main + ArgumentParser dispatch
 ├── Subcommands/              thin CLI veneers (one per `chronicle <verb>`)
 └── Core/
-    ├── Audio/                AudioSource protocol + MicAudioSource + SysAudioSource + BufferConverter
+    ├── Audio/                AudioSource protocol + MicAudioSource + CoreAudioTapSource + deprecated SysAudioSource + BufferConverter
     ├── Speech/               TranscriptionEngine (SpeechAnalyzer factory)
     ├── Diarize/              OfflineDiarizing protocol + FluidAudio impl
     ├── LLM/                  cached LanguageModelSession (ModelHost) + ContentTagger + Summarizer
@@ -60,17 +60,15 @@ swift test                        # Swift Testing target (ChronicleTests)
 
 `Package.swift` embeds `Info.plist` via `-sectcreate -Xlinker __info_plist`
 so the binary carries the TCC strings (`NSMicrophoneUsageDescription`,
-`NSSpeechRecognitionUsageDescription`, `NSScreenCaptureUsageDescription`).
+`NSSpeechRecognitionUsageDescription`, `NSAudioCaptureUsageDescription`).
 Do not remove the `unsafeFlags` linker block.
 
 ### Production: build the `.app` bundle (REQUIRED for `mic` / `sysaudio`)
 
 The bare `swift build` artefact has the Info.plist embedded in `__TEXT
-__info_plist` but `codesign -dvv` reports `Info.plist=not bound` — which
-causes `SCStream` to silently deliver placeholder buffers with garbage
-ASBDs when audio capture is attempted (macOS Sequoia/Tahoe attributes
-audio TCC to a stable bundle identity, and the bare binary doesn't
-have one).
+__info_plist` but `codesign -dvv` reports `Info.plist=not bound`. Build the
+proper app bundle before live capture so macOS can resolve a stable TCC identity
+for Microphone and System Audio Recording.
 
 ```sh
 scripts/make-app.sh              # builds .build/release/chronicle.app, adhoc-signs it
@@ -92,24 +90,22 @@ Without the grant, `chronicle sysaudio` fails fast in ~5 s with a clear
 `audioCaptureSilent` error pointing back to this section — it does
 **not** hang.
 
-### Robustness layer (Core/Audio/TCCPreflight + Core/Runtime/AsyncTimeout)
+### Robustness layer (Core/Audio/CoreAudioTapSource + Core/Runtime/AsyncTimeout)
 
-Three defensive layers around the live audio pipeline; do not remove
-without replacing:
+Defensive layers around the live audio pipeline; do not remove without replacing:
 
 | Layer | Defense |
 |---|---|
-| **L1.** `TCCPreflight.screenRecording()` / `.microphone()` | Non-blocking TCC check before any blocking system audio call. Fails fast with actionable remediation. |
-| **L2.** `SysAudioSource.start()` first-valid-buffer watchdog (5 s) | Catches the case where preflight passed but SCStream silently delivers garbage-ASBD placeholder buffers (audio TCC denied for the binary identity). Throws `audioCaptureSilent`. |
+| **L1.** `.app` bundle + `NSAudioCaptureUsageDescription` / `NSMicrophoneUsageDescription` | Gives Tahoe TCC a stable identity for system audio and mic prompts. |
+| **L2.** `CoreAudioTapSource.start()` first-valid-buffer watchdog (5 s) | Catches missing System Audio Recording permission or dead tap startup. Throws `audioCaptureSilent`. |
 | **L3.** Bounded `analyzer.finalizeAndFinishThroughEndOfInput()` (5 s + 2 s) | If the analyzer received only degenerate input, finalize would otherwise hang; we time out and fall through to `cancelAndFinishNow`. |
 
 ### Known cleanup debt from 2026-05-14 live-capture incident
 
 A live call forced an ad-hoc CoreAudio process tap binary at
 `/tmp/catap_record.swift` plus a bash supervisor at
-`/tmp/catap_supervisor.sh`. They are still running outside the repo as of
-the incident. **Do not merge that pattern in-place**; instead fold it into
-`Core/Audio/CoreAudioTapSource` per ADR-0004. Full numbered list in
+`/tmp/catap_supervisor.sh`. That pattern is now folded into
+`Core/Audio/CoreAudioTapSource` per ADR-0004. Remaining debt lives in
 [`docs/STATUS.md`](docs/STATUS.md#pending-cleanup-from-2026-05-14-live-capture-incident).
 
 Also during the incident, `kTCCServiceScreenCapture`,
@@ -168,11 +164,15 @@ launcher / etc.). Implications:
 
 - `mic` (Microphone): grant once at the parent terminal/cmux app. The
   Info.plist string surfaces on first run.
-- `sysaudio` (Screen Recording): same model — grant cmux.app or
-  Terminal.app, not chronicle directly. If buffers come back silent and
-  `--verbose` shows zero peak, TCC is the cause **even if `start()`
-  returned without throwing**. SCStream silently produces zero buffers
-  when permission is missing.
+- `sysaudio` (System Audio Recording): build `chronicle.app` with
+  `scripts/make-app.sh`, grant the bundle under System Settings → Privacy
+  & Security → Screen & System Audio Recording, then run via
+  `.build/release/chronicle.app/Contents/MacOS/chronicle`. If buffers come
+  back silent and `--verbose` shows zero peak, suspect TCC or output-device
+  routing first.
+
+The bare `swift build` binary is fine for tests and offline subcommands;
+use the app bundle for live capture.
 
 Future signed-bundle work (`chronicle.app` with stable
 `CFBundleIdentifier`) will give chronicle its own TCC identity. Not
@@ -250,8 +250,8 @@ Anti-patterns:
 - Renaming `out/full-session/*` receipts to "update" parity numbers. The
   receipts are immutable historical evidence; if your code changed
   behaviour, justify it in the PRD or fix the regression.
-- Removing `--verbose` flag plumbing from `SysAudioSource`. It's the
-  only way to diagnose silent captures.
+- Removing `--verbose` flag plumbing from `CoreAudioTapSource`. It's the
+  quickest way to diagnose silent captures.
 
 Quick triage:
 
@@ -259,6 +259,6 @@ Quick triage:
 |---|---|
 | Subcommand missing from `--help` | `Sources/Chronicle/Chronicle.swift` (dispatch list) |
 | `mic` runs but no transcription | mic TCC at parent app + `MicAudioSource` callback running + `analyzerFormat` mismatch |
-| `sysaudio` runs but `audio.wav` is silent | Screen Recording TCC at parent app — run with `--verbose` to see per-buffer peak amplitude diagnostics |
+| `sysaudio` runs but `audio.caf` is silent | System Audio Recording TCC for `chronicle.app`, default output routing, then `CoreAudioTapSource` verbose peak diagnostics |
 | `scratch-export` fails | `audio/scratch/<session>/format.json` plus contiguous numbered `.pcm` files; manifest must describe canonical interleaved PCM |
 | Diarize results differ from spike | `OfflineDiarizer` model version (FluidAudio `DiarizerModels.downloadIfNeeded`) — receipts assume the 2026-05-13 model version |

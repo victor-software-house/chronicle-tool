@@ -11,12 +11,11 @@ import Foundation
 /// OS precondition is in a bad state.
 ///
 /// **Important caveat**: this wrapper can only force-stop work that
-/// responds to Task cancellation. Truly leaked OS continuations (e.g.
-/// `SCStream.startCapture()` when Screen Recording TCC is unset) are
+/// responds to Task cancellation. Truly leaked OS continuations are
 /// **not** rescuable here — the inner await never resumes and Task
-/// cancellation has no entry point. For those system APIs the actual
-/// defense is a **non-blocking preflight check** (see `TCCPreflight`)
-/// that prevents the broken call from being made at all. This timeout
+/// cancellation has no entry point. For those system APIs, pair this
+/// timeout with a non-blocking preflight check or a post-start watchdog
+/// (`CoreAudioTapSource` uses a first-valid-buffer watchdog). This timeout
 /// wrapper acts as a defense-in-depth net for the cancellation-aware
 /// majority of system APIs.
 ///
@@ -24,11 +23,11 @@ import Foundation
 ///
 /// ```swift
 /// do {
-///   try await withTimeout(seconds: 10) {
-///     try await stream.startCapture()
+///   try await withTimeout(seconds: 10, label: "AudioDeviceStart") {
+///     try await startAudioDevice()
 ///   }
 /// } catch is TimeoutError {
-///   throw SysAudioSourceError.startTimedOut(seconds: 10)
+///   throw AudioStartError.timedOut(seconds: 10)
 /// }
 /// ```
 public struct TimeoutError: Error, CustomStringConvertible {

@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 # Build chronicle as a proper .app bundle with codesign-bound Info.plist.
 #
-# Why: macOS Sequoia/Tahoe attributes audio + screen capture TCC to a
+# Why: macOS Sequoia/Tahoe attributes audio capture TCC to a
 # stable bundle identity derived from the Info.plist binding. The bare
 # `swift build` artefact has the plist embedded in __TEXT __info_plist
-# but `codesign -dvv` reports `Info.plist=not bound` — which causes
-# SCStream to silently deliver placeholder buffers when audio capture is
-# attempted. A real .app bundle with `codesign --force --sign -` rebinds
-# the plist into the signature so TCC can resolve a stable identity.
+# but `codesign -dvv` reports `Info.plist=not bound`. A real .app bundle
+# with `codesign --force --sign -` rebinds the plist into the signature so
+# TCC can resolve a stable identity for Microphone and System Audio Recording.
 #
 # Usage:
 #   scripts/make-app.sh [-c|--configuration debug|release]

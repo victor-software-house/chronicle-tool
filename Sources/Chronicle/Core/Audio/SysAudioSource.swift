@@ -24,6 +24,9 @@ import Darwin
 ///   itself plays audio. Disable explicitly if the caller needs self-audio.
 /// - On Apple Silicon, system audio capture is hardware-accelerated and
 ///   costs effectively nothing in CPU.
+/// Deprecated: use `CoreAudioTapSource` for `chronicle sysaudio`. This
+/// SCStream implementation is retained only as reference evidence and bounded
+/// failure-surface coverage from the original P7 path.
 public final class SysAudioSource: NSObject, AudioSource, SCStreamOutput, @unchecked Sendable {
   public let analyzerFormat: AVAudioFormat
   public let analyzerInputs: AsyncStream<AnalyzerInput>

@@ -94,10 +94,15 @@ struct TCCPreflightTests {
       // Clean up so the test doesn't leave SCStream resources hanging.
       src.stop()
     } catch let e as SysAudioSourceError {
-      // Acceptable outcomes when TCC is granted but the system is in an
-      // unhappy state (no display, brief stall): the bounded error
-      // surface, never an indefinite hang.
-      Issue.record("start() failed despite TCC granted: \(e)")
+      // Acceptable outcomes when TCC is granted but deprecated SCStream is in
+      // an unhappy state (no display, brief stall): bounded error surface,
+      // never an indefinite hang. Production sysaudio uses CoreAudioTapSource.
+      switch e {
+      case .noDisplayAvailable, .startTimedOut, .audioCaptureSilent, .permissionDenied, .startFailed:
+        return
+      case .screenRecordingTCCDenied:
+        Issue.record("unexpected denied state after granted preflight: \(e)")
+      }
     }
   }
 

@@ -22,19 +22,38 @@ public final class BufferConverter: @unchecked Sendable {
 
   /// Convert `input` to `destinationFormat`. Returns `nil` on conversion error
   /// or zero-frame output. Safe to call repeatedly from the audio-thread tap.
+  ///
+  /// This is a streaming, per-buffer helper: `AVAudioConverter` may keep a small
+  /// amount of resampler delay internally between calls. Live capture accepts
+  /// that sub-buffer residual today; a future buffer-pool / explicit flush path
+  /// should drain converter tail frames before finishing long captures.
   public func convert(_ input: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
     let capacity = AVAudioFrameCount(
-      Double(input.frameLength) * destinationFormat.sampleRate / sourceFormat.sampleRate
+      ceil(Double(input.frameLength) * destinationFormat.sampleRate / sourceFormat.sampleRate)
     )
     guard capacity > 0,
           let output = AVAudioPCMBuffer(pcmFormat: destinationFormat, frameCapacity: capacity)
     else { return nil }
 
+    var didProvideInput = false
     var error: NSError?
     let status = converter.convert(to: output, error: &error) { _, outStatus in
+      if didProvideInput {
+        outStatus.pointee = .noDataNow
+        return nil
+      }
+      didProvideInput = true
       outStatus.pointee = .haveData
       return input
     }
-    return status == .haveData ? output : nil
+    guard error == nil, output.frameLength > 0 else { return nil }
+    switch status {
+    case .haveData, .inputRanDry, .endOfStream:
+      return output
+    case .error:
+      return nil
+    @unknown default:
+      return nil
+    }
   }
 }

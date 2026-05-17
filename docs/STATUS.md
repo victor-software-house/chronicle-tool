@@ -5,14 +5,14 @@ plan". Authoritative scope and acceptance criteria live in
 [`PRD-001`](prd/PRD-001-resilient-multi-source-daemon.md); this is the
 operator-facing dashboard.
 
-Last refresh: 2026-05-17 — P11 ALAC production sidecar is implemented and the reuse boundary is documented in [ADR-0005](adr/ADR-0005-audio-sidecar-reuse-boundary.md). Opus failed the 6870 s Zoom WER parity gate; ALAC with rounded Int16 source preserved decoded PCM/WER while shrinking the reference to ~91.3 MB. Native 32-bit-float public speech search did not produce a suitable longer transcripted corpus and no longer blocks the decision. `AVAudioFile` ALAC/CAF probe passed on the 6870 s reference (`alac`, `s16p`, 16 kHz mono, 91,316,352 bytes, `cmp-ok` against source PCM). Mic/sysaudio now default to composite ALAC + raw scratch, with audio-duration-based `--rotate-audio` segmenting for ALAC/WAV/Opus. Live mic smoke produced two readable ALAC CAF segments plus scratch PCM. Reuse audit conclusion: keep Apple-native writers plus Chronicle-owned rotation/scratch policy; third-party Swift frameworks and runtime media processes either target a different artifact model or still leave scratch/recovery policy to Chronicle. `chronicle scratch-export` now automates raw-PCM scratch recovery to WAV or ALAC-in-CAF.
+Last refresh: 2026-05-17 — `chronicle sysaudio` now uses `CoreAudioTapSource` (CoreAudio process tap + private aggregate device) per [ADR-0004](adr/ADR-0004-tahoe-system-audio-capture.md), replacing the SCStream path in the CLI. Live smoke through `chronicle.app` captured TTS via CoreAudio tap, emitted a final transcript, wrote readable ALAC-in-CAF, and wrote raw scratch PCM. P11 ALAC production sidecar is implemented and the reuse boundary is documented in [ADR-0005](adr/ADR-0005-audio-sidecar-reuse-boundary.md). Opus failed the 6870 s Zoom WER parity gate; ALAC with rounded Int16 source preserved decoded PCM/WER while shrinking the reference to ~91.3 MB. `chronicle scratch-export` automates raw-PCM scratch recovery to WAV or ALAC-in-CAF.
 
 ## Phase board
 
 | # | Phase | FR | Status | Headline acceptance |
 |---|---|---|---|---|
 | **P0** | Modular refactor + test target | — | ✔ **done** | Byte-identical parity vs 2026-05-13 spike on `transcribe` + `diarize`; 13 `Core/` modules; 11 subcommands as thin veneers; `ChronicleTests` target wired. |
-| **P7** | `chronicle sysaudio` subcommand | FR-3 | ✔ **done** | `SCStream` audio-only via `Core/Audio/SysAudioSource`; 4/4 TTS sentences captured exact; Info.plist `NSScreenCaptureUsageDescription` added. |
+| **P7** | `chronicle sysaudio` subcommand | FR-3 | ✔ **done** | `CoreAudioTapSource` via CoreAudio process tap (`CATapDescription` + private aggregate device) feeds the same `SpeechAnalyzer` pipeline as mic; live TTS smoke produced a final transcript and wrote readable ALAC + scratch sidecars. |
 | **P11** | ALAC production audio sink | FR-1 | ✔ **done** | `Core/Sinks/AVAudioFileALACSink` + `Core/Sinks/RollingPCMScratchSink` (ADR-0002 amended 2026-05-16: ALAC default after Opus WER regression; ADR-0005 documents the reuse-boundary audit); `AVAudioFile` writer probe passed WER/byte-compare evidence. Default `--audio-format` is composite ALAC + scratch; `--rotate-audio` segments ALAC/WAV/Opus by audio duration. Live mic smoke produced two readable ALAC CAF segments plus scratch PCM. |
 | **P2a** | Scratch export recovery | FR-8 | ✔ **done** | `chronicle scratch-export <scratch-dir> -o recovered.wav|.caf` reads `format.json`, validates canonical interleaved raw PCM, requires contiguous `.pcm` segments, trims partial trailing frames, and writes WAV or ALAC-in-CAF. |
 | P3 | JSONL incremental trace | FR-2 | ⏳ pending | `Core/Sinks/JSONLTraceSink` via `AtomicFile.appendJSONLine`; `kill -9` mid-write leaves ≤ 1 torn line. |
@@ -47,36 +47,35 @@ A live call required immediate sys-audio recording. SCStream audio path on
 Tahoe 26.5 refused to deliver real buffers for `chronicle.app` even after
 manual TCC.db writes (both user + system). Fell back to an ad-hoc CoreAudio
 process tap binary at `/tmp/catap_record.swift` plus a bash supervisor at
-`/tmp/catap_supervisor.sh`. Recording worked. The bypass is **not**
-production-clean and must be folded back into the repo.
+`/tmp/catap_supervisor.sh`. Recording worked. The bypass has now been folded
+into `Core/Audio/CoreAudioTapSource`; remaining cleanup is tracked below.
 
-| # | Cleanup item | Where |
-|---|---|---|
-| 1 | Productionise `/tmp/catap_record.swift` into `Core/Audio/CoreAudioTapSource` per ADR-0004 (replaces or co-exists with `SysAudioSource`) | `Sources/Chronicle/Core/Audio/` |
-| 2 | Resilient WAV writes: header repatch every N s + `fsync` for every audio sidecar (mic + sys). Current `mic.wav` only has correct header on clean exit; SIGKILL leaves header at size 0 | `Core/Sinks/WAVSidecarSink.swift` |
-| 3 | Segment rotation in supervisor / audio sink (currently one segment per process lifetime) — cuts crash window to ~1 segment | `Core/Sinks/` |
-| 4 | Default-output-device change listener (`kAudioHardwarePropertyDefaultOutputDevice`) — rebuild tap on switch (AirPods sleep/wake, Bluetooth swap) | `Core/Audio/CoreAudioTapSource` |
-| 5 | Remove the direct `tccd` TCC.db writes added during the incident; chronicle.app should be authorised through System Settings (or first-launch `CGRequestScreenCaptureAccess()` + CoreAudio tap permission prompt) | `~/Library/Application Support/com.apple.TCC/TCC.db`, `/Library/Application Support/com.apple.TCC/TCC.db` |
-| 6 | Live transcription for sys path: pipe CoreAudio tap PCM into `SpeechAnalyzer` the same way `Mic.swift` does, so `finals.sys.md` is no longer empty | `Subcommands/SysAudio.swift` |
-| 7 | Header-recovery helper for orphan WAVs (recovered the 200 MB `catap_sys.wav` by hand via Python; should be one of `chronicle repair` modes) | `Subcommands/Repair.swift` (FR-8) |
-| 8 | Remove `CGRequestScreenCaptureAccess()` call from `SysAudioSource.start()` once the new tap backend lands; it was added during the incident and is irrelevant to CoreAudio taps | `Core/Audio/SysAudioSource.swift` |
-| 9 | Garbage-collect `sys-HHMMSS.wav` 4 KB rejects from `~/Movies/pi-captures/sessions/20260514-112533-live/audio/` (already done locally, watch for regression once retry watchdog lands in repo) | session dir |
-| 10 | Add a `scripts/reset-tcc.sh` dev helper that runs `tccutil reset ScreenCapture <bundle-id>` + `tccutil reset Microphone <bundle-id>` + `tccutil reset AudioCapture <bundle-id>` whenever the chronicle.app code-signing hash changes. macOS Sequoia/Tahoe TCC keys grants by signature hash; every ad-hoc rebuild silently invalidates prior grants (entries appear granted in System Settings but are rejected at runtime). This is the operational countermeasure for the same root cause that the 2026-05-14 direct TCC.db writes failed to address. Source: ADR-0004 research-validation addendum gotcha #1. | `scripts/reset-tcc.sh` |
-| 11 | Pre-allocate `AVAudioPCMBuffer` pool inside `CoreAudioTapSource` IOProc. Allocating buffers inside the IOProc block violates real-time-thread safety (`tenequm/blackbox` 0.7.0 explicitly documents this as spec item D5). Pattern: pre-allocate N buffers at start, use a lock-free SPSC ring to hand them between the IOProc thread and the consumer task. Source: ADR-0004 research-validation addendum gotcha #5. | `Core/Audio/CoreAudioTapSource.swift` |
-| 12 | Guard `kAudioHardwarePropertyDefaultOutputDevice` listener against **self-induced** device-change notifications. On Tahoe the audio subsystem fires device-change notifications much more aggressively than on Sequoia, and `AudioHardwareCreateAggregateDevice` is itself a device-change event. Naive rebuild-on-every-event = infinite rebuild loop. Pattern: cache the resolved default-output `AudioObjectID` after each rebuild and only act when the *resolved AudioObjectID* changes — not on every property-changed callback. References: [Beingpax/VoiceInk PR #517](https://github.com/Beingpax/VoiceInk/pull/517) (Tahoe notification storm), [pablo-health/AudioCaptureKit README](https://github.com/pablo-health/AudioCaptureKit) (aggregate-device-creation self-fires). Source: ADR-0004 research-validation addendum gotcha #6. | `Core/Audio/CoreAudioTapSource.swift` |
+| # | Cleanup item | Status | Where |
+|---|---|---|---|
+| 1 | Productionise `/tmp/catap_record.swift` into `Core/Audio/CoreAudioTapSource` per ADR-0004 | ✔ done | `Sources/Chronicle/Core/Audio/CoreAudioTapSource.swift` |
+| 2 | Resilient WAV writes: header repatch every N s + `fsync` for every audio sidecar (mic + sys). Current `mic.wav` only has correct header on clean exit; SIGKILL leaves header at size 0 | pending / superseded for default ALAC + scratch | `Core/Sinks/WAVSidecarSink.swift` |
+| 3 | Segment rotation in supervisor / audio sink — cuts crash window to ~1 segment | ✔ done for ALAC/WAV/Opus via `--rotate-audio` | `Core/Sinks/AudioSidecarCombinators.swift` |
+| 4 | Default-output-device change listener (`kAudioHardwarePropertyDefaultOutputDevice`) — rebuild tap on switch (AirPods sleep/wake, Bluetooth swap) | ✔ done with resolved-ID guard | `Core/Audio/CoreAudioTapSource.swift` |
+| 5 | Remove the direct `tccd` TCC.db writes added during the incident; chronicle.app should be authorised through System Settings | pending operator cleanup | `~/Library/Application Support/com.apple.TCC/TCC.db`, `/Library/Application Support/com.apple.TCC/TCC.db` |
+| 6 | Live transcription for sys path: pipe CoreAudio tap PCM into `SpeechAnalyzer` the same way `Mic.swift` does, so `finals.sys.md` is no longer empty | ✔ done | `Subcommands/SysAudio.swift` |
+| 7 | Header-recovery helper for orphan WAVs (recovered the 200 MB `catap_sys.wav` by hand via Python; should be one of `chronicle repair` modes) | pending P2b | `Subcommands/Repair.swift` (FR-8) |
+| 8 | Remove `CGRequestScreenCaptureAccess()` call from active sysaudio path once the new tap backend lands | ✔ done by switching CLI to `CoreAudioTapSource`; legacy `SysAudioSource` remains deprecated | `Subcommands/SysAudio.swift` |
+| 9 | Garbage-collect `sys-HHMMSS.wav` 4 KB rejects from `~/Movies/pi-captures/sessions/20260514-112533-live/audio/` | done locally; watch for regression | session dir |
+| 10 | Add a `scripts/reset-tcc.sh` dev helper that runs `tccutil reset ScreenCapture <bundle-id>` + `tccutil reset Microphone <bundle-id>` + `tccutil reset AudioCapture <bundle-id>` whenever the chronicle.app code-signing hash changes | pending | `scripts/reset-tcc.sh` |
+| 11 | Pre-allocate `AVAudioPCMBuffer` pool inside `CoreAudioTapSource` IOProc; current code still materialises/converts per callback and is acceptable only as a first productionised source | pending hardening | `Core/Audio/CoreAudioTapSource.swift` |
+| 12 | Guard `kAudioHardwarePropertyDefaultOutputDevice` listener against self-induced device-change notifications | ✔ done with cached resolved default-output `AudioObjectID` | `Core/Audio/CoreAudioTapSource.swift` |
 
 Live session being captured during the incident lives at:
 `~/Movies/pi-captures/sessions/20260514-112533-live/`.
 
 ## Robustness layer (audio pipeline)
 
-Three defensive layers prevent the macOS-Tahoe SCStream + audio-TCC
-failure mode that previously hung the daemon at "stopping..." forever:
+Three defensive layers prevent live audio capture failures from hanging the daemon:
 
 | Layer | Lives in | Catches |
 |---|---|---|
-| L1 preflight | `Core/Audio/TCCPreflight.swift` | TCC denied at known APIs (CGPreflightScreenCaptureAccess, AVAudioApplication recordPermission). Fails before any blocking syscall. |
-| L2 first-valid-buffer watchdog (5 s) | `Core/Audio/SysAudioSource.swift` | SCStream silently delivering placeholder buffers when audio TCC denied for the binary identity. Throws `audioCaptureSilent`. |
+| L1 stable bundle identity | `scripts/make-app.sh` + `Info.plist` | TCC prompts/grants for Microphone and System Audio Recording attach to `chronicle.app`, not a transient bare binary. |
+| L2 first-valid-buffer watchdog (5 s) | `Core/Audio/CoreAudioTapSource.swift` | Tap startup with no valid PCM flow (missing System Audio Recording grant, dead aggregate, or output routing issue). Throws `audioCaptureSilent`. |
 | L3 bounded analyzer finalize (5 s + 2 s) | `Subcommands/Mic.swift` + `Subcommands/SysAudio.swift` | SpeechAnalyzer hung at shutdown after degenerate input. Falls through to `cancelAndFinishNow`. |
 
 Production operator path requires a proper `.app` bundle (built via
@@ -89,7 +88,7 @@ TCC resolves a stable identity. See AGENTS.md.
 
 | Protocol | Today's impls | Future impls |
 |---|---|---|
-| `AudioSource` | `MicAudioSource` (AVAudioEngine), `SysAudioSource` (SCStream) | `FileAudioSource` (P5 testing); RTSP / Bluetooth (post-PRD) |
+| `AudioSource` | `MicAudioSource` (AVAudioEngine), `CoreAudioTapSource` (CoreAudio process tap), `SysAudioSource` (deprecated SCStream fallback not used by CLI) | `FileAudioSource` (P5 testing); RTSP / Bluetooth (post-PRD) |
 | `TranscriptionSink` | `LiveFileSink`, `FinalsAppendSink` | `JSONLTraceSink` (P3), `TagsJSONLSink` (P6) |
 | audio sidecar sink (`AudioSidecarSink`) | inline `AVAudioFile` WAV in subcommands (today) | `AVAudioFileALACSink` + `RollingPCMScratchSink` (P11); `WAVSidecarSink` extracted as opt-in for debug/export; `OpusCAFSink` retained opt-in only; `ExtAudioFile` ALAC fallback only if `AVAudioFile` regresses |
 | `OfflineDiarizing` | `OfflineDiarizer` (FluidAudio VBx) | — |
@@ -118,7 +117,7 @@ Default order is the table above. If you have a real reason to deviate:
 | Build fails | `Package.swift` (linker flags / `unsafeFlags` for Info.plist embed) + the file the compiler points to |
 | Subcommand missing from `--help` | `Sources/Chronicle/Chronicle.swift` (dispatch list) |
 | `mic` runs but no transcription | mic TCC at parent app + `MicAudioSource` callback running + `analyzerFormat` mismatch |
-| `sysaudio` runs but `audio.wav` is silent | Screen Recording TCC at parent app — run with `--verbose` to see per-buffer peak amplitude |
+| `sysaudio` runs but `audio.caf` is silent | System Audio Recording TCC for `chronicle.app`, default output routing, then `CoreAudioTapSource` verbose peak diagnostics |
 | Diarize results differ from spike | `OfflineDiarizer` model version (FluidAudio `DiarizerModels.downloadIfNeeded`) — receipts assume the 2026-05-13 model version |
 | Tag / Summarize errors with "unavailable" | Apple Intelligence toggle in System Settings; `ModelHostError.remediation` carries the user-visible hint |
 | Spec doc validation fails | `specdocs_validate` for the exact path + line |
@@ -131,7 +130,7 @@ Open phases map to bare numeric task IDs in the Pi task tracker:
 |---|---|---|
 | P7 sysaudio | #27 | archived/done |
 | P11 ALAC production | #32 | archived/done |
-| P2a scratch export | #22 | in progress |
+| P2a scratch export | #22 | done |
 | P1 WAV transitional reconciliation | #21 | open |
 | P3 JSONL | #23 | open |
 | P4 LocaleResolver | #24 | open |
@@ -140,11 +139,13 @@ Open phases map to bare numeric task IDs in the Pi task tracker:
 | P8 merge | #28 | open |
 | P9 verification | #29 | open |
 | P10 docs receipts | #30 | open |
-| CoreAudioTapSource cleanup | #55 | open |
+| CoreAudioTapSource cleanup | #55 | done |
 | Scratch fsync policy | #72 | open |
 | Active ALAC CAF tail repair research | #73 | open |
 | Sidecar fanout profiling | #74 | open |
 | Scratch allocation profiling | #75 | open |
+| Retire deprecated SCStream sysaudio source | #76 | open |
+| Drain BufferConverter residual frames on stop | #77 | open |
 
 Use `TaskRead taskIds=["<id>"]` for full acceptance criteria; use
 `TaskRead` with no args to list everything.
