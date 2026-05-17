@@ -2,7 +2,7 @@
 
 Tahoe Neural Engine toolkit for the [chronicle](https://github.com/victor-software-house/research-chronicle) project.
 
-One Swift 6 binary, multiple subcommands, each exercising one Apple-official Tahoe / macOS 26 ML framework on-device. Free, private, ANE-accelerated. Spike validated end-to-end (see [`spikes/`](spikes/)); production direction set by [PRD-001](docs/prd/PRD-001-resilient-multi-source-daemon.md) and three ADRs.
+One Swift 6 binary, multiple subcommands, each exercising one Apple-official Tahoe / macOS 26 ML framework on-device. Free, private, ANE-accelerated. Spike validated end-to-end (see [`spikes/`](spikes/)); production direction set by [PRD-001](docs/prd/PRD-001-resilient-multi-source-daemon.md) and the ADRs under [`docs/adr/`](docs/adr/).
 
 ## Subcommands — all working
 
@@ -20,12 +20,15 @@ One Swift 6 binary, multiple subcommands, each exercising one Apple-official Tah
 | `translate` | `Translation.TranslationSession` + `NaturalLanguage.NLLanguageRecognizer` | 1 – 22 s | $0 (after one-time language-pack install) |
 | `describe` | `Vision` 7-request fan-out + `FoundationModels` `@Generable` narration | 1 – 2.5 s per image | $0 |
 | `encode-opus` | `AVFoundation.AVAudioConverter` (Opus) + `AudioFileWritePackets` (CAF) via `OpusCAFSink` | **145 ×** rt on 5 s sine (debug build); P11 verification helper | $0 |
+| `encode-alac` | `AVFoundation.AVAudioFile` ALAC-in-CAF via `AVAudioFileALACSink` | **long-reference verified**; P11 parity helper | $0 |
+| `scratch-export` | raw PCM scratch manifest + `AVAudioFile`/`AVAudioFileALACSink` | sample-exact unit coverage for Int16/Float32 recovery | $0 |
 
-All twelve subcommands run on the Neural Engine, all are validated against
-real chronicle data captured during the 2026-05-13 Zoom spike. See the
-per-POC receipts under [`spikes/`](spikes/) for the spike-era exact numbers; the
-P0 modular refactor preserved byte-identical outputs for `transcribe`
-and `diarize` against those receipts.
+ML/capture subcommands are validated against real chronicle data captured during
+the 2026-05-13 Zoom spike. Helper subcommands (`encode-*`, `scratch-export`) are
+covered by focused sidecar/export tests. See the per-POC receipts under
+[`spikes/`](spikes/) for the spike-era exact numbers; the P0 modular refactor
+preserved byte-identical outputs for `transcribe` and `diarize` against those
+receipts.
 
 ## Spec, ADRs, and rollout
 
@@ -34,12 +37,14 @@ multi-source chronicle daemon. The spec set lives under [`docs/`](docs/):
 
 - [`docs/prd/PRD-001-resilient-multi-source-daemon.md`](docs/prd/PRD-001-resilient-multi-source-daemon.md) — the master PRD (FRs, NFRs, rollout plan, verification appendix).
 - [`docs/adr/ADR-0001-modular-pipeline-architecture.md`](docs/adr/ADR-0001-modular-pipeline-architecture.md) — protocol-oriented core with subcommands as thin CLI veneers. **Implemented (P0).**
-- [`docs/adr/ADR-0002-audio-storage-format.md`](docs/adr/ADR-0002-audio-storage-format.md) — Opus 24 kbps / Ogg as default audio codec + raw-PCM rolling scratch + ALAC export. **Pending (P11).**
+- [`docs/adr/ADR-0002-audio-storage-format.md`](docs/adr/ADR-0002-audio-storage-format.md) — ALAC-in-CAF default with raw-PCM rolling scratch; Opus retained only as opt-in/export after WER regression. **Implemented (P11).**
 - [`docs/adr/ADR-0003-locale-resolution-policy.md`](docs/adr/ADR-0003-locale-resolution-policy.md) — candidate-set restriction + 4-knob hysteresis for `--locale auto`. **Pending (P4).**
+- [`docs/adr/ADR-0005-audio-sidecar-reuse-boundary.md`](docs/adr/ADR-0005-audio-sidecar-reuse-boundary.md) — Apple-native sidecar writer + Chronicle-owned rotation/scratch/recovery boundary. **Accepted.**
 
-Current state vs PRD-001 rollout: **P0 (modular refactor) done; P7
-(sysaudio) done. Next: P11 (Opus production sink) + parity test against the
-WAV baseline.**
+Current state vs PRD-001 rollout: **P0 (modular refactor), P7 (sysaudio), and
+P11 (ALAC production sidecar) are done. `scratch-export` now automates raw-PCM
+scratch recovery; remaining FRs are JSONL trace, locale resolver, streaming
+diarization, live tagging, merge, end-to-end verification, and final docs.**
 
 For a one-screen overview of every phase + current task state, see
 [`docs/STATUS.md`](docs/STATUS.md). For agent / contributor operational
@@ -137,6 +142,12 @@ swift build -c release
 
 # Describe an arbitrary image in prose.
 .build/release/chronicle describe -i photo.jpg -o out/photo.json
+
+# Recover recent audio from raw PCM scratch into WAV.
+.build/release/chronicle scratch-export out/audio/scratch/session -o out/recovered.wav
+
+# Or recover into ALAC-in-CAF.
+.build/release/chronicle scratch-export out/audio/scratch/session -o out/recovered.caf --format alac
 ```
 
 ## End-to-end pipeline
@@ -162,11 +173,11 @@ AudioSource (MicAudioSource | SysAudioSource)
       │        ├─ LiveFileSink     → live.md     (atomic rewrite per event, ~150 ms cadence)
       │        ├─ FinalsAppendSink → finals.md   (timestamped append per phrase)
       │        └─ [JSONLTraceSink — P3]
-      └─ AsyncStream<PCMBufferRef>  → audio sidecar sinks (today: WAV; P11: Opus + scratch).
+      └─ AsyncStream<PCMBufferRef>  → audio sidecar sinks (default: ALAC-in-CAF + raw PCM scratch).
 ```
 
-Resource cost per daemon: **~0.5–0.8 % CPU, ~30 MB RSS, ~115 MB/h of
-lossless WAV (Opus drops this to ~12 MB/h once P11 lands), ~10 KB/s of
+Resource cost per daemon: **~0.5–0.8 % CPU, ~30 MB RSS, ALAC sidecar size
+varies by source but the 6870 s reference compressed to ~91.3 MB, ~10 KB/s of
 text sidecars, ~150 ms volatile latency, 5–30 s final latency.** The model
 runs off-process on the ANE; the daemon just does the tap + convert +
 fan-out + file writes. On M4 Pro / 48 GB the ANE + RAM headroom supports
@@ -265,12 +276,18 @@ Future phases plug into the existing protocols:
   `Core/Diarize/StreamingDiarizer.swift` consuming `PCMBufferRef`.
 - **P6 (FR-5) live tagging** — `Core/Sinks/TagsJSONLSink.swift` calling
   the existing `ContentTagger.tagText`.
+
+Implemented sidecar pieces:
+
 - **P11 (FR-1 production) ALAC audio sidecar** —
   `Core/Sinks/AVAudioFileALACSink.swift` +
   `Core/Sinks/RollingPCMScratchSink.swift` +
   `Core/Sinks/AudioSidecarCombinators.swift`.
   The default `--audio-format alac` writes rotated ALAC-in-CAF segments and a
   parallel raw-PCM scratch ring.
+- **FR-8 scratch recovery helper** — `chronicle scratch-export` reads
+  `audio/scratch/<session>/format.json` plus contiguous `.pcm` segments and
+  emits WAV or ALAC-in-CAF.
 
 Diarization is the only non-Apple dependency:
 [FluidAudio](https://github.com/FluidInference/FluidAudio) — Apple ships no
@@ -282,11 +299,11 @@ public diarizer on Tahoe 26.
 swift test
 ```
 
-`Tests/ChronicleTests/` uses Swift Testing (`@Test`). 24 tests across 6
+`Tests/ChronicleTests/` uses Swift Testing (`@Test`). 34 tests across 7
 suites (`AVAudioFile ALAC sink`, `OpusCAFSink`, `RollingPCMScratchSink`,
-`TCCPreflight`, `AsyncTimeout`, `EncodeOpus round-trip`). More tests land
-alongside each FR per the PRD-001 file breakdown (`JSONLTraceSinkTests`,
-`LocaleResolverTests`, `CoreAudioTapSourceTests`, etc.).
+`ScratchExporter`, `TCCPreflight`, `AsyncTimeout`, `EncodeOpus round-trip`).
+More tests land alongside each FR per the PRD-001 file breakdown
+(`JSONLTraceSinkTests`, `LocaleResolverTests`, `CoreAudioTapSourceTests`, etc.).
 
 ## P11 audio sidecar — ALAC default + scratch recovery
 
@@ -329,15 +346,19 @@ Important crash model:
 * Actual unrecoverable loss should be the final buffer/write that did not reach
   disk, not the whole active ALAC segment.
 
-Manual scratch recovery until `chronicle repair` grows scratch export:
+Scratch recovery:
 
 ```sh
-cat audio/scratch/session/*.pcm > /tmp/recovered.s16le
-ffmpeg -f s16le -ar 16000 -ac 1 -i /tmp/recovered.s16le recovered.wav
+# WAV output (inferred from .wav).
+chronicle scratch-export audio/scratch/session -o recovered.wav
+
+# ALAC-in-CAF output.
+chronicle scratch-export audio/scratch/session -o recovered.caf --format alac
 ```
 
-If `format.json` says `commonFormat` is `float32`, use `-f f32le` instead of
-`-f s16le`.
+`scratch-export` reads `format.json`, validates canonical interleaved scratch
+layout, requires contiguous numbered `.pcm` files, trims partial trailing frames,
+and writes a standard audio file through AVFoundation.
 
 Verification and decision receipts:
 

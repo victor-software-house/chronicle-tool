@@ -5,7 +5,7 @@ plan". Authoritative scope and acceptance criteria live in
 [`PRD-001`](prd/PRD-001-resilient-multi-source-daemon.md); this is the
 operator-facing dashboard.
 
-Last refresh: 2026-05-17 — P11 ALAC production sidecar is implemented and the reuse boundary is documented in [ADR-0005](adr/ADR-0005-audio-sidecar-reuse-boundary.md). Opus failed the 6870 s Zoom WER parity gate; ALAC with rounded Int16 source preserved decoded PCM/WER while shrinking the reference to ~91.3 MB. Native 32-bit-float public speech search did not produce a suitable longer transcripted corpus and no longer blocks the decision. `AVAudioFile` ALAC/CAF probe passed on the 6870 s reference (`alac`, `s16p`, 16 kHz mono, 91,316,352 bytes, `cmp-ok` against source PCM). Mic/sysaudio now default to composite ALAC + raw scratch, with audio-duration-based `--rotate-audio` segmenting for ALAC/WAV/Opus. Live mic smoke produced two readable ALAC CAF segments plus scratch PCM. Reuse audit conclusion: keep Apple-native writers plus Chronicle-owned rotation/scratch policy; third-party Swift frameworks and runtime media processes either target a different artifact model or still leave scratch/recovery policy to Chronicle.
+Last refresh: 2026-05-17 — P11 ALAC production sidecar is implemented and the reuse boundary is documented in [ADR-0005](adr/ADR-0005-audio-sidecar-reuse-boundary.md). Opus failed the 6870 s Zoom WER parity gate; ALAC with rounded Int16 source preserved decoded PCM/WER while shrinking the reference to ~91.3 MB. Native 32-bit-float public speech search did not produce a suitable longer transcripted corpus and no longer blocks the decision. `AVAudioFile` ALAC/CAF probe passed on the 6870 s reference (`alac`, `s16p`, 16 kHz mono, 91,316,352 bytes, `cmp-ok` against source PCM). Mic/sysaudio now default to composite ALAC + raw scratch, with audio-duration-based `--rotate-audio` segmenting for ALAC/WAV/Opus. Live mic smoke produced two readable ALAC CAF segments plus scratch PCM. Reuse audit conclusion: keep Apple-native writers plus Chronicle-owned rotation/scratch policy; third-party Swift frameworks and runtime media processes either target a different artifact model or still leave scratch/recovery policy to Chronicle. `chronicle scratch-export` now automates raw-PCM scratch recovery to WAV or ALAC-in-CAF.
 
 ## Phase board
 
@@ -14,12 +14,13 @@ Last refresh: 2026-05-17 — P11 ALAC production sidecar is implemented and the 
 | **P0** | Modular refactor + test target | — | ✔ **done** | Byte-identical parity vs 2026-05-13 spike on `transcribe` + `diarize`; 13 `Core/` modules; 11 subcommands as thin veneers; `ChronicleTests` target wired. |
 | **P7** | `chronicle sysaudio` subcommand | FR-3 | ✔ **done** | `SCStream` audio-only via `Core/Audio/SysAudioSource`; 4/4 TTS sentences captured exact; Info.plist `NSScreenCaptureUsageDescription` added. |
 | **P11** | ALAC production audio sink | FR-1 | ✔ **done** | `Core/Sinks/AVAudioFileALACSink` + `Core/Sinks/RollingPCMScratchSink` (ADR-0002 amended 2026-05-16: ALAC default after Opus WER regression; ADR-0005 documents the reuse-boundary audit); `AVAudioFile` writer probe passed WER/byte-compare evidence. Default `--audio-format` is composite ALAC + scratch; `--rotate-audio` segments ALAC/WAV/Opus by audio duration. Live mic smoke produced two readable ALAC CAF segments plus scratch PCM. |
+| **P2a** | Scratch export recovery | FR-8 | ✔ **done** | `chronicle scratch-export <scratch-dir> -o recovered.wav|.caf` reads `format.json`, validates canonical interleaved raw PCM, requires contiguous `.pcm` segments, trims partial trailing frames, and writes WAV or ALAC-in-CAF. |
 | P3 | JSONL incremental trace | FR-2 | ⏳ pending | `Core/Sinks/JSONLTraceSink` via `AtomicFile.appendJSONLine`; `kill -9` mid-write leaves ≤ 1 torn line. |
 | P4 | Locale auto-detect per ADR-0003 | FR-6 | ⏳ pending | `Core/Speech/LocaleResolver`; candidate-set restriction + 4-knob hysteresis; no "random Russian" by construction. |
 | P5 | Live diarization | FR-4 | ⏳ pending | `Core/Audio/BufferMulticast` + `Core/Diarize/StreamingDiarizer`; speakerId merged into finals by audio range. |
 | P6 | Live tagging via `--tag-every N` | FR-5 | ⏳ pending | `Core/Sinks/TagsJSONLSink` + cached `ContentTagger.tagText`; guardrail violations skip + continue. |
 | P8 | `chronicle merge` | FR-7 | ⏳ pending | Chronological merge of N finals/JSONL traces preserving speaker labels. |
-| P2 | `chronicle repair` | FR-8 | ⏸ de-prioritised | Only needed for `--audio-format wav` opt-in path and unusual tail recovery; ALAC/CAF plus raw scratch reduces the default crash-repair surface. |
+| P2b | Legacy WAV tail repair | FR-8 | ⏳ pending | `chronicle repair <wav>` rewrites malformed/stale WAV headers for old incident artefacts and `--audio-format wav` opt-in tails. |
 | P1 | WAV transitional rotation | FR-1 | ✘ skipped | Superseded by P11; was meant as a stepping stone toward Opus. |
 | P9 | End-to-end verification | — | ⏳ pending | Run PRD-001 §15 appendix on a fresh session; capture receipts. |
 | P10 | Post-impl documentation | — | ⏳ pending | Update README + research-notes + a verification spike doc with the final numbers. |
@@ -128,19 +129,22 @@ Open phases map to bare numeric task IDs in the Pi task tracker:
 
 | Phase | Task | Status |
 |---|---|---|
-| P0 step 1-8 | #31 (umbrella) + #33-#39 | ✔ |
-| P7 sysaudio | #27 | ✔ |
-| Doc hygiene | #41 | ✔ |
-| P11 ALAC production | #32 | next |
+| P7 sysaudio | #27 | archived/done |
+| P11 ALAC production | #32 | archived/done |
+| P2a scratch export | #22 | in progress |
+| P1 WAV transitional reconciliation | #21 | open |
 | P3 JSONL | #23 | open |
 | P4 LocaleResolver | #24 | open |
 | P5 streaming diarize | #25 | open |
 | P6 live tagging | #26 | open |
 | P8 merge | #28 | open |
-| P2 repair | #22 | de-prioritised |
-| P1 WAV transitional | #21 | skipped |
 | P9 verification | #29 | open |
 | P10 docs receipts | #30 | open |
+| CoreAudioTapSource cleanup | #55 | open |
+| Scratch fsync policy | #72 | open |
+| Active ALAC CAF tail repair research | #73 | open |
+| Sidecar fanout profiling | #74 | open |
+| Scratch allocation profiling | #75 | open |
 
 Use `TaskRead taskIds=["<id>"]` for full acceptance criteria; use
 `TaskRead` with no args to list everything.

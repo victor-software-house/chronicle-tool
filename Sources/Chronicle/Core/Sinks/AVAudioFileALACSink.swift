@@ -64,21 +64,19 @@ public final class AVAudioFileALACSink: AudioSidecarSink, @unchecked Sendable {
   public func append(_ buffer: AVAudioPCMBuffer) async {
     guard buffer.frameLength > 0, let file else { return }
 
-    let out: AVAudioPCMBuffer?
-    if let converter {
-      out = convert(buffer, with: converter)
-    } else {
-      out = buffer
-    }
-
-    guard let out, out.frameLength > 0 else { return }
     do {
-      try file.write(from: out)
+      _ = try write(buffer, to: file)
     } catch {
       FileHandle.standardError.write(Data(
         "[AVAudioFileALACSink] write failed: \(error)\n".utf8
       ))
     }
+  }
+
+  @discardableResult
+  public func appendOrThrow(_ buffer: AVAudioPCMBuffer) throws -> AVAudioFrameCount {
+    guard buffer.frameLength > 0, let file else { return 0 }
+    return try write(buffer, to: file)
   }
 
   public func finish() async {
@@ -90,16 +88,29 @@ public final class AVAudioFileALACSink: AudioSidecarSink, @unchecked Sendable {
     file = nil
   }
 
+  private func write(_ buffer: AVAudioPCMBuffer, to file: AVAudioFile) throws -> AVAudioFrameCount {
+    let out: AVAudioPCMBuffer
+    if let converter {
+      out = try convert(buffer, with: converter)
+    } else {
+      out = buffer
+    }
+
+    guard out.frameLength > 0 else { return 0 }
+    try file.write(from: out)
+    return out.frameLength
+  }
+
   private func convert(
     _ input: AVAudioPCMBuffer,
     with converter: AVAudioConverter
-  ) -> AVAudioPCMBuffer? {
+  ) throws -> AVAudioPCMBuffer {
     let capacity = AVAudioFrameCount(
       ceil(Double(input.frameLength) * int16Format.sampleRate / sourceFormat.sampleRate)
     )
     guard capacity > 0,
           let output = AVAudioPCMBuffer(pcmFormat: int16Format, frameCapacity: capacity)
-    else { return nil }
+    else { throw AVAudioFileALACSinkError.bufferAllocationFailed }
 
     var didProvideInput = false
     var error: NSError?
@@ -114,18 +125,21 @@ public final class AVAudioFileALACSink: AudioSidecarSink, @unchecked Sendable {
     }
 
     if status == .error {
-      FileHandle.standardError.write(Data(
-        "[AVAudioFileALACSink] convert failed: \(error?.localizedDescription ?? "unknown")\n".utf8
-      ))
-      return nil
+      throw AVAudioFileALACSinkError.conversionFailed(error?.localizedDescription ?? "unknown")
     }
-    return output.frameLength > 0 ? output : nil
+    guard output.frameLength > 0 else {
+      throw AVAudioFileALACSinkError.conversionProducedNoFrames
+    }
+    return output
   }
 }
 
 public enum AVAudioFileALACSinkError: Error, CustomStringConvertible {
   case formatCreationFailed
   case converterCreationFailed
+  case bufferAllocationFailed
+  case conversionFailed(String)
+  case conversionProducedNoFrames
 
   public var description: String {
     switch self {
@@ -133,6 +147,12 @@ public enum AVAudioFileALACSinkError: Error, CustomStringConvertible {
       return "Failed to create Int16 PCM format for AVAudioFile ALAC sink"
     case .converterCreationFailed:
       return "Failed to create AVAudioConverter for AVAudioFile ALAC sink"
+    case .bufferAllocationFailed:
+      return "Failed to allocate Int16 PCM buffer for AVAudioFile ALAC sink"
+    case .conversionFailed(let message):
+      return "Failed to convert PCM buffer for AVAudioFile ALAC sink: \(message)"
+    case .conversionProducedNoFrames:
+      return "PCM conversion produced no frames for AVAudioFile ALAC sink"
     }
   }
 }

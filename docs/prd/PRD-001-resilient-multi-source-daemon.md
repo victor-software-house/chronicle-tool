@@ -115,7 +115,7 @@ enabled.
 5. **Live content tagging** — extend `mic` / `sysaudio` with `--tag-every <N>` flag. Every Nth final triggers a `FoundationModels` `.contentTagging` pass on the rolling transcript window; results are emitted into a `tags.jsonl` sidecar.
 6. **Language auto-detect** — when `--locale auto` is passed, run `NLLanguageRecognizer` on the first 5 finalized segments and switch the transcriber locale once a dominant language is detected with confidence > 0.7. Re-evaluate every 5 minutes for code-switching.
 7. **Cross-stream merge** — new `chronicle merge` subcommand that takes two or more `finals.md` files and produces one chronological speaker-labeled transcript. Source-stream prefix (`[mic|sys] [S2] …`) is preserved.
-8. **Crash recovery helper** — `chronicle repair <wav>` that takes a malformed WAV (bad header), inspects the raw byte stream, and writes a fixed WAV with the correct size fields based on file length. For older incidents.
+8. **Crash recovery helpers** — `chronicle scratch-export <scratch-dir>` reads raw PCM scratch (`format.json` + `.pcm` segments) and emits WAV or ALAC-in-CAF. Legacy WAV tail repair remains scoped to malformed WAV files from older/opt-in flows.
 
 ### Out of scope / later
 
@@ -162,8 +162,8 @@ no header/finalization step. If the active CAF is unreadable after a hard kill,
 the recent audio is still recoverable from `audio/scratch/<session>/*.pcm` up to
 the scratch TTL. Actual unrecoverable loss is limited to the final buffer/write
 that did not reach disk, not the whole active ALAC segment. Automated scratch
-export/repair remains future FR-8 work; manual ffmpeg recovery is possible from
-the manifest today.
+export/repair is implemented as `chronicle scratch-export`; manual ffmpeg
+recovery remains a fallback/debug path.
 
 **Acceptance criteria:**
 
@@ -199,17 +199,21 @@ Then a new numbered ALAC CAF segment starts at the next input buffer
 And each finalized segment reopens through AVAudioFile
 ```
 
-**Manual scratch recovery until FR-8 automation lands:**
+**Scratch recovery:**
 
 ```sh
-# Inspect audio/scratch/session/format.json first. For today's default analyzer
-# format this is usually 16 kHz mono Int16, so ffmpeg input is s16le.
-cat audio/scratch/session/*.pcm > /tmp/recovered.s16le
-ffmpeg -f s16le -ar 16000 -ac 1 -i /tmp/recovered.s16le recovered.wav
+# WAV output (inferred from .wav).
+chronicle scratch-export audio/scratch/session -o recovered.wav
 
-# If format.json says commonFormat=float32, use:
-ffmpeg -f f32le -ar 16000 -ac 1 -i /tmp/recovered.f32le recovered.wav
+# ALAC-in-CAF output.
+chronicle scratch-export audio/scratch/session -o recovered.caf --format alac
 ```
+
+`scratch-export` reads `format.json`, validates canonical interleaved scratch
+layout, requires contiguous numbered `.pcm` files, trims partial trailing frames,
+and writes a standard audio file through AVFoundation. Manual ffmpeg recovery
+is still possible for debugging (`-f s16le` for `commonFormat=int16`, `-f f32le`
+for `commonFormat=float32`).
 
 **Files:**
 
@@ -219,7 +223,9 @@ ffmpeg -f f32le -ar 16000 -ac 1 -i /tmp/recovered.f32le recovered.wav
 * `Sources/Chronicle/Core/Sinks/RollingPCMScratchSink.swift` — bounded-size append-only ring of raw PCM, auto-prunes past TTL; runs in parallel with default ALAC and remains available as scratch-only `--audio-format pcm`.
 * `Sources/Chronicle/Core/Sinks/AudioSidecarCombinators.swift` — composite sink fan-out plus audio-duration-based rotating sidecar wrapper.
 * `Sources/Chronicle/Subcommands/Mic.swift` / `Sources/Chronicle/Subcommands/SysAudio.swift` — wire `--audio-format`, `--rotate-audio`, `--scratch-ttl`, and `--scratch-rotate` flags into the pipeline.
-* `Sources/Chronicle/Subcommands/Repair.swift` — WAV/tail repair (still relevant for the `--audio-format wav` opt-in path and unusual default-sidecar recovery cases). Future FR-8 work should add scratch export from `audio/scratch/<session>/format.json` + `.pcm` segments so operators do not need manual ffmpeg commands.
+* `Sources/Chronicle/Core/Sinks/ScratchExporter.swift` — scratch manifest reader/exporter for contiguous raw PCM segments.
+* `Sources/Chronicle/Subcommands/ScratchExport.swift` — CLI wrapper for scratch recovery to WAV or ALAC-in-CAF.
+* `Sources/Chronicle/Subcommands/Repair.swift` — future legacy WAV/tail repair for the `--audio-format wav` opt-in path and older incident artefacts.
 
 ---
 
@@ -398,12 +404,28 @@ And speaker labels (if present) are preserved
 
 ---
 
-### FR-8: Crash recovery for WAV (`chronicle repair`)
+### FR-8: Crash recovery helpers (`chronicle scratch-export`, future `chronicle repair`)
 
-A standalone subcommand that takes a WAV file with a malformed header
-and rewrites the header based on the actual file size on disk.
+Scratch recovery is implemented through `chronicle scratch-export`: it reads a
+scratch directory containing `format.json` plus contiguous numbered `.pcm`
+segments, trims partial trailing frames, and writes a standard WAV or
+ALAC-in-CAF file.
+
+Legacy WAV repair remains future work: a standalone `chronicle repair <wav>`
+should take a WAV file with a malformed header and rewrite size fields based on
+the actual file size on disk.
 
 **Acceptance criteria:**
+
+```gherkin
+Given a scratch directory produced by RollingPCMScratchSink
+When `chronicle scratch-export audio/scratch/session -o recovered.wav` is run
+Then `recovered.wav` reopens with AVAudioFile
+And Int16 mono, Int16 stereo interleaved, and Float32 mono scratch inputs preserve sample values
+And partial trailing frames are trimmed instead of poisoning the output
+And missing or invalid manifests fail with actionable errors
+And missing middle segments fail before output is trusted
+```
 
 ```gherkin
 Given a WAV file produced by an interrupted recording (header data-chunk size = 0)
@@ -415,7 +437,9 @@ And `chronicle transcribe -i session-003.wav -o out` succeeds without errors
 
 **Files:**
 
-* `Sources/Chronicle/Repair.swift` — new subcommand.
+* `Sources/Chronicle/Core/Sinks/ScratchExporter.swift` — implemented scratch export core.
+* `Sources/Chronicle/Subcommands/ScratchExport.swift` — implemented `chronicle scratch-export` CLI.
+* `Sources/Chronicle/Subcommands/Repair.swift` — future legacy WAV repair subcommand.
 
 ---
 

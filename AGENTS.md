@@ -5,7 +5,7 @@ the global Pi agent baseline; does not duplicate it.
 
 ## What this repo is
 
-Single Swift 6 executable (`chronicle`) packaging eleven on-device ML
+Single Swift 6 executable (`chronicle`) packaging on-device ML and recovery
 subcommands on Apple Silicon Tahoe (macOS 26). Spike phase is complete;
 work is now in **production spec phase** governed by the PRD + ADRs
 under [`docs/`](docs/). Read those before changing behaviour.
@@ -14,7 +14,7 @@ Authoritative reading order for any non-trivial change:
 
 1. [`docs/prd/PRD-001-resilient-multi-source-daemon.md`](docs/prd/PRD-001-resilient-multi-source-daemon.md) — master PRD (FRs, NFRs, rollout, verification appendix).
 2. [`docs/adr/ADR-0001-modular-pipeline-architecture.md`](docs/adr/ADR-0001-modular-pipeline-architecture.md) — protocol-oriented `Core/` + `Subcommands/`. **Implemented (P0).**
-3. [`docs/adr/ADR-0002-audio-storage-format.md`](docs/adr/ADR-0002-audio-storage-format.md) — Opus 24 kbps in CAF as default (amended 2026-05-13 from Ogg); raw-PCM scratch; ALAC export; `.opus` Ogg via on-demand ffmpeg rewrap. **In progress (P11).**
+3. [`docs/adr/ADR-0002-audio-storage-format.md`](docs/adr/ADR-0002-audio-storage-format.md) — ALAC-in-CAF default with raw-PCM scratch after Opus WER regression; Opus retained as opt-in/export. **Implemented (P11).**
 4. [`docs/adr/ADR-0003-locale-resolution-policy.md`](docs/adr/ADR-0003-locale-resolution-policy.md) — candidate-set restriction + 4-knob hysteresis. **Pending (P4).**
 5. [`docs/STATUS.md`](docs/STATUS.md) — quick-reference roadmap: every phase + current task state in one screen.
 6. [`README.md`](README.md) — operator quick-start, subcommand surface, architecture diagram.
@@ -252,3 +252,13 @@ Anti-patterns:
   behaviour, justify it in the PRD or fix the regression.
 - Removing `--verbose` flag plumbing from `SysAudioSource`. It's the
   only way to diagnose silent captures.
+
+Quick triage:
+
+| Symptom | First file / check |
+|---|---|
+| Subcommand missing from `--help` | `Sources/Chronicle/Chronicle.swift` (dispatch list) |
+| `mic` runs but no transcription | mic TCC at parent app + `MicAudioSource` callback running + `analyzerFormat` mismatch |
+| `sysaudio` runs but `audio.wav` is silent | Screen Recording TCC at parent app — run with `--verbose` to see per-buffer peak amplitude diagnostics |
+| `scratch-export` fails | `audio/scratch/<session>/format.json` plus contiguous numbered `.pcm` files; manifest must describe canonical interleaved PCM |
+| Diarize results differ from spike | `OfflineDiarizer` model version (FluidAudio `DiarizerModels.downloadIfNeeded`) — receipts assume the 2026-05-13 model version |
