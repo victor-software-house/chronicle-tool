@@ -197,6 +197,7 @@ public actor SortformerStreamingDiarizer: StreamingDiarizing {
   private let pcmConverter: PCMFloatConverter
 
   private var loaded: Bool = false
+  private var loadTask: Task<Void, Error>?
   private var pendingSamples: Int = 0
   private var totalSamplesIngested: Int = 0
   private var ingestCallCount: Int = 0
@@ -264,6 +265,10 @@ public actor SortformerStreamingDiarizer: StreamingDiarizing {
     maybeEmitDiagnostic()
   }
 
+  public func prepare() async throws {
+    try await ensureLoaded()
+  }
+
   public func speakerId(forRange range: TraceAudioRange) -> String? {
     lookupQueryCount += 1
     let result = lookup.speakerId(forRange: range)
@@ -306,9 +311,24 @@ public actor SortformerStreamingDiarizer: StreamingDiarizing {
   // MARK: - Internals
 
   private func ensureLoaded() async throws {
-    guard !loaded else { return }
-    try await backend.load()
-    loaded = true
+    if loaded { return }
+    if let loadTask {
+      try await loadTask.value
+      loaded = true
+      self.loadTask = nil
+      return
+    }
+
+    let task = Task { try await backend.load() }
+    loadTask = task
+    do {
+      try await task.value
+      loaded = true
+      loadTask = nil
+    } catch {
+      loadTask = nil
+      throw error
+    }
   }
 
   private func absorb(_ update: StreamingDiarizerUpdate) {

@@ -260,13 +260,14 @@ struct JSONLTraceSinkTests {
       sourceKind: .microphone,
       streamId: "diarize-stream",
       locale: "en-US",
-      preset: "progressiveTranscription"
+      preset: "progressiveTranscription",
+      recordTranscriptionLatency: true
     )
 
     await sink.didReceiveResult(
       "hello",
       isFinal: true,
-      wallclockOffsetMs: 100.0,
+      wallclockOffsetMs: 1_500.0,
       wallclock: Date(timeIntervalSince1970: 1_700_010_000),
       audioRange: TraceAudioRange(startSeconds: 0.0, endSeconds: 1.0),
       speakerId: "S1"
@@ -274,7 +275,7 @@ struct JSONLTraceSinkTests {
     await sink.didReceiveResult(
       "world",
       isFinal: true,
-      wallclockOffsetMs: 200.0,
+      wallclockOffsetMs: 2_750.0,
       wallclock: Date(timeIntervalSince1970: 1_700_010_001),
       audioRange: TraceAudioRange(startSeconds: 1.0, endSeconds: 2.0),
       speakerId: nil
@@ -285,5 +286,36 @@ struct JSONLTraceSinkTests {
     #expect(result.events[0].speakerId == "S1")
     #expect(result.events[1].speakerId == nil)
     #expect(result.events[0].audioRange == TraceAudioRange(startSeconds: 0.0, endSeconds: 1.0))
+    #expect(result.events[0].transcriptionLatencyMs == 500.0)
+    #expect(result.events[1].transcriptionLatencyMs == 750.0)
+  }
+
+  @Test("transcription latency is opt-in for realtime trace sinks")
+  func transcriptionLatencyIsOptIn() async throws {
+    let dir = try tmpDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let traceURL = dir.appendingPathComponent("trace.jsonl")
+
+    let sink = try JSONLTraceSink(
+      url: traceURL,
+      source: "file",
+      sourceKind: .file,
+      streamId: "offline-stream",
+      locale: "en-US",
+      preset: "progressiveTranscription"
+    )
+
+    await sink.didReceiveResult(
+      "fast offline result",
+      isFinal: true,
+      wallclockOffsetMs: 100.0,
+      wallclock: Date(timeIntervalSince1970: 1_700_010_000),
+      audioRange: TraceAudioRange(startSeconds: 10.0, endSeconds: 11.0),
+      speakerId: nil
+    )
+
+    let result = try JSONLTraceSink.readRecoveringEvents(from: traceURL)
+    #expect(result.events.count == 1)
+    #expect(result.events[0].transcriptionLatencyMs == nil)
   }
 }

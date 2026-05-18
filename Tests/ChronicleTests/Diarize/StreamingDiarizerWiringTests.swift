@@ -16,8 +16,12 @@ final class StubStreamingBackend: StreamingDiarizerBackend, @unchecked Sendable 
   var pendingProcessUpdates: [StreamingDiarizerUpdate] = []
   /// Update to return on `finalize()`.
   var finalizeUpdate: StreamingDiarizerUpdate?
+  var loadDelayNanoseconds: UInt64 = 0
 
   func load() async throws {
+    if loadDelayNanoseconds > 0 {
+      try await Task.sleep(nanoseconds: loadDelayNanoseconds)
+    }
     lock.withLock {
       loadCount += 1
       loaded = true
@@ -77,6 +81,40 @@ struct StreamingDiarizerWiringTests {
     try await diarizer.ingest(ref)
     try await diarizer.ingest(ref)
     #expect(backend.loadCount == 1)
+  }
+
+  @Test("prepare() loads the backend before first ingest")
+  func prepareLoadsBackendBeforeFirstIngest() async throws {
+    let backend = StubStreamingBackend()
+    let diarizer = SortformerStreamingDiarizer(
+      logTag: "test",
+      processEverySamples: 16_000,
+      backend: backend
+    )
+
+    try await diarizer.prepare()
+    try await diarizer.ingest(Self.int16BufferRef(frameCount: 100))
+
+    #expect(backend.loadCount == 1)
+    #expect(backend.addAudioCalls == [100])
+  }
+
+  @Test("concurrent prepare and first ingest share one backend load")
+  func concurrentPrepareAndFirstIngestShareOneLoad() async throws {
+    let backend = StubStreamingBackend()
+    backend.loadDelayNanoseconds = 20_000_000
+    let diarizer = SortformerStreamingDiarizer(
+      logTag: "test",
+      processEverySamples: 16_000,
+      backend: backend
+    )
+
+    async let prepared: Void = diarizer.prepare()
+    async let ingested: Void = diarizer.ingest(Self.int16BufferRef(frameCount: 100))
+    _ = try await (prepared, ingested)
+
+    #expect(backend.loadCount == 1)
+    #expect(backend.addAudioCalls == [100])
   }
 
   @Test("addAudio is called once per ingested buffer with correct sample count")

@@ -44,6 +44,7 @@ public struct TraceEvent: Codable, Equatable, Sendable {
   public let preset: String
   public let speakerId: String?
   public let audioRange: TraceAudioRange?
+  public let transcriptionLatencyMs: Double?
   public let audioSegmentPath: String?
   public let channelPolicy: String?
   public let exportPolicy: String?
@@ -63,6 +64,7 @@ public struct TraceEvent: Codable, Equatable, Sendable {
     preset: String,
     speakerId: String? = nil,
     audioRange: TraceAudioRange? = nil,
+    transcriptionLatencyMs: Double? = nil,
     audioSegmentPath: String? = nil,
     channelPolicy: String? = nil,
     exportPolicy: String? = nil
@@ -81,6 +83,7 @@ public struct TraceEvent: Codable, Equatable, Sendable {
     self.preset = preset
     self.speakerId = speakerId
     self.audioRange = audioRange
+    self.transcriptionLatencyMs = transcriptionLatencyMs
     self.audioSegmentPath = audioSegmentPath
     self.channelPolicy = channelPolicy
     self.exportPolicy = exportPolicy
@@ -183,6 +186,7 @@ public actor JSONLTraceSink: TranscriptionSink {
   private let streamId: String
   private let locale: String
   private let preset: String
+  private let recordTranscriptionLatency: Bool
   private var nextEventId: Int
   private var writtenEvents: Int = 0
   private var droppedEvents: Int = 0
@@ -196,7 +200,8 @@ public actor JSONLTraceSink: TranscriptionSink {
     streamId: String = UUID().uuidString,
     locale: String,
     preset: String,
-    startingEventId: Int = 1
+    startingEventId: Int = 1,
+    recordTranscriptionLatency: Bool = false
   ) throws {
     self.url = url
     self.source = source
@@ -204,6 +209,7 @@ public actor JSONLTraceSink: TranscriptionSink {
     self.streamId = streamId
     self.locale = locale
     self.preset = preset
+    self.recordTranscriptionLatency = recordTranscriptionLatency
     self.nextEventId = startingEventId
 
     let encoder = JSONEncoder()
@@ -245,6 +251,12 @@ public actor JSONLTraceSink: TranscriptionSink {
       preset: preset,
       speakerId: speakerId,
       audioRange: audioRange,
+      transcriptionLatencyMs: recordTranscriptionLatency
+        ? TranscriptionLatencyMonitor.transcriptionLatencyMs(
+          wallclockOffsetMs: monotonicOffsetMs,
+          audioRange: audioRange
+        )
+        : nil,
       audioSegmentPath: audioSegmentPath,
       channelPolicy: channelPolicy,
       exportPolicy: exportPolicy

@@ -112,7 +112,8 @@ struct SysAudio: AsyncParsableCommand {
         source: "sysaudio",
         sourceKind: .systemOutput,
         locale: supported.identifier,
-        preset: TranscriptionEngine.presetName(.progressiveTranscription)
+        preset: TranscriptionEngine.presetName(.progressiveTranscription),
+        recordTranscriptionLatency: true
       )
       traceSink = sink
       sinks.append(sink)
@@ -132,7 +133,7 @@ struct SysAudio: AsyncParsableCommand {
     let composedSinks = sinks
 
     let inline = self.inline
-    let startMonotonic = ContinuousClock.now
+    let resultClock = LiveResultClock()
 
     // Optional live diarizer. When enabled, route PCM buffers through a
     // multicast so the sidecar consumer and the diarizer each get an
@@ -155,14 +156,27 @@ struct SysAudio: AsyncParsableCommand {
       diarizerStream = nil
     }
 
+    let diarizerPrepareTask: Task<Void, Never>? = diarizer.map { d in
+      Task {
+        do {
+          try await d.prepare()
+        } catch {
+          FileHandle.standardError.write(Data(
+            "[sysaudio.diarize] prewarm failed: \(error)\n".utf8
+          ))
+        }
+      }
+    }
+
     let consumeTask = Task {
       var lastVolatileLineLength = 0
       var volatileCount = 0
       var finalCount = 0
+      var latencyMonitor = TranscriptionLatencyMonitor(logTag: "sysaudio")
       for try await result in transcriber.results {
         let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty { continue }
-        let offsetMs = MonotonicClock.milliseconds(since: startMonotonic)
+        let offsetMs = resultClock.millisecondsSinceStart()
         let wallclock = Date()
         let start = CMTimeGetSeconds(result.range.start)
         let end = CMTimeGetSeconds(result.range.end)
@@ -174,6 +188,14 @@ struct SysAudio: AsyncParsableCommand {
           speakerId = await diarizer.speakerId(forRange: audioRange)
         } else {
           speakerId = nil
+        }
+        if let snapshot = latencyMonitor.record(
+          isFinal: result.isFinal,
+          wallclockOffsetMs: offsetMs,
+          audioRange: audioRange,
+          speakerId: speakerId
+        ) {
+          TranscriptionLatencyMonitor.emit(logTag: "sysaudio", snapshot: snapshot)
         }
         for sink in composedSinks {
           await sink.didReceiveResult(
@@ -217,6 +239,9 @@ struct SysAudio: AsyncParsableCommand {
           }
         }
       }
+      if let snapshot = latencyMonitor.finalSnapshot() {
+        TranscriptionLatencyMonitor.emit(logTag: "sysaudio", snapshot: snapshot)
+      }
       return (volatileCount, finalCount)
     }
 
@@ -258,13 +283,20 @@ struct SysAudio: AsyncParsableCommand {
 
     do {
       try await sysSource.start()
+      FileHandle.standardError.write(Data("[sysaudio] capture started; play audio in any app. Ctrl-C to stop.\n".utf8))
+
+      resultClock.markStarted()
+      try await analyzer.start(inputSequence: sysSource.analyzerInputs)
     } catch let e as CoreAudioTapSourceError {
+      diarizerPrepareTask?.cancel()
+      await diarizerPrepareTask?.value
       FileHandle.standardError.write(Data("[sysaudio] error: \(e.description)\n".utf8))
       throw ExitCode(2)
+    } catch {
+      diarizerPrepareTask?.cancel()
+      await diarizerPrepareTask?.value
+      throw error
     }
-    FileHandle.standardError.write(Data("[sysaudio] capture started; play audio in any app. Ctrl-C to stop.\n".utf8))
-
-    try await analyzer.start(inputSequence: sysSource.analyzerInputs)
 
     if seconds > 0 {
       FileHandle.standardError.write(Data("[sysaudio] will auto-stop after \(seconds)s\n".utf8))
@@ -298,6 +330,7 @@ struct SysAudio: AsyncParsableCommand {
       _ = await pcmTask.value
       await multicastFanTask?.value
       await diarizerTask?.value
+      await diarizerPrepareTask?.value
       if let diarizer { await diarizer.finish() }
       if let audioSink {
         await audioSink.finish()
@@ -316,6 +349,7 @@ struct SysAudio: AsyncParsableCommand {
     _ = await pcmTask.value
     await multicastFanTask?.value
     await diarizerTask?.value
+    await diarizerPrepareTask?.value
     if let diarizer { await diarizer.finish() }
     if let audioSink {
       await audioSink.finish()

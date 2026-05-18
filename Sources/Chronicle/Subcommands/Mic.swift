@@ -100,8 +100,6 @@ struct Mic: AsyncParsableCommand {
       rotateAudio: rotateAudio
     )
 
-    let startMonotonic = ContinuousClock.now
-
     let inline = self.inline
 
     // Optional live diarizer. When enabled, route PCM buffers through a
@@ -136,7 +134,8 @@ struct Mic: AsyncParsableCommand {
         source: "mic",
         sourceKind: .microphone,
         locale: supported.identifier,
-        preset: TranscriptionEngine.presetName(.progressiveTranscription)
+        preset: TranscriptionEngine.presetName(.progressiveTranscription),
+        recordTranscriptionLatency: true
       )
       traceSink = sink
       sinks.append(sink)
@@ -155,14 +154,29 @@ struct Mic: AsyncParsableCommand {
     }
     let composedSinks = sinks
 
+    let resultClock = LiveResultClock()
+
+    let diarizerPrepareTask: Task<Void, Never>? = diarizer.map { d in
+      Task {
+        do {
+          try await d.prepare()
+        } catch {
+          FileHandle.standardError.write(Data(
+            "[mic.diarize] prewarm failed: \(error)\n".utf8
+          ))
+        }
+      }
+    }
+
     let consumeTask = Task {
       var lastVolatileLineLength = 0
       var volatileCount = 0
       var finalCount = 0
+      var latencyMonitor = TranscriptionLatencyMonitor(logTag: "mic")
       for try await result in transcriber.results {
         let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty { continue }
-        let offsetMs = MonotonicClock.milliseconds(since: startMonotonic)
+        let offsetMs = resultClock.millisecondsSinceStart()
         let wallclock = Date()
         let start = CMTimeGetSeconds(result.range.start)
         let end = CMTimeGetSeconds(result.range.end)
@@ -174,6 +188,14 @@ struct Mic: AsyncParsableCommand {
           speakerId = await diarizer.speakerId(forRange: audioRange)
         } else {
           speakerId = nil
+        }
+        if let snapshot = latencyMonitor.record(
+          isFinal: result.isFinal,
+          wallclockOffsetMs: offsetMs,
+          audioRange: audioRange,
+          speakerId: speakerId
+        ) {
+          TranscriptionLatencyMonitor.emit(logTag: "mic", snapshot: snapshot)
         }
         for sink in composedSinks {
           await sink.didReceiveResult(
@@ -218,6 +240,9 @@ struct Mic: AsyncParsableCommand {
           }
         }
       }
+      if let snapshot = latencyMonitor.finalSnapshot() {
+        TranscriptionLatencyMonitor.emit(logTag: "mic", snapshot: snapshot)
+      }
       return (volatileCount, finalCount)
     }
 
@@ -258,11 +283,18 @@ struct Mic: AsyncParsableCommand {
       }
     })
 
-    try await micSource.start()
-    FileHandle.standardError.write(Data("[mic] engine started; speak into the mic. Ctrl-C to stop.\n".utf8))
+    do {
+      try await micSource.start()
+      FileHandle.standardError.write(Data("[mic] engine started; speak into the mic. Ctrl-C to stop.\n".utf8))
 
-    // Kick off the analyzer over our input sequence.
-    try await analyzer.start(inputSequence: micSource.analyzerInputs)
+      // Kick off the analyzer over our input sequence.
+      resultClock.markStarted()
+      try await analyzer.start(inputSequence: micSource.analyzerInputs)
+    } catch {
+      diarizerPrepareTask?.cancel()
+      await diarizerPrepareTask?.value
+      throw error
+    }
 
     // Stop trigger: time limit OR SIGINT/SIGTERM.
     if seconds > 0 {
@@ -295,6 +327,7 @@ struct Mic: AsyncParsableCommand {
       _ = await pcmTask.value
       await multicastFanTask?.value
       await diarizerTask?.value
+      await diarizerPrepareTask?.value
       if let diarizer { await diarizer.finish() }
       if let audioSink {
         await audioSink.finish()
@@ -313,6 +346,7 @@ struct Mic: AsyncParsableCommand {
     _ = await pcmTask.value
     await multicastFanTask?.value
     await diarizerTask?.value
+    await diarizerPrepareTask?.value
     if let diarizer { await diarizer.finish() }
     if let audioSink {
       await audioSink.finish()
