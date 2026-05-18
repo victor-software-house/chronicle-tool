@@ -190,6 +190,54 @@ struct Mic: AsyncParsableCommand {
       ))
     }
 
+    // --- Audio language detection (ADR-0006) ---
+    // Runs BEFORE analyzer and diarizer so WhisperKit gets exclusive ANE.
+    // After detection completes, WhisperKit is deallocated and ANE is free
+    // for Sortformer + SpeechTranscriber.
+    var activeTranscriber = transcriber
+    do {
+      try await micSource.start()
+      FileHandle.standardError.write(Data("[mic] engine started; speak into the mic. Ctrl-C to stop.\n".utf8))
+
+      if let probeStream, let localeResolver {
+        let audioDetector = AudioLanguageDetector(verbose: true)
+        try await audioDetector.load()
+        if let detection = try await AudioLanguageProbe.detect(
+          stream: probeStream,
+          sampleRate: analyzerFormat.sampleRate,
+          detector: audioDetector,
+          logTag: "mic"
+        ) {
+          let detectedBcp47 = LocaleResolverWiring.resolveFullLocale(
+            baseLanguage: detection.language,
+            currentLocale: supported.bcp47Identifier,
+            candidates: localeResolver.candidateSet
+          )
+          if detectedBcp47 != supported.bcp47Identifier {
+            FileHandle.standardError.write(Data(
+              "[mic.locale] audio detected=\(detection.language) (\(String(format: "%.3f", detection.confidence))); switching from \(supported.bcp47Identifier) to \(detectedBcp47)\n".utf8
+            ))
+            if let newTranscriber = await LocaleResolverWiring.hotSwapLocale(
+              logTag: "mic",
+              analyzer: analyzer,
+              to: detectedBcp47,
+              preset: .progressiveTranscription
+            ) {
+              activeTranscriber = newTranscriber
+            }
+          } else {
+            FileHandle.standardError.write(Data(
+              "[mic.locale] audio confirmed=\(detection.language); staying at \(supported.bcp47Identifier)\n".utf8
+            ))
+          }
+        }
+      }
+      // audioDetector goes out of scope here — WhisperKit model deallocated, ANE freed.
+    } catch {
+      throw error
+    }
+
+    // Now start diarizer (uses ANE via Sortformer CoreML).
     let diarizerPrepareTask: Task<Void, Never>? = diarizer.map { d in
       Task {
         do {
@@ -202,98 +250,96 @@ struct Mic: AsyncParsableCommand {
       }
     }
 
-    // Snapshot the resolver. The audio probe may update it before the
-    // consume loop reads any results, so the capture is safe in practice.
     nonisolated(unsafe) var resolverSnapshot = localeResolver
     let consumeTask = Task {
       var lastVolatileLineLength = 0
       var volatileCount = 0
       var finalCount = 0
       var latencyMonitor = TranscriptionLatencyMonitor(logTag: "mic")
-      for try await result in transcriber.results {
-        let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.isEmpty { continue }
-        let offsetMs = resultClock.millisecondsSinceStart()
-        let wallclock = Date()
-        let start = CMTimeGetSeconds(result.range.start)
-        let end = CMTimeGetSeconds(result.range.end)
-        let audioRange = start.isFinite && end.isFinite
-          ? TraceAudioRange(startSeconds: start, endSeconds: end)
-          : nil
-        let speakerId: String?
-        if let diarizer, let audioRange {
-          speakerId = await diarizer.speakerId(forRange: audioRange)
-        } else {
-          speakerId = nil
-        }
-        if let snapshot = latencyMonitor.record(
-          isFinal: result.isFinal,
-          wallclockOffsetMs: offsetMs,
-          audioRange: audioRange,
-          speakerId: speakerId
-        ) {
-          TranscriptionLatencyMonitor.emit(logTag: "mic", snapshot: snapshot)
-        }
-        if result.isFinal, resolverSnapshot != nil {
-          let decision = resolverSnapshot!.consider(final: text)
-          await LocaleResolverWiring.report(
-            logTag: "mic",
-            decision: decision,
-            traceSink: traceSink,
-            wallclockOffsetMs: offsetMs,
-            wallclock: wallclock
-          )
-          if case let .switchTo(to, _, _, _) = decision {
-            if let newTranscriber = await LocaleResolverWiring.hotSwapLocale(
-              logTag: "mic",
-              analyzer: analyzer,
-              to: to,
-              preset: .progressiveTranscription
-            ) {
-              _ = newTranscriber // results stream continues from same analyzer
-            }
+      for try await result in activeTranscriber.results {
+          let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
+          if text.isEmpty { continue }
+          let offsetMs = resultClock.millisecondsSinceStart()
+          let wallclock = Date()
+          let start = CMTimeGetSeconds(result.range.start)
+          let end = CMTimeGetSeconds(result.range.end)
+          let audioRange = start.isFinite && end.isFinite
+            ? TraceAudioRange(startSeconds: start, endSeconds: end)
+            : nil
+          let speakerId: String?
+          if let diarizer, let audioRange {
+            speakerId = await diarizer.speakerId(forRange: audioRange)
+          } else {
+            speakerId = nil
           }
-        }
-        for sink in composedSinks {
-          await sink.didReceiveResult(
-            text,
+          if let snapshot = latencyMonitor.record(
             isFinal: result.isFinal,
             wallclockOffsetMs: offsetMs,
-            wallclock: wallclock,
             audioRange: audioRange,
             speakerId: speakerId
-          )
-        }
-        let traceStats = await traceSink.stats()
-        if traceStats.droppedEvents > 0 {
-          throw JSONLTraceSinkFailure(stats: traceStats)
-        }
-        if result.isFinal {
-          finalCount += 1
-        } else {
-          volatileCount += 1
-        }
-        if inline {
-          if result.isFinal {
-            // Clear any in-progress volatile line then print final on its own line.
-            if lastVolatileLineLength > 0 {
-              fputs("\r" + String(repeating: " ", count: lastVolatileLineLength) + "\r", stdout)
-              lastVolatileLineLength = 0
+          ) {
+            TranscriptionLatencyMonitor.emit(logTag: "mic", snapshot: snapshot)
+          }
+          if result.isFinal, resolverSnapshot != nil {
+            let decision = resolverSnapshot!.consider(final: text)
+            await LocaleResolverWiring.report(
+              logTag: "mic",
+              decision: decision,
+              traceSink: traceSink,
+              wallclockOffsetMs: offsetMs,
+              wallclock: wallclock
+            )
+            if case let .switchTo(to, _, _, _) = decision {
+              if let _ = await LocaleResolverWiring.hotSwapLocale(
+                logTag: "mic",
+                analyzer: analyzer,
+                to: to,
+                preset: .progressiveTranscription
+              ) {
+                // Text-based mid-session swap; results continue from analyzer
+              }
             }
-            print("\u{1b}[32mFINAL\u{1b}[0m \(text)")
-          } else {
-            let line = "\u{1b}[33mvolatile\u{1b}[0m \(text)"
-            fputs("\r\(line)", stdout)
-            fflush(stdout)
-            lastVolatileLineLength = line.count
           }
-        } else {
+          for sink in composedSinks {
+            await sink.didReceiveResult(
+              text,
+              isFinal: result.isFinal,
+              wallclockOffsetMs: offsetMs,
+              wallclock: wallclock,
+              audioRange: audioRange,
+              speakerId: speakerId
+            )
+          }
+          let traceStats = await traceSink.stats()
+          if traceStats.droppedEvents > 0 {
+            throw JSONLTraceSinkFailure(stats: traceStats)
+          }
           if result.isFinal {
-            print("\u{1b}[32mFINAL\u{1b}[0m \(text)")
+            finalCount += 1
           } else {
-            print("\u{1b}[33mvolatile\u{1b}[0m \(text)")
+            volatileCount += 1
           }
-        }
+          if inline {
+            if result.isFinal {
+              // Clear any in-progress volatile line then print final on its own line.
+              if lastVolatileLineLength > 0 {
+                fputs("\r" + String(repeating: " ", count: lastVolatileLineLength) + "\r", stdout)
+                lastVolatileLineLength = 0
+              }
+              print("\u{1b}[32mFINAL\u{1b}[0m \(text)")
+            } else {
+              let line = "\u{1b}[33mvolatile\u{1b}[0m \(text)"
+              fputs("\r\(line)", stdout)
+              fflush(stdout)
+              lastVolatileLineLength = line.count
+            }
+          } else {
+            if result.isFinal {
+              print("\u{1b}[32mFINAL\u{1b}[0m \(text)")
+            } else {
+              print("\u{1b}[33mvolatile\u{1b}[0m \(text)")
+            }
+          }
       }
       if let snapshot = latencyMonitor.finalSnapshot() {
         TranscriptionLatencyMonitor.emit(logTag: "mic", snapshot: snapshot)
@@ -339,48 +385,6 @@ struct Mic: AsyncParsableCommand {
     })
 
     do {
-      try await micSource.start()
-      FileHandle.standardError.write(Data("[mic] engine started; speak into the mic. Ctrl-C to stop.\n".utf8))
-
-      // Audio-level language probe (ADR-0006): when --locale auto is active,
-      // detect language from the first ~3s of raw audio via WhisperKit.
-      if localeResolver != nil {
-        let audioDetector = AudioLanguageDetector(verbose: true)
-        try await audioDetector.load()
-        if let probeStream,
-           let detection = try await AudioLanguageProbe.detect(
-          stream: probeStream,
-          sampleRate: analyzerFormat.sampleRate,
-          detector: audioDetector,
-          logTag: "mic"
-        ) {
-          let detectedBcp47 = LocaleResolverWiring.resolveFullLocale(
-            baseLanguage: detection.language,
-            currentLocale: supported.bcp47Identifier,
-            candidates: localeResolver?.candidateSet ?? []
-          )
-          if detectedBcp47 != supported.bcp47Identifier {
-            FileHandle.standardError.write(Data(
-              "[mic.locale] audio probe detected=\(detection.language) (\(String(format: "%.3f", detection.confidence))); switching from \(supported.bcp47Identifier) to \(detectedBcp47)\n".utf8
-            ))
-            if let _ = await LocaleResolverWiring.hotSwapLocale(
-              logTag: "mic",
-              analyzer: analyzer,
-              to: detectedBcp47,
-              preset: .progressiveTranscription
-            ) {
-              localeResolver?.forceCurrentLocale(detectedBcp47)
-              resolverSnapshot = localeResolver
-            }
-          } else {
-            FileHandle.standardError.write(Data(
-              "[mic.locale] audio probe confirmed=\(detection.language); staying at \(supported.bcp47Identifier)\n".utf8
-            ))
-          }
-        }
-      }
-
-      // Kick off the analyzer over our input sequence.
       resultClock.markStarted()
       try await analyzer.start(inputSequence: micSource.analyzerInputs)
     } catch {

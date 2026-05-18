@@ -1,82 +1,113 @@
 import AVFoundation
 import Foundation
 
-/// Collects ~N seconds of PCM audio from a `BufferMulticast` subscription
-/// for the startup language detection probe, then runs
-/// `AudioLanguageDetector.detect()`.
+/// Non-blocking audio language detection that runs concurrently with
+/// transcription. Buffers PCM from a multicast subscription, waits for
+/// speech energy, then runs WhisperKit `detectLanguage()`.
 ///
-/// Used by both `mic` and `sysaudio` when `--locale auto` is active.
-/// The probe subscribes to the multicast (so it doesn't consume the main
-/// `pcmBuffers` stream), buffers audio, converts to 16 kHz mono Float
-/// (the format WhisperKit expects), and returns the detected language code
-/// filtered to the candidate set.
+/// Returns the detected language asynchronously. The caller hot-swaps
+/// the transcriber locale if the result differs from the initial locale.
+/// First few seconds of transcription may use the wrong locale — this is
+/// the acceptable tradeoff for zero startup delay.
 @available(macOS 26.0, *)
 public enum AudioLanguageProbe {
-  /// Default probe duration in seconds. 3s is sufficient for reliable
-  /// detection even on the `base` model per ADR-0006 experiments.
-  public static let defaultProbeDurationSeconds: Double = 3.0
+  /// Minimum speech audio to collect before running detection.
+  public static let minSpeechSeconds: Double = 2.0
 
-  /// Buffer audio from a multicast subscription for `duration` seconds,
-  /// then run language detection. Returns the detected language code
-  /// (e.g. "en", "pt") or nil if detection failed or no audio was captured.
+  /// Maximum time to wait for enough speech before giving up.
+  public static let maxWaitSeconds: Double = 30.0
+
+  /// RMS threshold for speech frames. WhisperKit's EnergyVAD uses 0.02;
+  /// we use 0.015 to catch quieter speech while still rejecting silence.
+  public static let speechRMSThreshold: Float = 0.015
+
+  /// Frame length in samples for energy check (100ms at 16kHz).
+  public static let frameSamples: Int = 1600
+
+  /// Run language detection concurrently. Buffers speech audio from the
+  /// multicast subscription, skipping silence, then detects language.
+  ///
+  /// Call this from a `Task {}` so it doesn't block the main pipeline.
   public static func detect(
     stream: AsyncStream<PCMBufferRef>,
     sampleRate: Double,
     detector: AudioLanguageDetector,
     candidates: Set<String>? = nil,
-    durationSeconds: Double = defaultProbeDurationSeconds,
     logTag: String = "locale"
   ) async throws -> (language: String, confidence: Double)? {
-    let targetSamples = Int(sampleRate * durationSeconds)
-    var collected = [Float]()
-    collected.reserveCapacity(targetSamples)
+    let minSamples = Int(sampleRate * minSpeechSeconds)
+    var speechSamples = [Float]()
+    speechSamples.reserveCapacity(minSamples)
 
-    let deadline = ContinuousClock.now + .seconds(durationSeconds + 2.0)
+    let deadline = ContinuousClock.now + .seconds(maxWaitSeconds)
+
     for await ref in stream {
       let buffer = ref.buffer
-      if let int16Data = buffer.int16ChannelData {
-        let count = Int(buffer.frameLength)
-        let ptr = int16Data[0]
+      let count = Int(buffer.frameLength)
+      guard count > 0 else { continue }
+
+      // Extract float samples from the buffer.
+      var chunk = [Float]()
+      chunk.reserveCapacity(count)
+      if let int16 = buffer.int16ChannelData {
+        let ptr = int16[0]
         let scale: Float = 1.0 / 32_768.0
-        for i in 0..<count {
-          collected.append(Float(ptr[i]) * scale)
+        for i in 0..<count { chunk.append(Float(ptr[i]) * scale) }
+      } else if let fp = buffer.floatChannelData {
+        let ptr = fp[0]
+        for i in 0..<count { chunk.append(ptr[i]) }
+      }
+      guard !chunk.isEmpty else { continue }
+
+      // Only keep frames with speech energy.
+      var offset = 0
+      while offset + frameSamples <= chunk.count {
+        let frame = chunk[offset..<(offset + frameSamples)]
+        let rms = sqrt(frame.reduce(Float(0)) { $0 + $1 * $1 } / Float(frameSamples))
+        if rms >= speechRMSThreshold {
+          speechSamples.append(contentsOf: frame)
         }
-      } else if let floatData = buffer.floatChannelData {
-        let count = Int(buffer.frameLength)
-        let ptr = floatData[0]
-        for i in 0..<count {
-          collected.append(ptr[i])
+        offset += frameSamples
+      }
+      // Tail partial frame — keep if it has energy.
+      if offset < chunk.count {
+        let tail = chunk[offset...]
+        let rms = sqrt(tail.reduce(Float(0)) { $0 + $1 * $1 } / Float(tail.count))
+        if rms >= speechRMSThreshold {
+          speechSamples.append(contentsOf: tail)
         }
       }
-      if collected.count >= targetSamples { break }
+
+      if speechSamples.count >= minSamples { break }
       if ContinuousClock.now > deadline { break }
     }
 
-    guard !collected.isEmpty else {
+    guard !speechSamples.isEmpty else {
       FileHandle.standardError.write(Data(
-        "[\(logTag).audio-detect] probe collected 0 samples; skipping detection\n".utf8
+        "[\(logTag).audio-detect] no speech detected in \(maxWaitSeconds)s; skipping\n".utf8
       ))
       return nil
     }
 
+    let secs = String(format: "%.1f", Double(speechSamples.count) / sampleRate)
     FileHandle.standardError.write(Data(
-      "[\(logTag).audio-detect] probe collected \(collected.count) samples (\(String(format: "%.1f", Double(collected.count) / sampleRate))s at \(Int(sampleRate)) Hz)\n".utf8
+      "[\(logTag).audio-detect] collected \(secs)s of speech; detecting language\n".utf8
     ))
 
-    // Resample to 16kHz if needed (WhisperKit expects 16kHz).
+    // Resample to 16kHz if needed.
     let samples: [Float]
     if abs(sampleRate - 16_000) < 1.0 {
-      samples = collected
+      samples = speechSamples
     } else {
       let ratio = 16_000.0 / sampleRate
-      let outCount = Int(Double(collected.count) * ratio)
+      let outCount = Int(Double(speechSamples.count) * ratio)
       var resampled = [Float](repeating: 0, count: outCount)
       for i in 0..<outCount {
         let srcIdx = Double(i) / ratio
         let lo = Int(srcIdx)
-        let hi = min(lo + 1, collected.count - 1)
+        let hi = min(lo + 1, speechSamples.count - 1)
         let frac = Float(srcIdx - Double(lo))
-        resampled[i] = collected[lo] * (1 - frac) + collected[hi] * frac
+        resampled[i] = speechSamples[lo] * (1 - frac) + speechSamples[hi] * frac
       }
       samples = resampled
     }
