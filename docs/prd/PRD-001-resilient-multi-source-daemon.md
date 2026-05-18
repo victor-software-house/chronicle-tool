@@ -398,7 +398,20 @@ And the latency between the 3rd final and its tag entry is < 8 seconds
 
 ### FR-6: Locale auto-detect (`--locale auto`) with candidate-set restriction
 
-Locale resolution is governed by [ADR-0003](../adr/ADR-0003-locale-resolution-policy.md). Four modes:
+Locale resolution policy is governed by [ADR-0003](../adr/ADR-0003-locale-resolution-policy.md).
+Detection mechanism is governed by [ADR-0006](../adr/ADR-0006-audio-level-language-detection.md).
+
+> **Known gap (2026-05-18):** The shipped text-based detection
+> (NLLanguageRecognizer on finalized transcription text) does not work
+> when the initial locale is wrong. Wrong-locale transcription produces
+> hallucinated phoneme gibberish, not degraded-but-recognizable text.
+> NLLanguageRecognizer cannot detect the true language from that garbage.
+> ADR-0006 replaces the detection mechanism with WhisperKit audio-level
+> language detection, which operates on raw audio and is immune to this
+> chicken-and-egg failure. The ADR-0003 candidate-set policy, hysteresis,
+> and CLI grammar remain unchanged.
+
+Four modes:
 
 * **Pin** (`--locale en-US`): no detection runs; the transcriber stays at the pinned locale. **This is the operator's "disable auto" switch.**
 * **Auto with default safe set** (`--locale auto`): candidates = operator's configured primary languages (default `[en-US, pt-BR]`; overridable via `~/.config/chronicle/locales.json`). `NLLanguageRecognizer` is configured with `setLanguageConstraints([...])` so it can only return candidates from the safe set.

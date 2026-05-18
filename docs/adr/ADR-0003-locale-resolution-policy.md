@@ -11,11 +11,14 @@ decision: "Three modes: fixed (default off-auto), auto with explicit candidate s
 
 ## Status
 
-Proposed
+Partially superseded by [ADR-0006](ADR-0006-audio-level-language-detection.md).
+The candidate-set policy, hysteresis, and CLI grammar defined here remain
+in effect. The detection mechanism (NLLanguageRecognizer on transcription
+text) is replaced by WhisperKit audio-level detection per ADR-0006.
 
 ## Date
 
-2026-05-13
+2026-05-13 (detection mechanism superseded 2026-05-18)
 
 ## Requirement Source
 
