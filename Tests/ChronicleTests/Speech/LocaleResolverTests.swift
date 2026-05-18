@@ -242,6 +242,49 @@ struct LocaleResolverTests {
     }
   }
 
+  // MARK: - auto:* (unconstrained detection)
+
+  @Test("auto:* mode detects language without candidate constraints")
+  func autoAnyDetectsUnconstrained() {
+    let detector = StubLocaleDetector([
+      ("pt", 0.9),
+      ("pt", 0.9),
+      ("pt", 0.9)
+    ])
+    var resolver = LocaleResolver(
+      currentLocale: "en-US",
+      candidateSet: [],
+      allowAny: true,
+      hysteresis: LocaleHysteresisConfig(minFinals: 3, confidence: 0.7, cooldownSeconds: 30, minChars: 5),
+      detector: detector,
+      now: { 1_000 }
+    )
+
+    _ = resolver.consider(final: "Olá pessoal vamos começar")
+    _ = resolver.consider(final: "tudo certo aqui obrigado")
+    let decision = resolver.consider(final: "vamos para o próximo ponto")
+    if case let .switchTo(to, _, _, _) = decision {
+      #expect(to == "pt")
+    } else {
+      Issue.record("expected switchTo; got \(decision)")
+    }
+    #expect(resolver.switchesAccepted == 1)
+  }
+
+  // MARK: - Ambiguous base-language validation
+
+  @Test("rejects candidate sets with duplicate base languages")
+  func rejectsAmbiguousBaseLanguages() {
+    #expect(throws: LocaleCandidateError.self) {
+      try LocaleCandidateValidation.rejectAmbiguousBaseLanguages(["pt-BR", "pt-PT", "en-US"])
+    }
+  }
+
+  @Test("accepts candidate sets with distinct base languages")
+  func acceptsDistinctBaseLanguages() throws {
+    try LocaleCandidateValidation.rejectAmbiguousBaseLanguages(["pt-BR", "en-US", "es-ES"])
+  }
+
   // MARK: - Safe-set config
 
   @Test("LocaleSafeSetLoader returns built-in default when no file is present")

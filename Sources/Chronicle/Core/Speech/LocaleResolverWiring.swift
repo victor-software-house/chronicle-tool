@@ -41,12 +41,13 @@ extension LocaleSpec {
     hysteresis: LocaleHysteresisConfig = .default,
     detector: LocaleLanguageDetector = NLLanguageDetector(),
     safeSetURL: URL? = nil
-  ) -> LocaleResolver? {
+  ) throws -> LocaleResolver? {
     switch self {
     case .pin:
       return nil
     case .autoDefault:
       let set = (try? LocaleSafeSetLoader.load(at: safeSetURL)) ?? LocaleSafeSetLoader.defaultSafeSet
+      try LocaleCandidateValidation.rejectAmbiguousBaseLanguages(set)
       return LocaleResolver(
         currentLocale: currentLocale,
         candidateSet: set,
@@ -55,6 +56,7 @@ extension LocaleSpec {
         detector: detector
       )
     case .autoList(let set):
+      try LocaleCandidateValidation.rejectAmbiguousBaseLanguages(set)
       return LocaleResolver(
         currentLocale: currentLocale,
         candidateSet: set,

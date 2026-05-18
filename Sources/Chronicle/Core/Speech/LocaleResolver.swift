@@ -109,20 +109,32 @@ public struct NLLanguageDetector: LocaleLanguageDetector {
   public init() {}
 
   public func detect(text: String, candidates: [String]) -> (locale: String, confidence: Double)? {
-    guard !text.isEmpty, !candidates.isEmpty else { return nil }
-    let constraints = candidates.map { Self.nlLanguage(for: $0) }
+    guard !text.isEmpty else { return nil }
     let recognizer = NLLanguageRecognizer()
-    recognizer.languageConstraints = constraints
+    if !candidates.isEmpty {
+      let constraints = candidates.map { Self.nlLanguage(for: $0) }
+      recognizer.languageConstraints = constraints
+    }
     recognizer.processString(text)
-    let hypotheses = recognizer.languageHypotheses(withMaximum: candidates.count)
+    let maxHyp = max(candidates.count, 5)
+    let hypotheses = recognizer.languageHypotheses(withMaximum: maxHyp)
     guard !hypotheses.isEmpty else { return nil }
-    let allowed = Set(constraints.map(\.rawValue))
-    let best = hypotheses
-      .filter { allowed.contains($0.key.rawValue) }
-      .max { $0.value < $1.value }
+    let best: (key: NLLanguage, value: Double)?
+    if candidates.isEmpty {
+      best = hypotheses.max { $0.value < $1.value }
+    } else {
+      let allowed = Set(candidates.map { Self.nlLanguage(for: $0).rawValue })
+      best = hypotheses
+        .filter { allowed.contains($0.key.rawValue) }
+        .max { $0.value < $1.value }
+    }
     guard let best else { return nil }
-    let resolved = Self.candidateMatching(language: best.key, in: candidates)
-      ?? best.key.rawValue
+    let resolved: String
+    if candidates.isEmpty {
+      resolved = best.key.rawValue
+    } else {
+      resolved = Self.candidateMatching(language: best.key, in: candidates) ?? best.key.rawValue
+    }
     return (locale: resolved, confidence: best.value)
   }
 
@@ -309,5 +321,31 @@ public enum LocaleSafeSetLoader {
       .appendingPathComponent(".config", isDirectory: true)
       .appendingPathComponent("chronicle", isDirectory: true)
       .appendingPathComponent("locales.json", isDirectory: false)
+  }
+}
+
+/// Validate that no two candidates share the same base language, since
+/// `NLLanguageRecognizer` detects written language not regional variants.
+/// For example, `["pt-BR", "pt-PT"]` is ambiguous — the recognizer returns
+/// `.portuguese` for both and the resolver would always pick the first match.
+public enum LocaleCandidateValidation {
+  public static func rejectAmbiguousBaseLanguages(_ candidates: [String]) throws {
+    let grouped = Dictionary(grouping: candidates) {
+      $0.split(separator: "-").first.map(String.init) ?? $0
+    }
+    for (base, variants) in grouped where variants.count > 1 {
+      throw LocaleCandidateError.ambiguousBaseLanguage(base: base, candidates: variants)
+    }
+  }
+}
+
+public enum LocaleCandidateError: Error, CustomStringConvertible {
+  case ambiguousBaseLanguage(base: String, candidates: [String])
+
+  public var description: String {
+    switch self {
+    case let .ambiguousBaseLanguage(base, candidates):
+      return "--locale auto candidate set contains multiple '\(base)' regional variants: \(candidates.joined(separator: ", ")). NLLanguageRecognizer cannot distinguish regions; keep one variant per base language."
+    }
   }
 }

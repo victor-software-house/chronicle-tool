@@ -169,7 +169,7 @@ struct Mic: AsyncParsableCommand {
     let composedSinks = sinks
 
     let resultClock = LiveResultClock()
-    var localeResolver = localeSpec.makeResolver(
+    var localeResolver = try localeSpec.makeResolver(
       currentLocale: supported.bcp47Identifier,
       hysteresis: LocaleHysteresisConfig(
         minFinals: localeMinFinals,
