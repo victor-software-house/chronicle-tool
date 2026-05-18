@@ -193,6 +193,9 @@ struct Mic: AsyncParsableCommand {
       }
     }
 
+    // Snapshot the resolver. The audio probe may update it before the
+    // consume loop reads any results, so the capture is safe in practice.
+    nonisolated(unsafe) var resolverSnapshot = localeResolver
     let consumeTask = Task {
       var lastVolatileLineLength = 0
       var volatileCount = 0
@@ -222,8 +225,8 @@ struct Mic: AsyncParsableCommand {
         ) {
           TranscriptionLatencyMonitor.emit(logTag: "mic", snapshot: snapshot)
         }
-        if result.isFinal, localeResolver != nil {
-          let decision = localeResolver!.consider(final: text)
+        if result.isFinal, resolverSnapshot != nil {
+          let decision = resolverSnapshot!.consider(final: text)
           await LocaleResolverWiring.report(
             logTag: "mic",
             decision: decision,
@@ -329,6 +332,42 @@ struct Mic: AsyncParsableCommand {
     do {
       try await micSource.start()
       FileHandle.standardError.write(Data("[mic] engine started; speak into the mic. Ctrl-C to stop.\n".utf8))
+
+      // Audio-level language probe (ADR-0006): when --locale auto is active,
+      // detect language from the first ~3s of raw audio via WhisperKit.
+      if localeResolver != nil {
+        let audioDetector = AudioLanguageDetector(verbose: true)
+        try await audioDetector.load()
+        if let detection = try await AudioLanguageProbe.detect(
+          source: micSource,
+          detector: audioDetector,
+          logTag: "mic"
+        ) {
+          let detectedBcp47 = LocaleResolverWiring.resolveFullLocale(
+            baseLanguage: detection.language,
+            currentLocale: supported.bcp47Identifier,
+            candidates: localeResolver?.candidateSet ?? []
+          )
+          if detectedBcp47 != supported.bcp47Identifier {
+            FileHandle.standardError.write(Data(
+              "[mic.locale] audio probe detected=\(detection.language) (\(String(format: "%.3f", detection.confidence))); switching from \(supported.bcp47Identifier) to \(detectedBcp47)\n".utf8
+            ))
+            if let _ = await LocaleResolverWiring.hotSwapLocale(
+              logTag: "mic",
+              analyzer: analyzer,
+              to: detectedBcp47,
+              preset: .progressiveTranscription
+            ) {
+              localeResolver?.forceCurrentLocale(detectedBcp47)
+              resolverSnapshot = localeResolver
+            }
+          } else {
+            FileHandle.standardError.write(Data(
+              "[mic.locale] audio probe confirmed=\(detection.language); staying at \(supported.bcp47Identifier)\n".utf8
+            ))
+          }
+        }
+      }
 
       // Kick off the analyzer over our input sequence.
       resultClock.markStarted()

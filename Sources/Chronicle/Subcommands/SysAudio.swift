@@ -194,6 +194,9 @@ struct SysAudio: AsyncParsableCommand {
       }
     }
 
+    // Snapshot the resolver. The audio probe may update it before the
+    // consume loop reads any results, so the capture is safe in practice.
+    nonisolated(unsafe) var resolverSnapshot = localeResolver
     let consumeTask = Task {
       var lastVolatileLineLength = 0
       var volatileCount = 0
@@ -223,8 +226,8 @@ struct SysAudio: AsyncParsableCommand {
         ) {
           TranscriptionLatencyMonitor.emit(logTag: "sysaudio", snapshot: snapshot)
         }
-        if result.isFinal, localeResolver != nil {
-          let decision = localeResolver!.consider(final: text)
+        if result.isFinal, resolverSnapshot != nil {
+          let decision = resolverSnapshot!.consider(final: text)
           await LocaleResolverWiring.report(
             logTag: "sysaudio",
             decision: decision,
@@ -328,6 +331,45 @@ struct SysAudio: AsyncParsableCommand {
     do {
       try await sysSource.start()
       FileHandle.standardError.write(Data("[sysaudio] capture started; play audio in any app. Ctrl-C to stop.\n".utf8))
+
+      // Audio-level language probe (ADR-0006): when --locale auto is active,
+      // detect language from the first ~3s of raw audio via WhisperKit before
+      // starting transcription. This avoids the chicken-and-egg failure where
+      // wrong-locale transcription produces gibberish that NLLanguageRecognizer
+      // cannot identify.
+      if localeResolver != nil {
+        let audioDetector = AudioLanguageDetector(verbose: verbose)
+        try await audioDetector.load()
+        if let detection = try await AudioLanguageProbe.detect(
+          source: sysSource,
+          detector: audioDetector,
+          logTag: "sysaudio"
+        ) {
+          // Map base language code to a full BCP-47 locale for SpeechTranscriber.
+          let detectedBcp47 = LocaleResolverWiring.resolveFullLocale(
+            baseLanguage: detection.language,
+            currentLocale: supported.bcp47Identifier,
+            candidates: localeResolver?.candidateSet ?? []
+          )
+          if detectedBcp47 != supported.bcp47Identifier {
+            FileHandle.standardError.write(Data(
+              "[sysaudio.locale] audio probe detected=\(detection.language) (\(String(format: "%.3f", detection.confidence))); switching from \(supported.bcp47Identifier) to \(detectedBcp47)\n".utf8
+            ))
+            if let _ = await LocaleResolverWiring.hotSwapLocale(
+              logTag: "sysaudio",
+              analyzer: analyzer,
+              to: detectedBcp47,
+              preset: .progressiveTranscription
+            ) {
+              localeResolver?.forceCurrentLocale(detectedBcp47)
+            }
+          } else {
+            FileHandle.standardError.write(Data(
+              "[sysaudio.locale] audio probe confirmed=\(detection.language); staying at \(supported.bcp47Identifier)\n".utf8
+            ))
+          }
+        }
+      }
 
       resultClock.markStarted()
       try await analyzer.start(inputSequence: sysSource.analyzerInputs)

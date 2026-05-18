@@ -261,6 +261,16 @@ public struct LocaleResolver: Sendable {
     return decision
   }
 
+  /// Force the current locale to a new value without going through
+  /// the hysteresis state machine. Used by the audio-level startup
+  /// probe (ADR-0006) which detects language from raw audio before
+  /// any transcription text exists.
+  public mutating func forceCurrentLocale(_ locale: String) {
+    currentLocale = locale
+    lastSwitchAt = now()
+    consecutive.reset()
+  }
+
   // MARK: - Private state
 
   private struct ConsecutiveTracker {

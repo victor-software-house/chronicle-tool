@@ -186,6 +186,24 @@ public enum LocaleResolverWiring {
     }
   }
 
+  /// Map a base language code (e.g. "pt") to a full BCP-47 locale identifier
+  /// (e.g. "pt-BR") by finding the first candidate that starts with the base
+  /// code. Falls back to `baseLanguage` if no match found.
+  public static func resolveFullLocale(
+    baseLanguage: String,
+    currentLocale: String,
+    candidates: [String]
+  ) -> String {
+    // If current locale already matches the base, keep it.
+    if currentLocale.hasPrefix(baseLanguage) { return currentLocale }
+    // Search candidates for a match.
+    if let match = candidates.first(where: { $0.hasPrefix(baseLanguage) }) {
+      return match
+    }
+    // Fallback: construct a generic locale from base code.
+    return baseLanguage
+  }
+
   private static func controlPayload(
     decision: String,
     to: String,
