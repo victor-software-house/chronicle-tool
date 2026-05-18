@@ -233,27 +233,77 @@ Rationale:
    failure case (wrong initial locale). Sub-mode B extends it to
    mid-session switches without fundamental changes.
 
+### Experimental validation (2026-05-18)
+
+A standalone WhisperKit probe was built and run against the ElevenLabs
+voice fixtures generated for the FR-4 speed test suite:
+
+| Fixture | Model | Detected | Confidence | Time |
+|---|---|---|---|---|
+| sarah_en.wav (23s US female) | tiny | en | -0.002 | 262 ms |
+| sarah_pt.wav (21s PT female) | tiny | pt | -0.031 | 228 ms |
+| george_pt.wav (21s PT male) | tiny | pt | -0.002 | 238 ms |
+| pt_1s.wav (1s Portuguese) | tiny | pt | -0.072 | 238 ms |
+| pt_3s.wav (3s Portuguese) | base | pt | -0.005 | 265 ms |
+| charlie_en.wav (22s AU male) | tiny | en | -0.002 | 19 ms |
+
+All three models (tiny ~75 MB, base ~150 MB, small ~500 MB) achieved
+100% accuracy on the test set. `base` had the best multilingual
+confidence calibration (-0.005 for Portuguese vs tiny's -0.031).
+`small` was 2× slower with no accuracy gain. **Recommendation: `base`
+model for production.**
+
+Confidence values are negative log-likelihoods: -0.005 ≈ 99.5% sure.
+
+Critically: even a **1-second clip** of Portuguese was correctly
+identified — the chicken-and-egg problem from ADR-0003 is completely
+eliminated since no transcription text is involved.
+
+### Default candidate set: system preferred languages
+
+`Locale.preferredLanguages` returns the operator's configured system
+languages (e.g. `["en-BR", "pt-BR"]`). Extracting base language codes
+gives the candidate set automatically — no hardcoded `[en-US, pt-BR]`:
+
+```swift
+let candidates = Set(
+  Locale.preferredLanguages.compactMap {
+    Locale(identifier: $0).language.languageCode?.identifier
+  }
+)
+// On this machine: {"en", "pt"}
+```
+
+WhisperKit returns probabilities for all 99 languages. Chronicle
+filters to the candidate set and picks the highest:
+
+```swift
+let (_, probs) = try await kit.detectLanguage(audioArray: samples)
+let best = probs
+  .filter { candidates.contains($0.key) }
+  .max(by: { $0.value < $1.value })
+```
+
 ### Implementation sketch
 
 ```
 Startup:
   1. Start audio capture (mic or sysaudio) → buffer audio
-  2. After ~3–5s of audio, run WhisperKit.detectLanguage(audioArray:)
-  3. Filter result through ADR-0003 candidate set
+  2. After ~3s of audio, run WhisperKit.detectLanguage(audioArray:)
+  3. Filter result through candidate set (system languages or CLI override)
   4. If detected locale ≠ initial locale → hot-swap via setModules()
   5. Begin transcription with the detected locale
 
 Periodic (sub-mode B):
-  6. Every ~30s, run detectLanguage() on the latest ~5s audio window
-  7. Apply ADR-0003 hysteresis (consecutive detections, confidence
-     floor, cooldown, min-chars equivalent → min-detections)
+  6. Every ~30s, run detectLanguage() on the latest ~3s audio window
+  7. Apply hysteresis (consecutive detections, confidence floor, cooldown)
   8. If switch triggered → hot-swap via setModules()
 ```
 
-The existing `LocaleResolver` state machine and hysteresis config
-are reused. The `LocaleLanguageDetector` protocol gets a second
-implementation (`WhisperKitAudioDetector`) alongside the existing
-`NLLanguageDetector`. The CLI grammar does not change.
+The existing `LocaleResolver` state machine is adapted. The
+`LocaleLanguageDetector` protocol gets a new implementation
+(`WhisperKitAudioDetector`) that wraps `WhisperKit.detectLanguage()`
+with candidate filtering. The CLI grammar does not change.
 
 ### What stays from ADR-0003
 
@@ -269,10 +319,11 @@ implementation (`WhisperKitAudioDetector`) alongside the existing
 | ADR-0003 (text-based) | ADR-0006 (audio-based) |
 |---|---|
 | NLLanguageRecognizer on finalized text | WhisperKit detectLanguage() on raw audio |
-| Runs after each final segment | Runs on startup + periodically on audio window |
-| Fails when initial locale is wrong (chicken-and-egg) | Works regardless of initial locale |
-| No new dependencies | Adds WhisperKit Swift package (~75 MB tiny model) |
-| ~0 additional compute | ~100–300 ms per detection call (encoder pass) |
+| Runs after each final segment | Runs on startup + periodically on ~3s audio window |
+| Fails when initial locale is wrong (chicken-and-egg) | Works regardless of initial locale (1s sufficient) |
+| No new dependencies | Adds WhisperKit Swift package (~150 MB base model) |
+| ~0 additional compute | ~250 ms per detection call (mel + encoder + decoder) |
+| Hardcoded default safe set `[en-US, pt-BR]` | System preferred languages via `Locale.preferredLanguages` |
 | `LocaleLanguageDetector` protocol: `NLLanguageDetector` | `LocaleLanguageDetector` protocol: `WhisperKitAudioDetector` |
 
 ## Consequences
