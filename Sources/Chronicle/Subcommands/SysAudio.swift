@@ -201,6 +201,8 @@ struct SysAudio: AsyncParsableCommand {
     }
 
     // Audio language detection (ADR-0006): concurrent, CPU-only, no ANE contention.
+    let (swapStream, swapContinuation) = AsyncStream.makeStream(of: SpeechTranscriber.self)
+
     let audioProbeTask: Task<Void, Never>? = probeStream.map { stream in
       let fmt = analyzerFormat
       let candidates = localeResolver?.candidateSet ?? []
@@ -224,12 +226,14 @@ struct SysAudio: AsyncParsableCommand {
             FileHandle.standardError.write(Data(
               "[sysaudio.locale] audio detected=\(detection.language) (\(String(format: "%.3f", detection.confidence))); switching from \(currentBcp47) to \(detectedBcp47)\n".utf8
             ))
-            let _ = await LocaleResolverWiring.hotSwapLocale(
+            if let newTranscriber = await LocaleResolverWiring.hotSwapLocale(
               logTag: "sysaudio",
               analyzer: analyzer,
               to: detectedBcp47,
               preset: .progressiveTranscription
-            )
+            ) {
+              swapContinuation.yield(newTranscriber)
+            }
           } else {
             FileHandle.standardError.write(Data(
               "[sysaudio.locale] audio confirmed=\(detection.language); staying at \(currentBcp47)\n".utf8
@@ -262,7 +266,11 @@ struct SysAudio: AsyncParsableCommand {
       var volatileCount = 0
       var finalCount = 0
       var latencyMonitor = TranscriptionLatencyMonitor(logTag: "sysaudio")
-      for try await result in transcriber.results {
+      var currentTranscriber = transcriber
+      var swapIter = swapStream.makeAsyncIterator()
+
+      while !Task.isCancelled {
+        for try await result in currentTranscriber.results {
           let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
           if text.isEmpty { continue }
           let offsetMs = resultClock.millisecondsSinceStart()
@@ -345,6 +353,13 @@ struct SysAudio: AsyncParsableCommand {
               print("\u{1b}[33mvolatile\u{1b}[0m \(text)")
             }
           }
+        }
+        if let newT = await swapIter.next() {
+          currentTranscriber = newT
+          FileHandle.standardError.write(Data("[sysaudio] transcriber swapped; restarting results loop\n".utf8))
+          continue
+        }
+        break
       }
       if let snapshot = latencyMonitor.finalSnapshot() {
         TranscriptionLatencyMonitor.emit(logTag: "sysaudio", snapshot: snapshot)

@@ -209,6 +209,9 @@ struct Mic: AsyncParsableCommand {
     // transcription. Uses tiny model on CPU-only — no ANE contention
     // with SpeechTranscriber or Sortformer. ~570ms per detection.
     // Retries up to 3x if confidence is low. Hot-swaps locale on success.
+    // Swap channel: probe pushes new transcriber, consume loop restarts.
+    let (swapStream, swapContinuation) = AsyncStream.makeStream(of: SpeechTranscriber.self)
+
     let audioProbeTask: Task<Void, Never>? = probeStream.map { stream in
       let fmt = analyzerFormat
       let candidates = localeResolver?.candidateSet ?? []
@@ -232,12 +235,14 @@ struct Mic: AsyncParsableCommand {
             FileHandle.standardError.write(Data(
               "[mic.locale] audio detected=\(detection.language) (\(String(format: "%.3f", detection.confidence))); switching from \(currentBcp47) to \(detectedBcp47)\n".utf8
             ))
-            let _ = await LocaleResolverWiring.hotSwapLocale(
+            if let newTranscriber = await LocaleResolverWiring.hotSwapLocale(
               logTag: "mic",
               analyzer: analyzer,
               to: detectedBcp47,
               preset: .progressiveTranscription
-            )
+            ) {
+              swapContinuation.yield(newTranscriber)
+            }
           } else {
             FileHandle.standardError.write(Data(
               "[mic.locale] audio confirmed=\(detection.language); staying at \(currentBcp47)\n".utf8
@@ -270,7 +275,11 @@ struct Mic: AsyncParsableCommand {
       var volatileCount = 0
       var finalCount = 0
       var latencyMonitor = TranscriptionLatencyMonitor(logTag: "mic")
-      for try await result in transcriber.results {
+      var currentTranscriber = transcriber
+      var swapIter = swapStream.makeAsyncIterator()
+
+      while !Task.isCancelled {
+        for try await result in currentTranscriber.results {
           let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
           if text.isEmpty { continue }
           let offsetMs = resultClock.millisecondsSinceStart()
@@ -354,6 +363,14 @@ struct Mic: AsyncParsableCommand {
               print("\u{1b}[33mvolatile\u{1b}[0m \(text)")
             }
           }
+        }
+        // Inner for-await ended. Check for a transcriber swap.
+        if let newT = await swapIter.next() {
+          currentTranscriber = newT
+          FileHandle.standardError.write(Data("[mic] transcriber swapped; restarting results loop\n".utf8))
+          continue
+        }
+        break
       }
       if let snapshot = latencyMonitor.finalSnapshot() {
         TranscriptionLatencyMonitor.emit(logTag: "mic", snapshot: snapshot)
