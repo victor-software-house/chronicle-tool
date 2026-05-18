@@ -192,12 +192,22 @@ struct Mic: AsyncParsableCommand {
 
     // --- Audio language detection (ADR-0006) ---
     // Runs BEFORE analyzer and diarizer so WhisperKit gets exclusive ANE.
-    // After detection completes, WhisperKit is deallocated and ANE is free
-    // for Sortformer + SpeechTranscriber.
     var activeTranscriber = transcriber
+
+    try await micSource.start()
+    FileHandle.standardError.write(Data("[mic] engine started; speak into the mic. Ctrl-C to stop.\n".utf8))
+
+    // Start multicast fan BEFORE the probe so subscribers receive buffers.
+    let multicastFanTask: Task<Void, Never>? = pcmMulticast.map { mc in
+      Task {
+        for await ref in micSource.pcmBuffers {
+          mc.yield(ref)
+        }
+        mc.finish()
+      }
+    }
+
     do {
-      try await micSource.start()
-      FileHandle.standardError.write(Data("[mic] engine started; speak into the mic. Ctrl-C to stop.\n".utf8))
 
       if let probeStream, let localeResolver {
         let audioDetector = AudioLanguageDetector(verbose: true)
@@ -233,8 +243,6 @@ struct Mic: AsyncParsableCommand {
         }
       }
       // audioDetector goes out of scope here — WhisperKit model deallocated, ANE freed.
-    } catch {
-      throw error
     }
 
     // Now start diarizer (uses ANE via Sortformer CoreML).
@@ -358,16 +366,7 @@ struct Mic: AsyncParsableCommand {
       }
     }
 
-    // When diarization is enabled, fan the same PCM stream from the source
-    // into the multicast and feed the diarizer subscription.
-    let multicastFanTask: Task<Void, Never>? = pcmMulticast.map { mc in
-      Task {
-        for await ref in micSource.pcmBuffers {
-          mc.yield(ref)
-        }
-        mc.finish()
-      }
-    }
+    // multicastFanTask already started above before the probe.
     let diarizerTask: Task<Void, Never>? = (diarizer.flatMap { d in
       diarizerStream.map { stream in
         Task {

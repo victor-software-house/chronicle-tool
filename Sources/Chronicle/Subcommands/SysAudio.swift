@@ -189,12 +189,22 @@ struct SysAudio: AsyncParsableCommand {
     }
 
     // --- Audio language detection (ADR-0006) ---
-    // Runs BEFORE analyzer and diarizer so WhisperKit gets exclusive ANE.
     var activeTranscriber = transcriber
-    do {
-      try await sysSource.start()
-      FileHandle.standardError.write(Data("[sysaudio] capture started; play audio in any app. Ctrl-C to stop.\n".utf8))
 
+    try await sysSource.start()
+    FileHandle.standardError.write(Data("[sysaudio] capture started; play audio in any app. Ctrl-C to stop.\n".utf8))
+
+    // Start multicast fan BEFORE the probe so subscribers receive buffers.
+    let multicastFanTask: Task<Void, Never>? = pcmMulticast.map { mc in
+      Task {
+        for await ref in sysSource.pcmBuffers {
+          mc.yield(ref)
+        }
+        mc.finish()
+      }
+    }
+
+    do {
       if let probeStream, let localeResolver {
         let audioDetector = AudioLanguageDetector(verbose: verbose)
         try await audioDetector.load()
@@ -228,9 +238,6 @@ struct SysAudio: AsyncParsableCommand {
           }
         }
       }
-    } catch let e as CoreAudioTapSourceError {
-      FileHandle.standardError.write(Data("[sysaudio] error: \(e.description)\n".utf8))
-      throw ExitCode(2)
     }
 
     // Now start diarizer (uses ANE via Sortformer CoreML).
@@ -352,16 +359,7 @@ struct SysAudio: AsyncParsableCommand {
       }
     }
 
-    // When diarization is enabled, fan the same PCM stream from the source
-    // into the multicast and feed the diarizer subscription.
-    let multicastFanTask: Task<Void, Never>? = pcmMulticast.map { mc in
-      Task {
-        for await ref in sysSource.pcmBuffers {
-          mc.yield(ref)
-        }
-        mc.finish()
-      }
-    }
+    // multicastFanTask already started above before the probe.
     let diarizerTask: Task<Void, Never>? = (diarizer.flatMap { d in
       diarizerStream.map { stream in
         Task {
