@@ -115,35 +115,32 @@ struct SysAudio: AsyncParsableCommand {
       rotateAudio: rotateAudio
     )
 
-    // Compose sidecar sinks.
+    // Resolve output paths: explicit CLI overrides take precedence,
+    // otherwise auto-generate a timestamped session directory.
+    let paths = try SessionOutputPaths.resolve(
+      source: "sysaudio",
+      outputOverride: self.output,
+      appendOverride: self.append,
+      liveOverride: self.live
+    )
+    FileHandle.standardError.write(Data("[sysaudio] session dir: \(paths.sessionDir.path)\n".utf8))
+
+    // Compose sidecar sinks — always on.
     var sinks: [TranscriptionSink] = []
-    let traceSink: JSONLTraceSink?
-    if let output = self.output {
-      let url = URL(fileURLWithPath: (output as NSString).expandingTildeInPath)
-      FileHandle.standardError.write(Data("[INFO] [sysaudio] appending JSONL trace to \(url.path)\n".utf8))
-      let sink = try JSONLTraceSink(
-        url: url,
-        source: "sysaudio",
-        sourceKind: .systemOutput,
-        locale: supported.identifier,
-        preset: TranscriptionEngine.presetName(.progressiveTranscription),
-        recordTranscriptionLatency: true
-      )
-      traceSink = sink
-      sinks.append(sink)
-    } else {
-      traceSink = nil
-    }
-    if let path = self.live {
-      let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
-      FileHandle.standardError.write(Data("[sysaudio] live transcript file: \(url.path)\n".utf8))
-      sinks.append(LiveFileSink(url: url))
-    }
-    if let path = self.append {
-      let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
-      FileHandle.standardError.write(Data("[sysaudio] appending finals to \(url.path)\n".utf8))
-      sinks.append(FinalsAppendSink(url: url))
-    }
+    FileHandle.standardError.write(Data("[INFO] [sysaudio] appending JSONL trace to \(paths.trace.path)\n".utf8))
+    let traceSink = try JSONLTraceSink(
+      url: paths.trace,
+      source: "sysaudio",
+      sourceKind: .systemOutput,
+      locale: supported.identifier,
+      preset: TranscriptionEngine.presetName(.progressiveTranscription),
+      recordTranscriptionLatency: true
+    )
+    sinks.append(traceSink)
+    FileHandle.standardError.write(Data("[sysaudio] live transcript: \(paths.live.path)\n".utf8))
+    sinks.append(LiveFileSink(url: paths.live))
+    FileHandle.standardError.write(Data("[sysaudio] appending finals to \(paths.finals.path)\n".utf8))
+    sinks.append(FinalsAppendSink(url: paths.finals))
     let composedSinks = sinks
 
     let inline = self.inline
@@ -256,11 +253,9 @@ struct SysAudio: AsyncParsableCommand {
             speakerId: speakerId
           )
         }
-        if let traceSink {
-          let stats = await traceSink.stats()
-          if stats.droppedEvents > 0 {
-            throw JSONLTraceSinkFailure(stats: stats)
-          }
+        let traceStats = await traceSink.stats()
+        if traceStats.droppedEvents > 0 {
+          throw JSONLTraceSinkFailure(stats: traceStats)
         }
         if result.isFinal {
           finalCount += 1
@@ -387,12 +382,10 @@ struct SysAudio: AsyncParsableCommand {
       for sink in composedSinks {
         await sink.finish()
       }
-      if let traceSink {
-        let stats = await traceSink.stats()
-        FileHandle.standardError.write(Data(
-          "[sysaudio] trace.written=\(stats.writtenEvents) trace.dropped=\(stats.droppedEvents)\n".utf8
-        ))
-      }
+      let errStats = await traceSink.stats()
+      FileHandle.standardError.write(Data(
+        "[sysaudio] trace.written=\(errStats.writtenEvents) trace.dropped=\(errStats.droppedEvents)\n".utf8
+      ))
       throw error
     }
     _ = await pcmTask.value
@@ -410,14 +403,12 @@ struct SysAudio: AsyncParsableCommand {
     FileHandle.standardError.write(Data(
       "[sysaudio] done. volatile=\(counts.volatile) final=\(counts.final)\n".utf8
     ))
-    if let traceSink {
-      let stats = await traceSink.stats()
-      FileHandle.standardError.write(Data(
-        "[sysaudio] trace.written=\(stats.writtenEvents) trace.dropped=\(stats.droppedEvents)\n".utf8
-      ))
-      if stats.droppedEvents > 0 {
-        throw ExitCode(3)
-      }
+    let finalStats = await traceSink.stats()
+    FileHandle.standardError.write(Data(
+      "[sysaudio] trace.written=\(finalStats.writtenEvents) trace.dropped=\(finalStats.droppedEvents)\n".utf8
+    ))
+    if finalStats.droppedEvents > 0 {
+      throw ExitCode(3)
     }
   }
 }
