@@ -122,19 +122,28 @@ struct Mic: AsyncParsableCommand {
     let diarizer: SortformerStreamingDiarizer? = diarize
       ? SortformerStreamingDiarizer(logTag: "mic.diarize")
       : nil
+    // Use a multicast when diarization or locale auto-detect needs a
+    // parallel PCM subscriber. The audio probe (ADR-0006) needs its own
+    // subscription so it doesn't consume the main pcmBuffers stream.
+    let needsMulticast = diarizer != nil || !localeSpec.isPin
     let pcmMulticast: BufferMulticast<PCMBufferRef>?
     let sidecarStream: AsyncStream<PCMBufferRef>
     let diarizerStream: AsyncStream<PCMBufferRef>?
-    if let _ = diarizer {
+    let probeStream: AsyncStream<PCMBufferRef>?
+    if needsMulticast {
       let mc = BufferMulticast<PCMBufferRef>()
       pcmMulticast = mc
       sidecarStream = mc.subscribe()
-      diarizerStream = mc.subscribe()
-      FileHandle.standardError.write(Data("[mic] diarization enabled (Sortformer streaming)\n".utf8))
+      diarizerStream = diarizer != nil ? mc.subscribe() : nil
+      probeStream = !localeSpec.isPin ? mc.subscribe() : nil
+      if diarizer != nil {
+        FileHandle.standardError.write(Data("[mic] diarization enabled (Sortformer streaming)\n".utf8))
+      }
     } else {
       pcmMulticast = nil
       sidecarStream = micSource.pcmBuffers
       diarizerStream = nil
+      probeStream = nil
     }
 
     // Resolve output paths: explicit CLI overrides take precedence,
@@ -338,8 +347,10 @@ struct Mic: AsyncParsableCommand {
       if localeResolver != nil {
         let audioDetector = AudioLanguageDetector(verbose: true)
         try await audioDetector.load()
-        if let detection = try await AudioLanguageProbe.detect(
-          source: micSource,
+        if let probeStream,
+           let detection = try await AudioLanguageProbe.detect(
+          stream: probeStream,
+          sampleRate: analyzerFormat.sampleRate,
           detector: audioDetector,
           logTag: "mic"
         ) {

@@ -12,6 +12,12 @@ public enum LocaleSpec: Equatable, Sendable {
   /// `--locale auto:*` — opt-in research mode, full SpeechTranscriber supported set.
   case autoAny
 
+  /// True when the spec is a fixed locale pin (no auto-detection).
+  public var isPin: Bool {
+    if case .pin = self { return true }
+    return false
+  }
+
   /// Parse the textual form into a spec. Trims whitespace; preserves locale identifier case.
   public static func parse(_ raw: String) throws -> LocaleSpec {
     let trimmed = raw.trimmingCharacters(in: .whitespaces)

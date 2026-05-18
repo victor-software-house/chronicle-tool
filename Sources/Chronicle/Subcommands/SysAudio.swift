@@ -167,19 +167,25 @@ struct SysAudio: AsyncParsableCommand {
     let diarizer: SortformerStreamingDiarizer? = diarize
       ? SortformerStreamingDiarizer(logTag: "sysaudio.diarize")
       : nil
+    let needsMulticast = diarizer != nil || !localeSpec.isPin
     let pcmMulticast: BufferMulticast<PCMBufferRef>?
     let sidecarStream: AsyncStream<PCMBufferRef>
     let diarizerStream: AsyncStream<PCMBufferRef>?
-    if let _ = diarizer {
+    let probeStream: AsyncStream<PCMBufferRef>?
+    if needsMulticast {
       let mc = BufferMulticast<PCMBufferRef>()
       pcmMulticast = mc
       sidecarStream = mc.subscribe()
-      diarizerStream = mc.subscribe()
-      FileHandle.standardError.write(Data("[sysaudio] diarization enabled (Sortformer streaming)\n".utf8))
+      diarizerStream = diarizer != nil ? mc.subscribe() : nil
+      probeStream = !localeSpec.isPin ? mc.subscribe() : nil
+      if diarizer != nil {
+        FileHandle.standardError.write(Data("[sysaudio] diarization enabled (Sortformer streaming)\n".utf8))
+      }
     } else {
       pcmMulticast = nil
       sidecarStream = sysSource.pcmBuffers
       diarizerStream = nil
+      probeStream = nil
     }
 
     let diarizerPrepareTask: Task<Void, Never>? = diarizer.map { d in
@@ -340,8 +346,10 @@ struct SysAudio: AsyncParsableCommand {
       if localeResolver != nil {
         let audioDetector = AudioLanguageDetector(verbose: verbose)
         try await audioDetector.load()
-        if let detection = try await AudioLanguageProbe.detect(
-          source: sysSource,
+        if let probeStream,
+           let detection = try await AudioLanguageProbe.detect(
+          stream: probeStream,
+          sampleRate: analyzerFormat.sampleRate,
           detector: audioDetector,
           logTag: "sysaudio"
         ) {

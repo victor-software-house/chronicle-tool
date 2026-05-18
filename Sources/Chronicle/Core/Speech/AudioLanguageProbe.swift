@@ -1,42 +1,39 @@
 import AVFoundation
 import Foundation
 
-/// Collects ~N seconds of PCM audio from an `AudioSource` for the startup
-/// language detection probe, then runs `AudioLanguageDetector.detect()`.
+/// Collects ~N seconds of PCM audio from a `BufferMulticast` subscription
+/// for the startup language detection probe, then runs
+/// `AudioLanguageDetector.detect()`.
 ///
 /// Used by both `mic` and `sysaudio` when `--locale auto` is active.
-/// The probe buffers audio from `pcmBuffers`, converts to 16 kHz mono
-/// Float (the format WhisperKit expects), and returns the detected
-/// language code filtered to the candidate set.
+/// The probe subscribes to the multicast (so it doesn't consume the main
+/// `pcmBuffers` stream), buffers audio, converts to 16 kHz mono Float
+/// (the format WhisperKit expects), and returns the detected language code
+/// filtered to the candidate set.
 @available(macOS 26.0, *)
 public enum AudioLanguageProbe {
   /// Default probe duration in seconds. 3s is sufficient for reliable
   /// detection even on the `base` model per ADR-0006 experiments.
   public static let defaultProbeDurationSeconds: Double = 3.0
 
-  /// Buffer audio from `source.pcmBuffers` for `duration` seconds, then
-  /// run language detection. Returns the detected language code (e.g. "en",
-  /// "pt") or nil if detection failed or no audio was captured.
-  ///
-  /// The probe consumes from `pcmBuffers` directly — if a `BufferMulticast`
-  /// is active, subscribe a dedicated stream for the probe.
+  /// Buffer audio from a multicast subscription for `duration` seconds,
+  /// then run language detection. Returns the detected language code
+  /// (e.g. "en", "pt") or nil if detection failed or no audio was captured.
   public static func detect(
-    source: any AudioSource,
+    stream: AsyncStream<PCMBufferRef>,
+    sampleRate: Double,
     detector: AudioLanguageDetector,
     candidates: Set<String>? = nil,
     durationSeconds: Double = defaultProbeDurationSeconds,
     logTag: String = "locale"
   ) async throws -> (language: String, confidence: Double)? {
-    // Collect PCM buffers for the probe duration.
-    let analyzerFormat = source.analyzerFormat
-    let targetSamples = Int(analyzerFormat.sampleRate * durationSeconds)
+    let targetSamples = Int(sampleRate * durationSeconds)
     var collected = [Float]()
     collected.reserveCapacity(targetSamples)
 
-    let deadline = ContinuousClock.now + .seconds(durationSeconds + 2.0) // +2s grace
-    for await ref in source.pcmBuffers {
+    let deadline = ContinuousClock.now + .seconds(durationSeconds + 2.0)
+    for await ref in stream {
       let buffer = ref.buffer
-      // Extract Float samples. The analyzer format is typically 16kHz mono Int16.
       if let int16Data = buffer.int16ChannelData {
         let count = Int(buffer.frameLength)
         let ptr = int16Data[0]
@@ -62,7 +59,6 @@ public enum AudioLanguageProbe {
       return nil
     }
 
-    let sampleRate = analyzerFormat.sampleRate
     FileHandle.standardError.write(Data(
       "[\(logTag).audio-detect] probe collected \(collected.count) samples (\(String(format: "%.1f", Double(collected.count) / sampleRate))s at \(Int(sampleRate)) Hz)\n".utf8
     ))
@@ -72,7 +68,6 @@ public enum AudioLanguageProbe {
     if abs(sampleRate - 16_000) < 1.0 {
       samples = collected
     } else {
-      // Simple linear resampling — good enough for language detection.
       let ratio = 16_000.0 / sampleRate
       let outCount = Int(Double(collected.count) * ratio)
       var resampled = [Float](repeating: 0, count: outCount)
