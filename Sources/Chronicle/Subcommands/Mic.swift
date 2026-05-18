@@ -25,7 +25,7 @@ struct Mic: AsyncParsableCommand {
     abstract: "Live microphone transcription via AVAudioEngine + SpeechAnalyzer progressive preset (Neural Engine, on-device)."
   )
 
-  @Option(name: .long, help: "Locale, e.g. en-US.")
+  @Option(name: .long, help: "Locale, e.g. en-US. Use 'auto' for the operator's default safe set, 'auto:en-US,pt-BR,...' for an explicit candidate list, or 'auto:*' to allow any SpeechTranscriber-supported locale.")
   var locale: String?
 
   @Option(name: [.long, .customShort("o")], help: "Append source-aware volatile + final events to this JSONL trace path.")
@@ -64,12 +64,26 @@ struct Mic: AsyncParsableCommand {
   @Flag(name: .long, help: "Live speaker diarization via FluidAudio Sortformer. Attaches speakerId to JSONL trace events and prefixes finals with the speaker label.")
   var diarize: Bool = false
 
+  @Option(name: .long, help: "Locale auto-detect hysteresis: minimum consecutive finals at the same candidate before switching (ADR-0003 default: 3).")
+  var localeMinFinals: Int = LocaleHysteresisConfig.default.minFinals
+
+  @Option(name: .long, help: "Locale auto-detect hysteresis: minimum NLLanguageRecognizer confidence required to count a final toward a switch (ADR-0003 default: 0.70).")
+  var localeConfidence: Double = LocaleHysteresisConfig.default.confidence
+
+  @Option(name: .long, help: "Locale auto-detect hysteresis: cooldown in seconds after a switch before another switch may apply (ADR-0003 default: 30 s).")
+  var localeCooldownSec: Double = LocaleHysteresisConfig.default.cooldownSeconds
+
+  @Option(name: .long, help: "Locale auto-detect hysteresis: minimum total characters at the new candidate across the consecutive-final run (ADR-0003 default: 30).")
+  var localeMinChars: Int = LocaleHysteresisConfig.default.minChars
+
   func run() async throws {
     guard #available(macOS 26.0, *) else {
       throw ValidationError("Requires macOS 26.0+.")
     }
 
-    let requestedLocale = Locale(identifier: locale ?? Locale.current.identifier)
+    let rawLocale = locale ?? Locale.current.identifier
+    let localeSpec = try LocaleSpec.parse(rawLocale)
+    let requestedLocale = Locale(identifier: localeSpec.initialLocaleIdentifier(default: Locale.current.identifier))
     let engine = try await TranscriptionEngine.make(
       locale: requestedLocale,
       preset: .progressiveTranscription,
@@ -155,6 +169,20 @@ struct Mic: AsyncParsableCommand {
     let composedSinks = sinks
 
     let resultClock = LiveResultClock()
+    var localeResolver = localeSpec.makeResolver(
+      currentLocale: supported.bcp47Identifier,
+      hysteresis: LocaleHysteresisConfig(
+        minFinals: localeMinFinals,
+        confidence: localeConfidence,
+        cooldownSeconds: localeCooldownSec,
+        minChars: localeMinChars
+      )
+    )
+    if let resolver = localeResolver {
+      FileHandle.standardError.write(Data(
+        "[mic.locale] auto-detect enabled current=\(resolver.currentLocale) candidates=\(resolver.candidateSet.isEmpty ? "any" : resolver.candidateSet.joined(separator: ",")) minFinals=\(resolver.hysteresis.minFinals) confidence=\(resolver.hysteresis.confidence) cooldownSec=\(resolver.hysteresis.cooldownSeconds) minChars=\(resolver.hysteresis.minChars)\n".utf8
+      ))
+    }
 
     let diarizerPrepareTask: Task<Void, Never>? = diarizer.map { d in
       Task {
@@ -196,6 +224,16 @@ struct Mic: AsyncParsableCommand {
           speakerId: speakerId
         ) {
           TranscriptionLatencyMonitor.emit(logTag: "mic", snapshot: snapshot)
+        }
+        if result.isFinal, localeResolver != nil {
+          let decision = localeResolver!.consider(final: text)
+          await LocaleResolverWiring.report(
+            logTag: "mic",
+            decision: decision,
+            traceSink: traceSink,
+            wallclockOffsetMs: offsetMs,
+            wallclock: wallclock
+          )
         }
         for sink in composedSinks {
           await sink.didReceiveResult(

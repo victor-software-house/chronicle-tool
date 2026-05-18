@@ -16,7 +16,7 @@ struct SysAudio: AsyncParsableCommand {
     abstract: "Live system-audio transcription via CoreAudio process tap + SpeechAnalyzer (on-device, requires System Audio Recording permission)."
   )
 
-  @Option(name: .long, help: "Locale, e.g. en-US. Locale auto-detect (ADR-0003) lands with FR-6/P4.")
+  @Option(name: .long, help: "Locale, e.g. en-US. Use 'auto' for the operator's default safe set, 'auto:en-US,pt-BR,...' for an explicit candidate list, or 'auto:*' to allow any SpeechTranscriber-supported locale. ADR-0003 governs auto-detect policy; FR-6 wiring lands incrementally.")
   var locale: String?
 
   @Option(name: [.long, .customShort("o")], help: "Append source-aware volatile + final events to this JSONL trace path.")
@@ -61,12 +61,26 @@ struct SysAudio: AsyncParsableCommand {
   @Flag(name: .long, help: "Live speaker diarization via FluidAudio Sortformer. Attaches speakerId to JSONL trace events and prefixes finals with the speaker label.")
   var diarize: Bool = false
 
+  @Option(name: .long, help: "Locale auto-detect hysteresis: minimum consecutive finals at the same candidate before switching (ADR-0003 default: 3).")
+  var localeMinFinals: Int = LocaleHysteresisConfig.default.minFinals
+
+  @Option(name: .long, help: "Locale auto-detect hysteresis: minimum NLLanguageRecognizer confidence required to count a final toward a switch (ADR-0003 default: 0.70).")
+  var localeConfidence: Double = LocaleHysteresisConfig.default.confidence
+
+  @Option(name: .long, help: "Locale auto-detect hysteresis: cooldown in seconds after a switch before another switch may apply (ADR-0003 default: 30 s).")
+  var localeCooldownSec: Double = LocaleHysteresisConfig.default.cooldownSeconds
+
+  @Option(name: .long, help: "Locale auto-detect hysteresis: minimum total characters at the new candidate across the consecutive-final run (ADR-0003 default: 30).")
+  var localeMinChars: Int = LocaleHysteresisConfig.default.minChars
+
   func run() async throws {
     guard #available(macOS 26.0, *) else {
       throw ValidationError("Requires macOS 26.0+.")
     }
 
-    let requestedLocale = Locale(identifier: locale ?? Locale.current.identifier)
+    let rawLocale = locale ?? Locale.current.identifier
+    let localeSpec = try LocaleSpec.parse(rawLocale)
+    let requestedLocale = Locale(identifier: localeSpec.initialLocaleIdentifier(default: Locale.current.identifier))
     let txEngine = try await TranscriptionEngine.make(
       locale: requestedLocale,
       preset: .progressiveTranscription,
@@ -135,6 +149,21 @@ struct SysAudio: AsyncParsableCommand {
     let inline = self.inline
     let resultClock = LiveResultClock()
 
+    var localeResolver = localeSpec.makeResolver(
+      currentLocale: supported.bcp47Identifier,
+      hysteresis: LocaleHysteresisConfig(
+        minFinals: localeMinFinals,
+        confidence: localeConfidence,
+        cooldownSeconds: localeCooldownSec,
+        minChars: localeMinChars
+      )
+    )
+    if let resolver = localeResolver {
+      FileHandle.standardError.write(Data(
+        "[sysaudio.locale] auto-detect enabled current=\(resolver.currentLocale) candidates=\(resolver.candidateSet.isEmpty ? "any" : resolver.candidateSet.joined(separator: ",")) minFinals=\(resolver.hysteresis.minFinals) confidence=\(resolver.hysteresis.confidence) cooldownSec=\(resolver.hysteresis.cooldownSeconds) minChars=\(resolver.hysteresis.minChars)\n".utf8
+      ))
+    }
+
     // Optional live diarizer. When enabled, route PCM buffers through a
     // multicast so the sidecar consumer and the diarizer each get an
     // independent stream without re-reading the source.
@@ -196,6 +225,16 @@ struct SysAudio: AsyncParsableCommand {
           speakerId: speakerId
         ) {
           TranscriptionLatencyMonitor.emit(logTag: "sysaudio", snapshot: snapshot)
+        }
+        if result.isFinal, localeResolver != nil {
+          let decision = localeResolver!.consider(final: text)
+          await LocaleResolverWiring.report(
+            logTag: "sysaudio",
+            decision: decision,
+            traceSink: traceSink,
+            wallclockOffsetMs: offsetMs,
+            wallclock: wallclock
+          )
         }
         for sink in composedSinks {
           await sink.didReceiveResult(

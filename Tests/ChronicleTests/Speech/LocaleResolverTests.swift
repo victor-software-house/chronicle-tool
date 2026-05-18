@@ -276,6 +276,13 @@ struct LocaleResolverTests {
     #expect((result?.confidence ?? 0) > 0.5)
   }
 
+  @Test("Locale.bcp47Identifier normalises Apple identifier separator")
+  func bcp47NormalisesUnderscore() {
+    #expect(Locale(identifier: "en_US").bcp47Identifier == "en-US")
+    #expect(Locale(identifier: "pt_BR").bcp47Identifier == "pt-BR")
+    #expect(Locale(identifier: "en-US").bcp47Identifier == "en-US")
+  }
+
   @Test("NLLanguageDetector picks en-US from constrained set on English sentence")
   func nlDetectorPicksEnglish() {
     let detector = NLLanguageDetector()
