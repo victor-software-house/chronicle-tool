@@ -10,8 +10,8 @@ One Swift 6 binary, multiple subcommands, each exercising one Apple-official Tah
 |---|---|---:|---|
 | `transcribe` | `Speech.SpeechAnalyzer` + `SpeechTranscriber(.transcription)` | **273 ×** rt on 6870 s WAV (P0 parity: byte-identical) | $0 |
 | `live` | `Speech.SpeechAnalyzer` + `SpeechTranscriber(.progressiveTranscription)` (file) | **91 ×** rt, 856 volatile + 40 final events | $0 |
-| `mic` | `AVAudioEngine` input tap → `SpeechAnalyzer.start(inputSequence:)` | real-time mic stream | $0 |
-| `sysaudio` | `CoreAudioTapSource` process tap → `SpeechAnalyzer.start(inputSequence:)` | real-time system audio mix smoke-tested with TTS | $0 |
+| `mic` | `AVAudioEngine` input tap → `SpeechAnalyzer.start(inputSequence:)` (+ optional `--diarize`, `--locale auto`) | real-time mic stream | $0 |
+| `sysaudio` | `CoreAudioTapSource` process tap → `SpeechAnalyzer.start(inputSequence:)` (+ optional `--diarize`, `--locale auto`) | real-time system audio mix smoke-tested with TTS | $0 |
 | `classify` | `SoundAnalysis.SNClassifyImageRequest` (built-in classifier v1) | **584 ×** rt | $0 |
 | `diarize` | FluidAudio (CoreML, Neural Engine) — only non-Apple dep | **787 ×** rt (post-refactor 872 ×), 5 speakers / 91 segments, byte-identical to spike | $0 |
 | `ocr` | `Vision.RecognizeDocumentsRequest` (Tahoe) / `RecognizeTextRequest` | 0.5 – 4 s per 2992×1934 image | $0 |
@@ -38,13 +38,11 @@ multi-source chronicle daemon. The spec set lives under [`docs/`](docs/):
 - [`docs/prd/PRD-001-resilient-multi-source-daemon.md`](docs/prd/PRD-001-resilient-multi-source-daemon.md) — the master PRD (FRs, NFRs, rollout plan, verification appendix).
 - [`docs/adr/ADR-0001-modular-pipeline-architecture.md`](docs/adr/ADR-0001-modular-pipeline-architecture.md) — protocol-oriented core with subcommands as thin CLI veneers. **Implemented (P0).**
 - [`docs/adr/ADR-0002-audio-storage-format.md`](docs/adr/ADR-0002-audio-storage-format.md) — ALAC-in-CAF default with raw-PCM rolling scratch; Opus retained only as opt-in/export after WER regression. **Implemented (P11).**
-- [`docs/adr/ADR-0003-locale-resolution-policy.md`](docs/adr/ADR-0003-locale-resolution-policy.md) — candidate-set restriction + 4-knob hysteresis for `--locale auto`. **Pending (P4).**
+- [`docs/adr/ADR-0003-locale-resolution-policy.md`](docs/adr/ADR-0003-locale-resolution-policy.md) — candidate-set restriction + 4-knob hysteresis for `--locale auto`. **Implemented (P4).**
 - [`docs/adr/ADR-0005-audio-sidecar-reuse-boundary.md`](docs/adr/ADR-0005-audio-sidecar-reuse-boundary.md) — Apple-native sidecar writer + Chronicle-owned rotation/scratch/recovery boundary. **Accepted.**
 
-Current state vs PRD-001 rollout: **P0 (modular refactor), P7 (sysaudio), and
-P11 (ALAC production sidecar) are done. `scratch-export` now automates raw-PCM
-scratch recovery; remaining FRs are JSONL trace, locale resolver, streaming
-diarization, live tagging, merge, end-to-end verification, and final docs.**
+Current state vs PRD-001 rollout: **P0 (modular refactor), P2a (scratch recovery), P3 (JSONL trace), P4 (locale resolver), P5 (streaming diarization), P7 (sysaudio), P8 (merge), and P11 (ALAC production sidecar) are done. `scratch-export` now automates raw-PCM
+scratch recovery; remaining FRs are live tagging (FR-5), repair, and end-to-end verification.**
 
 For a one-screen overview of every phase + current task state, see
 [`docs/STATUS.md`](docs/STATUS.md). For agent / contributor operational
@@ -103,11 +101,12 @@ swift build -c release
   --locale en-US
 
 # Live microphone (Ctrl-C to stop, or --seconds N to auto-stop).
-.build/release/chronicle mic --locale en-US --seconds 30 -o out/mic.trace.jsonl
+.build/release/chronicle mic --locale auto --diarize --seconds 30 -o out/mic.trace.jsonl
 
 # Live mic as a daemon: lossless audio + rolling live snapshot + final-only log + JSONL trace.
 .build/release/chronicle mic \
-  --locale pt-BR \
+  --locale auto:en-US,pt-BR,es-ES \
+  --diarize \
   --live out/live.md \
   --append out/finals.md \
   --save-audio out/audio.wav \
@@ -115,7 +114,8 @@ swift build -c release
 
 # Live system-audio capture (everything playing through the default output device).
 .build/release/chronicle sysaudio \
-  --locale en-US \
+  --locale auto \
+  --diarize \
   --live out/sys-live.md \
   --append out/sys-finals.md \
   --save-audio out/sys-audio.wav
@@ -281,14 +281,14 @@ Sources/Chronicle/
 the binary as a real app for TCC dialogs (required for Microphone and
 System Audio Recording prompts).
 
-Future phases plug into the existing protocols:
+Implemented and remaining phases compose here:
 
-- **P3 (FR-2) JSONL trace** — add `JSONLTraceSink: TranscriptionSink`.
-- **P4 (FR-6) locale auto-detect** — `Core/Speech/LocaleResolver.swift`.
+- **P3 (FR-2) JSONL trace** — `JSONLTraceSink: TranscriptionSink`.
+- **P4 (FR-6) locale auto-detect** — `Core/Speech/LocaleResolver.swift` with live hot-swap.
 - **P5 (FR-4) live diarization** — `Core/Audio/BufferMulticast.swift` +
   `Core/Diarize/StreamingDiarizer.swift` consuming `PCMBufferRef`.
 - **P6 (FR-5) live tagging** — `Core/Sinks/TagsJSONLSink.swift` calling
-  the existing `ContentTagger.tagText`.
+  the existing `ContentTagger.tagText` (still pending).
 
 Implemented sidecar pieces:
 
@@ -312,12 +312,8 @@ public diarizer on Tahoe 26.
 swift test
 ```
 
-`Tests/ChronicleTests/` uses Swift Testing (`@Test`). 39 tests across 10
-suites (`AVAudioFile ALAC sink`, `AudioSource output streams`,
-`BufferConverter`, `CoreAudioTapSource`, `OpusCAFSink`,
-`RollingPCMScratchSink`, `ScratchExporter`, `TCCPreflight`, `AsyncTimeout`,
-`EncodeOpus round-trip`). More tests land alongside each FR per
-PRD-001 file breakdown (`JSONLTraceSinkTests`, `LocaleResolverTests`, etc.).
+`Tests/ChronicleTests/` uses Swift Testing (`@Test`). 108 tests across FR-2/FR-4/FR-6 and sidecar suites (JSONL trace, locale resolver, streaming diarizer, latency monitor, sink coverage, plus ALAC/sidecar and CoreAudio suites). More tests land alongside each FR per
+PRD-001 file breakdown (`JSONLTraceSinkTests`, `LocaleResolverTests`, `StreamingDiarizerWiringTests`, etc.).
 
 ## P11 audio sidecar — ALAC default + scratch recovery
 

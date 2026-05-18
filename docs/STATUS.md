@@ -5,7 +5,13 @@ plan". Authoritative scope and acceptance criteria live in
 [`PRD-001`](prd/PRD-001-resilient-multi-source-daemon.md); this is the
 operator-facing dashboard.
 
-Last refresh: 2026-05-17 — FR-2 JSONL trace (`36375a5`), FR-7 merge (`a4078ce`), and FR-4 streaming diarization (`b666da0` + `dff9eae`) have all landed. `chronicle mic --diarize` and `chronicle sysaudio --diarize` now fan their analyzer PCM stream through `BufferMulticast` into `SortformerStreamingDiarizer` (FluidAudio Sortformer CoreML), convert PCM through `PCMFloatConverter`, look up each result's speaker via `DiarizationTimelineLookup` keyed off the analyzer's `audioRange` midpoint, and attach `speakerId` to JSONL trace events and `[Sx]` prefixes to `finals.md` lines. `chronicle merge` already surfaces `(speaker, locale)` once events carry the field. Live smoke against an ElevenLabs Sarah + George fixture proved realtime behaviour: 51.9 s audio processed with 51 Sortformer `process()` calls, 2 speakers, and no backlog; `/usr/bin/time -lh` measured 5.45 s user + 1.56 s sys over 71.09 s wall (~10% of one M4 core), 544 MB max RSS, and 307 MB peak footprint. Headless `sudo powermetrics -f plist --samplers cpu_power,gpu_power,ane_power,thermal` during the smoke recorded ANE rail activity: active playback averaged ~161 mW ANE vs ~20 mW pre-window baseline, GPU ~175 mW, thermal pressure nominal. Follow-up latency instrumentation now writes `transcriptionLatencyMs` to trace events and emits `[source.latency ...]` stderr summaries; latest sysaudio fixture smoke measured 215 result events, avg 389 ms, p95 838 ms, max 1469 ms speech-end-to-transcript receipt latency. Sortformer prewarm is explicit and reentrancy-safe (one model load even if prewarm and first ingest race). The recurring single `E5RT encountered an STL exception. msg = unordered_map::at: key not found.` stderr line during the first Sortformer inference call is an Apple ANE runtime warning emitted by the bundled CoreML model on macOS 26 (FluidAudio issue #121 reports similar `E5RT: ANE model load has failed for on-device compiled macho` errors fixed by reboot or `MLComputeUnits.cpuAndNeuralEngine`); it is non-fatal, transcripts and diarization continue producing correct labels, and there is no chronicle-side code path that triggers it. Tracked as #99 to watch for a FluidAudio/CoreML fix; do not paper over with stderr filtering. Earlier same-day work replaced SCStream sysaudio with `CoreAudioTapSource` per [ADR-0004](adr/ADR-0004-tahoe-system-audio-capture.md) and P11 ALAC production sidecar remains the default audio storage path per [ADR-0005](adr/ADR-0005-audio-sidecar-reuse-boundary.md). The 1–4 functional batch is still **not finished**: FR-6 LocaleResolver remains open.
+Last refresh: 2026-05-18 — FR-2 JSONL trace, FR-4 streaming diarization, FR-6 locale resolver, and robustness hardening have all landed. `chronicle mic --diarize` and `chronicle sysaudio --diarize` now fan analyzer PCM through `BufferMulticast` into `SortformerStreamingDiarizer` (FluidAudio Sortformer CoreML), attach `speakerId` to source-aware `trace.jsonl`, and prefix finals with `[S0]/[S1]...` labels. `chronicle merge` preserves `(speaker, locale)` once events carry the fields. Latest stability work added live `--locale auto` swap and crash-safe buffer-copying in `AudioSourceOutputStreams`.
+
+Sysaudio/diarize smoke on 6-speaker fixture (6× speeds) was clean: no segfaults, 1.00x/1.25x/1.50x/2.00x speech quality near-perfect-to-good, 2.50x degraded, 3.00x unusable; all runs recovered stable speaker tags across dynamic output-device changes.
+
+Throughput: 51.9 s live audio = 51 `Sortformer process()` calls, ~0.98/s. `/usr/bin/time -lh` latest: 5.45 s user + 1.56 s sys over 71.09 s wall (~10% of one M4 core), 544 MB max RSS; headless powermetrics: +~141 mW ANE above baseline. `transcriptionLatencyMs` is now recorded on each result and summarized by live stderr (`[source.latency ...]`; recent avg ≈ 389 ms, p95 838 ms on 215-result smoke).
+
+The recurring single `E5RT encountered an STL exception. msg = unordered_map::at: key not found.` remains one non-fatal Apple ANE/CoreML warning during first Sortformer inference. Tracked as #99; no chronicle-side fix identified. Earlier same-day work replaced SCStream sysaudio with `CoreAudioTapSource` per [ADR-0004](adr/ADR-0004-tahoe-system-audio-capture.md); P11 ALAC production sidecar remains default per [ADR-0005](adr/ADR-0005-audio-sidecar-reuse-boundary.md).
 
 ## Phase board
 
@@ -18,7 +24,7 @@ Last refresh: 2026-05-17 — FR-2 JSONL trace (`36375a5`), FR-7 merge (`a4078ce`
 | **P3** | JSONL incremental trace | FR-2 | ✔ **done** | `Core/Sinks/JSONLTraceSink` appends source-aware `trace.jsonl`; locked append prevents multi-process line interleaving; torn trailing line recovery; schema is spine for merge/diarize/locale. |
 | P8 | `chronicle merge` | FR-7 | ✔ **done** | `Subcommands/Merge.swift` reads N source-aware `trace.jsonl` and/or `finals.md` inputs, sorts by wallclock with stable tie-breaks, preserves source/locale/speaker labels; default `log` output, optional `--format markdown` table. |
 | P5 | Live diarization | FR-4 | ✔ **done** | `Core/Audio/BufferMulticast.swift` fan-out, `Core/Diarize/StreamingDiarizer.swift` with `SortformerStreamingDiarizer` and `DiarizationTimelineLookup`; `--diarize` wired into `mic` and `sysaudio`; speakerId in JSONL trace + `[Sx]` finals.md prefix. |
-| P4 | Locale auto-detect per ADR-0003 | FR-6 | ⏳ next batch #1 | `Core/Speech/LocaleResolver`; candidate-set restriction + 4-knob hysteresis; trace records locale state/switches. |
+| P4 | Locale auto-detect per ADR-0003 | FR-6 | ✔ **done** | `Core/Speech/LocaleResolver`; candidate-set restriction + 4-knob hysteresis + locale hot-swap, BCP-47 normalization, switch-control trace events. |
 | P6 | Live tagging via `--tag-every N` | FR-5 | ⏳ after functional batch | `Core/Sinks/TagsJSONLSink` + cached `ContentTagger.tagText`; guardrail violations skip + continue. |
 | P2b | Legacy WAV tail repair | FR-8 | ⏳ pending | `chronicle repair <wav>` rewrites malformed/stale WAV headers for old incident artefacts and `--audio-format wav` opt-in tails. |
 | P1 | WAV transitional rotation | FR-1 | ✘ skipped | Superseded by P11; was meant as a stepping stone toward Opus. |
@@ -32,9 +38,8 @@ Current priority batch state:
 1. **FR-2 / #23 — done.** Commit `36375a5` added the source-aware JSONL trace spine, locked append primitive, monotonic clock helper, `TranscriptionSink.didReceiveResult`, CLI wiring for `mic` / `sysaudio` / `live`, tests, docs, and smoke receipts.
 2. **FR-7 / #28 — done.** `chronicle merge` lands `Subcommands/Merge.swift` with `MergeService`, `FinalsMarkdownReader`, and `MergeRenderer` (log/markdown), plus `Tests/ChronicleTests/Subcommands/MergeTests.swift`. Consumes `trace.jsonl` (preferred) and legacy `finals.md` together; preserves source/locale/speaker labels; tolerates torn trailing JSONL lines with a stderr warning.
 3. **FR-4 / #25 — done.** `Core/Audio/BufferMulticast.swift` fans the source PCM stream to sidecar + diarizer subscribers with a bounded per-subscriber `.bufferingNewest` queue. `Core/Audio/PCMFloatConverter.swift` handles the hot PCM-to-16-kHz-mono-Float path with Int16 / Float32 fast paths plus an `AVAudioConverter` fallback. `Core/Diarize/StreamingDiarizer.swift` exposes the `StreamingDiarizing` protocol, the pure `DiarizationTimelineLookup` value type for midpoint speaker lookup, `StreamingDiarizerBackend` for CoreML-free tests, and the `SortformerStreamingDiarizer` actor that loads FluidAudio Sortformer CoreML lazily, ingests converted buffers, throttles `process()` every ~1 s, and refreshes the lookup snapshot. `Mic.swift` and `SysAudio.swift` now accept `--diarize`; on each result they query `speakerId(forRange:)` and pass it into `TranscriptionSink.didReceiveResult`, so `JSONLTraceSink` records it and `FinalsAppendSink` prefixes finals with `[S0]`, `[S1]`, etc. Live receipts: Sarah + George fixture yielded correct S0/S1 labels in both mic and sysaudio, merge preserved speakers, realtime sysaudio stayed at ~1 process/sec with ~10% of one M4 core and measurable ANE rail activity. Speech-end-to-transcript latency is now measured live: latest sysaudio smoke reported avg 389 ms, p95 838 ms, max 1469 ms across 215 result events.
-4. **FR-6 / #24 — next.** Implement `LocaleResolver` after diarize. Use ADR-0003 candidate-set restriction + hysteresis; record locale state/switches in trace events so merge already prints them.
-
-Do not mark the batch complete until #24 is also done, verified, committed, pushed, and task-marked complete.
+4. **FR-6 / #24 — done.** `Core/Speech/LocaleResolver` and CLI wiring now supports `--locale auto`/`--locale auto:<candidates>` and hot-swaps live transcriber modules via `SpeechAnalyzer.setModules()`, with BCP-47 normalization, ambiguous base-language rejection, auto:* unconstrained mode, and per-decision control events in trace.
+5. **Post-change robustness hardening — done.** Device switch crash path fixed by buffer-copying per-subscriber PCM into `AudioSourceOutputStreams` and strengthening `CoreAudioTapSource` rebuild cleanup; 6/6 speed-suite sysaudio runs survived output-device swaps with no segfaults.
 
 ## What "done" means for each phase
 
@@ -75,6 +80,7 @@ into `Core/Audio/CoreAudioTapSource`; remaining cleanup is tracked below.
 | 10 | Add a `scripts/reset-tcc.sh` dev helper that runs `tccutil reset ScreenCapture <bundle-id>` + `tccutil reset Microphone <bundle-id>` + `tccutil reset AudioCapture <bundle-id>` whenever the chronicle.app code-signing hash changes | pending | `scripts/reset-tcc.sh` |
 | 11 | Pre-allocate `AVAudioPCMBuffer` pool inside `CoreAudioTapSource` IOProc; current code still materialises/converts per callback and is acceptable only as a first productionised source | pending hardening | `Core/Audio/CoreAudioTapSource.swift` |
 | 12 | Guard `kAudioHardwarePropertyDefaultOutputDevice` listener against self-induced device-change notifications | ✔ done with cached resolved default-output `AudioObjectID` | `Core/Audio/CoreAudioTapSource.swift` |
+| 13 | Device-switch stability hardening (`AudioSourceOutputStreams` + `CoreAudioTapSource`) | ✔ done | `Sources/Chronicle/Core/Audio/AudioSource.swift`, `Sources/Chronicle/Core/Diarize/StreamingDiarizer.swift` |
 
 Live session being captured during the incident lives at:
 `~/Movies/pi-captures/sessions/20260514-112533-live/`.
@@ -108,7 +114,7 @@ TCC resolves a stable identity. See AGENTS.md.
 
 ## How to pick the next thing to do
 
-Default order is the table above. The current functional batch is planned in [`plan-functional-trace-merge-diarize-locale`](architecture/plan-functional-trace-merge-diarize-locale.md): FR-2 trace, FR-7 merge, and FR-4 streaming diarization are done; next is FR-6 locale. After compaction or restart, resume at #24 unless the operator explicitly changes priority. If you have a real reason to deviate:
+Default order is the table above. The functional batch in [`plan-functional-trace-merge-diarize-locale`](architecture/plan-functional-trace-merge-diarize-locale.md) (FR-2/FR-7/FR-4/FR-6) is done; next priority is FR-5 live tagging, then verification. After compaction or restart, resume at #26 unless the operator changes priority. If you have a real reason to deviate:
 
 - The protocol-oriented core (ADR-0001) means **any single phase is
   cheap to land** because every other phase composes against the same
@@ -143,7 +149,7 @@ Open phases map to bare numeric task IDs in the Pi task tracker:
 | P2a scratch export | #22 | done |
 | P1 WAV transitional reconciliation | #21 | open |
 | P3 JSONL | #23 | done |
-| P4 LocaleResolver | #24 | open — next |
+| P4 LocaleResolver | #24 | done |
 | P5 streaming diarize | #25 | done |
 | P6 live tagging | #26 | open |
 | P8 merge | #28 | done |
