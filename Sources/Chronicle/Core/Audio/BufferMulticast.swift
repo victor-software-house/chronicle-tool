@@ -15,8 +15,11 @@ import Foundation
 ///   their own `AsyncStream<Element>` with an independent bounded buffer.
 /// * `yield(_:)` returns immediately. It is safe to call from a real-time
 ///   audio thread: each subscriber's continuation is non-blocking and uses
-///   `.bufferingOldest(capacity)` so a slow consumer drops its oldest
+///   `.bufferingNewest(capacity)` so a slow consumer drops its OLDEST
 ///   queued elements rather than blocking faster consumers or the source.
+///   Newest-wins is the right policy for live audio: when the diarizer
+///   falls behind, we prefer to lose stale audio and stay near real-time
+///   instead of replaying old buffers.
 /// * `finish()` finishes every existing subscriber's stream. Late subscribers
 ///   created after `finish()` receive a finished (empty) stream.
 /// * Element type is generic so the helper is unit-testable with `Int` while
@@ -27,9 +30,9 @@ import Foundation
 /// enough to copy a continuation snapshot; yields run outside the lock so a
 /// stalled audio callback cannot stall registration and vice versa.
 public final class BufferMulticast<Element: Sendable>: @unchecked Sendable {
-  /// Default per-subscriber queue depth. Streaming-diarizer windows accept
-  /// ~1 s of 16 kHz mono float buffers (typically 10-20 PCM buffers); 512
-  /// gives generous headroom while bounding memory if a subscriber stalls.
+  /// Default per-subscriber queue depth. With 16 kHz mono float buffers
+  /// arriving every ~100 ms, 512 slots provide ~50 s of headroom while
+  /// bounding memory if a subscriber stalls completely.
   public static var defaultBufferCapacity: Int { 512 }
 
   private struct Subscriber {
@@ -42,7 +45,8 @@ public final class BufferMulticast<Element: Sendable>: @unchecked Sendable {
   private var nextId: Int = 0
   private var isFinished: Bool = false
   private let bufferCapacity: Int
-  private(set) public var droppedCount: Int = 0
+  private var _droppedCount: Int = 0
+  private var _totalYields: Int = 0
 
   public init(bufferCapacity: Int = BufferMulticast.defaultBufferCapacity) {
     self.bufferCapacity = bufferCapacity
@@ -52,7 +56,7 @@ public final class BufferMulticast<Element: Sendable>: @unchecked Sendable {
   /// cancel handle that removes the subscription before its buffer drains.
   /// If the multicast is already finished, the returned stream is finished.
   public func subscribe() -> AsyncStream<Element> {
-    AsyncStream(bufferingPolicy: .bufferingOldest(bufferCapacity)) { continuation in
+    AsyncStream(bufferingPolicy: .bufferingNewest(bufferCapacity)) { continuation in
       let id = lock.withLock { () -> Int in
         if isFinished {
           continuation.finish()
@@ -73,14 +77,21 @@ public final class BufferMulticast<Element: Sendable>: @unchecked Sendable {
   /// Forward one element to every current subscriber. Non-blocking.
   public func yield(_ element: Element) {
     let snapshot = lock.withLock { subscribers }
+    var droppedThisCall = 0
     for sub in snapshot {
       let result = sub.continuation.yield(element)
       switch result {
       case .dropped:
-        lock.withLock { droppedCount += 1 }
+        droppedThisCall += 1
+      case .terminated:
+        droppedThisCall += 1
       default:
         break
       }
+    }
+    lock.withLock {
+      _droppedCount += droppedThisCall
+      _totalYields += 1
     }
   }
 
@@ -101,6 +112,11 @@ public final class BufferMulticast<Element: Sendable>: @unchecked Sendable {
   public var subscriberCount: Int {
     lock.withLock { subscribers.count }
   }
+
+  /// Aggregate diagnostics. `dropped` counts each (subscriber, yield) pair
+  /// where the underlying continuation reported `dropped` or `terminated`.
+  public var droppedCount: Int { lock.withLock { _droppedCount } }
+  public var totalYieldsCount: Int { lock.withLock { _totalYields } }
 
   private func unsubscribe(id: Int) {
     lock.withLock {

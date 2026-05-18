@@ -1,5 +1,5 @@
-import Foundation
 import AVFoundation
+import Foundation
 @preconcurrency import FluidAudio
 
 /// Live-stream diarization protocol. The offline counterpart is
@@ -43,8 +43,6 @@ public struct DiarizationTimelineLookup: Sendable {
   public let segments: [DiarizationSegment]
 
   public init(segments: [DiarizationSegment]) {
-    // Sort + merge consecutive same-speaker segments would be nice; for now
-    // we just sort by start time so binary-search lookups remain easy.
     self.segments = segments.sorted { lhs, rhs in
       if lhs.startSeconds == rhs.startSeconds {
         return lhs.endSeconds < rhs.endSeconds
@@ -63,8 +61,6 @@ public struct DiarizationTimelineLookup: Sendable {
   }
 
   public func speakerId(at time: Double) -> String? {
-    // Linear scan is fine for typical timelines (≤ thousands of segments).
-    // If this becomes hot, replace with binary search on sorted starts.
     for segment in segments {
       if time >= segment.startSeconds, time < segment.endSeconds {
         return segment.speakerId
@@ -74,23 +70,118 @@ public struct DiarizationTimelineLookup: Sendable {
   }
 }
 
-// MARK: - Sortformer-backed streaming diarizer
+// MARK: - Backend abstraction
 
-/// Production streaming diarizer backed by FluidAudio's `SortformerDiarizer`.
+/// Plain timeline update emitted by a streaming-diarizer backend. Decouples
+/// our streaming wrapper from FluidAudio types so tests can stub the
+/// backend without depending on CoreML.
+public struct StreamingDiarizerUpdate: Sendable, Equatable {
+  public let finalizedSegments: [DiarizationSegment]
+  public let tentativeSegments: [DiarizationSegment]
+
+  public init(
+    finalizedSegments: [DiarizationSegment] = [],
+    tentativeSegments: [DiarizationSegment] = []
+  ) {
+    self.finalizedSegments = finalizedSegments
+    self.tentativeSegments = tentativeSegments
+  }
+}
+
+/// Streaming-diarizer model backend. Production: wraps FluidAudio's
+/// `SortformerDiarizer`. Tests: stub that records calls.
+public protocol StreamingDiarizerBackend: AnyObject, Sendable {
+  /// Lazily download / load the underlying model. May be expensive; only
+  /// called from the actor's ingest path.
+  func load() async throws
+
+  /// Feed one chunk of 16 kHz mono float samples into the model.
+  func addAudio(_ samples: [Float]) throws
+
+  /// Run the model. Returns `nil` if no new prediction is available yet.
+  func process() throws -> StreamingDiarizerUpdate?
+
+  /// Finalise the session and return any residual prediction.
+  func finalize() throws -> StreamingDiarizerUpdate?
+}
+
+/// Production backend wrapping FluidAudio's `SortformerDiarizer`.
+final class SortformerBackend: StreamingDiarizerBackend, @unchecked Sendable {
+  private var diarizer: SortformerDiarizer?
+  private let logTag: String
+
+  init(logTag: String) {
+    self.logTag = logTag
+  }
+
+  func load() async throws {
+    if diarizer != nil { return }
+    FileHandle.standardError.write(Data(
+      "[\(logTag)] downloading or loading Sortformer streaming models...\n".utf8
+    ))
+    let config = SortformerConfig.default
+    let models = try await SortformerModels.loadFromHuggingFace(config: config)
+    let mgr = SortformerDiarizer(config: config)
+    mgr.initialize(models: models)
+    self.diarizer = mgr
+    FileHandle.standardError.write(Data("[\(logTag)] streaming models ready\n".utf8))
+  }
+
+  func addAudio(_ samples: [Float]) throws {
+    guard let diarizer else { throw StreamingDiarizerError.notLoaded }
+    try diarizer.addAudio(samples, sourceSampleRate: nil)
+  }
+
+  func process() throws -> StreamingDiarizerUpdate? {
+    guard let diarizer else { throw StreamingDiarizerError.notLoaded }
+    return try diarizer.process().map(Self.toUpdate(_:))
+  }
+
+  func finalize() throws -> StreamingDiarizerUpdate? {
+    guard let diarizer else { return nil }
+    return try diarizer.finalizeSession().map(Self.toUpdate(_:))
+  }
+
+  private static func toUpdate(_ tl: DiarizerTimelineUpdate) -> StreamingDiarizerUpdate {
+    StreamingDiarizerUpdate(
+      finalizedSegments: tl.finalizedSegments.map(Self.toSegment(_:)),
+      tentativeSegments: tl.tentativeSegments.map(Self.toSegment(_:))
+    )
+  }
+
+  private static func toSegment(_ s: DiarizerSegment) -> DiarizationSegment {
+    DiarizationSegment(
+      speakerId: "S\(s.speakerIndex)",
+      startSeconds: Double(s.startTime),
+      endSeconds: Double(s.endTime)
+    )
+  }
+}
+
+public enum StreamingDiarizerError: Error, CustomStringConvertible {
+  case notLoaded
+  public var description: String {
+    switch self {
+    case .notLoaded: return "Streaming diarizer backend has not been loaded yet."
+    }
+  }
+}
+
+// MARK: - Streaming diarizer
+
+/// Production streaming diarizer. Composes a `PCMFloatConverter` (audio
+/// format normalization) with a `StreamingDiarizerBackend` (model). Default
+/// production initialiser uses `SortformerBackend`; tests inject a stub.
 ///
 /// Lifecycle:
 ///
-/// * Lazily downloads or loads Sortformer CoreML models on the first ingest.
-/// * Converts each PCM buffer to 16 kHz mono `Float`, feeds it into the
-///   model, and triggers `process()` every `processEverySamples` to keep
-///   incremental cost bounded.
-/// * After each `process()`/`finalizeSession()` it rebuilds an internal
+/// * Lazily calls `backend.load()` on the first ingest.
+/// * Converts each PCM buffer to 16 kHz mono `Float`, calls `addAudio`, and
+///   triggers `process()` every `processEverySamples` to keep incremental
+///   cost bounded.
+/// * After each `process()` / `finalize()` it rebuilds an internal
 ///   `DiarizationTimelineLookup` snapshot so subsequent
 ///   `speakerId(forRange:)` calls are lock-free reads.
-///
-/// Speaker ID stability across the streaming session is provided by
-/// Sortformer's own state updater (best-effort, not guaranteed identical
-/// across separate runs).
 public actor SortformerStreamingDiarizer: StreamingDiarizing {
   /// Target sample rate the diarizer model expects.
   public static let targetSampleRate: Double = 16_000.0
@@ -101,86 +192,129 @@ public actor SortformerStreamingDiarizer: StreamingDiarizing {
 
   private let logTag: String
   private let processEverySamples: Int
+  private let diagnosticInterval: TimeInterval
+  private let backend: StreamingDiarizerBackend
+  private let pcmConverter: PCMFloatConverter
 
-  private var diarizer: SortformerDiarizer?
+  private var loaded: Bool = false
   private var pendingSamples: Int = 0
+  private var totalSamplesIngested: Int = 0
+  private var ingestCallCount: Int = 0
+  private var processCallCount: Int = 0
+  private var processNonNilUpdateCount: Int = 0
+  private var totalFinalizedSegments: Int = 0
+  private var totalTentativeSegments: Int = 0
+  private var lookupQueryCount: Int = 0
+  private var lookupHitCount: Int = 0
+  private var lastDiagnosticAt: ContinuousClock.Instant?
+  private var finalized: Bool = false
   private var lookup: DiarizationTimelineLookup = DiarizationTimelineLookup(segments: [])
-  private var converter: AVAudioConverter?
-  private var converterInputFormat: AVAudioFormat?
-  private var converterOutputFormat: AVAudioFormat?
-  private var initFailureLogged: Bool = false
 
+  /// Test/Production initialiser. Pass a custom `backend` (and optionally a
+  /// custom converter) to stub the model layer.
   public init(
     logTag: String = "diarize",
-    processEverySamples: Int = SortformerStreamingDiarizer.defaultProcessEverySamples
+    processEverySamples: Int = SortformerStreamingDiarizer.defaultProcessEverySamples,
+    diagnosticIntervalSeconds: TimeInterval = 5.0,
+    backend: StreamingDiarizerBackend? = nil,
+    pcmConverter: PCMFloatConverter? = nil
   ) {
     self.logTag = logTag
     self.processEverySamples = processEverySamples
+    self.diagnosticInterval = diagnosticIntervalSeconds
+    self.backend = backend ?? SortformerBackend(logTag: logTag)
+    self.pcmConverter = pcmConverter ?? PCMFloatConverter(targetSampleRate: Self.targetSampleRate)
   }
 
   public func ingest(_ bufferRef: PCMBufferRef) async throws {
-    let diarizer = try await ensureLoaded()
-    guard let floats = convertToTargetFloat(bufferRef.buffer) else { return }
-    try diarizer.addAudio(floats, sourceSampleRate: nil)
+    try await ensureLoaded()
+    guard let floats = pcmConverter.convert(bufferRef.buffer) else {
+      if let err = pcmConverter.lastErrorDescription {
+        FileHandle.standardError.write(Data(
+          "[\(logTag)] pcm convert failed: \(err)\n".utf8
+        ))
+      }
+      return
+    }
+    do {
+      try backend.addAudio(floats)
+    } catch {
+      FileHandle.standardError.write(Data(
+        "[\(logTag)] addAudio failed: \(error)\n".utf8
+      ))
+      return
+    }
+    ingestCallCount += 1
     pendingSamples += floats.count
+    totalSamplesIngested += floats.count
     if pendingSamples >= processEverySamples {
       pendingSamples = 0
-      if let update = try diarizer.process() {
-        absorb(timelineUpdate: update)
+      processCallCount += 1
+      do {
+        if let update = try backend.process() {
+          processNonNilUpdateCount += 1
+          absorb(update)
+        }
+      } catch {
+        FileHandle.standardError.write(Data(
+          "[\(logTag)] process() threw: \(error)\n".utf8
+        ))
       }
     }
+    maybeEmitDiagnostic()
   }
 
   public func speakerId(forRange range: TraceAudioRange) -> String? {
-    lookup.speakerId(forRange: range)
+    lookupQueryCount += 1
+    let result = lookup.speakerId(forRange: range)
+    if result != nil { lookupHitCount += 1 }
+    return result
   }
 
   public func finish() async {
-    guard let diarizer else { return }
+    guard !finalized else { return }
+    finalized = true
+    guard loaded, totalSamplesIngested > 0 else {
+      FileHandle.standardError.write(Data(
+        "[\(logTag)] skipping finalize: loaded=\(loaded) samples=\(totalSamplesIngested)\n".utf8
+      ))
+      emitFinalDiagnostic()
+      return
+    }
     do {
-      if let update = try diarizer.finalizeSession() {
-        absorb(timelineUpdate: update)
+      if let update = try backend.finalize() {
+        processNonNilUpdateCount += 1
+        absorb(update)
       }
     } catch {
       FileHandle.standardError.write(Data(
         "[\(logTag)] finalize failed: \(error)\n".utf8
       ))
     }
+    emitFinalDiagnostic()
   }
 
+  // MARK: - Test accessors
+
   public var currentLookup: DiarizationTimelineLookup { lookup }
+  public var debugIngestCallCount: Int { ingestCallCount }
+  public var debugProcessCallCount: Int { processCallCount }
+  public var debugTotalSamplesIngested: Int { totalSamplesIngested }
+  public var debugLookupQueryCount: Int { lookupQueryCount }
+  public var debugLookupHitCount: Int { lookupHitCount }
 
   // MARK: - Internals
 
-  private func ensureLoaded() async throws -> SortformerDiarizer {
-    if let diarizer { return diarizer }
-    FileHandle.standardError.write(Data(
-      "[\(logTag)] downloading or loading Sortformer streaming models...\n".utf8
-    ))
-    let config = SortformerConfig.default
-    let models = try await SortformerModels.loadFromHuggingFace(config: config)
-    let mgr = SortformerDiarizer(config: config)
-    mgr.initialize(models: models)
-    self.diarizer = mgr
-    FileHandle.standardError.write(Data("[\(logTag)] streaming models ready\n".utf8))
-    return mgr
+  private func ensureLoaded() async throws {
+    guard !loaded else { return }
+    try await backend.load()
+    loaded = true
   }
 
-  private func absorb(timelineUpdate update: DiarizerTimelineUpdate) {
-    var segments: [DiarizationSegment] = []
-    // Take finalized + tentative; tentative gives us coverage for the
-    // most recent ~1 s window so live finals can be labelled immediately.
-    let frameSegments = update.finalizedSegments + update.tentativeSegments
-    for s in frameSegments {
-      segments.append(
-        DiarizationSegment(
-          speakerId: "S\(s.speakerIndex)",
-          startSeconds: Double(s.startTime),
-          endSeconds: Double(s.endTime)
-        )
-      )
-    }
-    // Merge with previous lookup so older finalized segments survive.
+  private func absorb(_ update: StreamingDiarizerUpdate) {
+    totalFinalizedSegments += update.finalizedSegments.count
+    totalTentativeSegments += update.tentativeSegments.count
+    let segments = update.finalizedSegments + update.tentativeSegments
     let combined = mergeSegmentsKeepingNewer(
       previous: lookup.segments,
       newer: segments
@@ -193,8 +327,6 @@ public actor SortformerStreamingDiarizer: StreamingDiarizing {
     newer: [DiarizationSegment]
   ) -> [DiarizationSegment] {
     guard !newer.isEmpty else { return previous }
-    // Keep all previous segments that end strictly before the earliest
-    // newer segment starts; replace the overlapping tail with the new view.
     guard let firstNewStart = newer.map(\.startSeconds).min() else {
       return previous
     }
@@ -202,83 +334,28 @@ public actor SortformerStreamingDiarizer: StreamingDiarizing {
     return kept + newer
   }
 
-  private func convertToTargetFloat(_ buffer: AVAudioPCMBuffer) -> [Float]? {
-    let inputFormat = buffer.format
-    if inputFormat.sampleRate == Self.targetSampleRate,
-       inputFormat.commonFormat == .pcmFormatFloat32,
-       inputFormat.channelCount == 1,
-       let ptr = buffer.floatChannelData?.pointee {
-      let count = Int(buffer.frameLength)
-      let bp = UnsafeBufferPointer(start: ptr, count: count)
-      return Array(bp)
+  private func maybeEmitDiagnostic() {
+    let now = ContinuousClock.now
+    guard let last = lastDiagnosticAt else {
+      lastDiagnosticAt = now
+      return
     }
+    let elapsed = now - last
+    if elapsed >= .seconds(diagnosticInterval) {
+      lastDiagnosticAt = now
+      emitDiagnostic(label: "tick")
+    }
+  }
 
-    let outFormat: AVAudioFormat
-    if let cached = converterOutputFormat, let _ = converter,
-       inputFormat == converterInputFormat {
-      outFormat = cached
-    } else {
-      guard let target = AVAudioFormat(
-        commonFormat: .pcmFormatFloat32,
-        sampleRate: Self.targetSampleRate,
-        channels: 1,
-        interleaved: false
-      ) else {
-        if !initFailureLogged {
-          FileHandle.standardError.write(Data(
-            "[\(logTag)] could not build target 16 kHz mono float format\n".utf8
-          ))
-          initFailureLogged = true
-        }
-        return nil
-      }
-      guard let conv = AVAudioConverter(from: inputFormat, to: target) else {
-        if !initFailureLogged {
-          FileHandle.standardError.write(Data(
-            "[\(logTag)] could not build AVAudioConverter \(inputFormat) -> \(target)\n".utf8
-          ))
-          initFailureLogged = true
-        }
-        return nil
-      }
-      self.converter = conv
-      self.converterInputFormat = inputFormat
-      self.converterOutputFormat = target
-      outFormat = target
-    }
+  private func emitFinalDiagnostic() {
+    emitDiagnostic(label: "final")
+  }
 
-    // Worst-case output frame count: roundUp(inFrames * outRate / inRate).
-    let inputFrames = Double(buffer.frameLength)
-    let ratio = outFormat.sampleRate / inputFormat.sampleRate
-    let outputCapacity = AVAudioFrameCount((inputFrames * ratio).rounded(.up)) + 32
-    guard let outBuffer = AVAudioPCMBuffer(
-      pcmFormat: outFormat,
-      frameCapacity: outputCapacity
-    ) else { return nil }
-
-    final class ConvertState { var consumed = false }
-    let state = ConvertState()
-    nonisolated(unsafe) let captureBuffer = buffer
-    var error: NSError?
-    let status = converter!.convert(to: outBuffer, error: &error) { _, outStatus in
-      if state.consumed {
-        outStatus.pointee = .endOfStream
-        return nil
-      }
-      state.consumed = true
-      outStatus.pointee = .haveData
-      return captureBuffer
-    }
-    if status == .error || error != nil {
-      FileHandle.standardError.write(Data(
-        "[\(logTag)] convert failed: \(error?.localizedDescription ?? "unknown")\n".utf8
-      ))
-      return nil
-    }
-    let outCount = Int(outBuffer.frameLength)
-    guard outCount > 0, let outPtr = outBuffer.floatChannelData?.pointee else {
-      return nil
-    }
-    return Array(UnsafeBufferPointer(start: outPtr, count: outCount))
+  private func emitDiagnostic(label: String) {
+    let segCount = lookup.segments.count
+    let speakers = Set(lookup.segments.map(\.speakerId)).count
+    let audioSec = Double(totalSamplesIngested) / Self.targetSampleRate
+    let line = "[\(logTag).diag \(label)] ingest=\(ingestCallCount) audio=\(String(format: "%.1f", audioSec))s process=\(processCallCount) updates=\(processNonNilUpdateCount) segments=\(segCount) speakers=\(speakers) finalized=\(totalFinalizedSegments) tentative=\(totalTentativeSegments) lookups=\(lookupQueryCount) hits=\(lookupHitCount)\n"
+    FileHandle.standardError.write(Data(line.utf8))
   }
 }
