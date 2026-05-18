@@ -192,12 +192,10 @@ struct Mic: AsyncParsableCommand {
 
     // --- Audio language detection (ADR-0006) ---
     // Runs BEFORE analyzer and diarizer so WhisperKit gets exclusive ANE.
-    var activeTranscriber = transcriber
-
     try await micSource.start()
     FileHandle.standardError.write(Data("[mic] engine started; speak into the mic. Ctrl-C to stop.\n".utf8))
 
-    // Start multicast fan BEFORE the probe so subscribers receive buffers.
+    // Start multicast fan so all subscribers receive buffers.
     let multicastFanTask: Task<Void, Never>? = pcmMulticast.map { mc in
       Task {
         for await ref in micSource.pcmBuffers {
@@ -207,45 +205,53 @@ struct Mic: AsyncParsableCommand {
       }
     }
 
-    do {
-
-      if let probeStream, let localeResolver {
-        let audioDetector = AudioLanguageDetector(verbose: true)
-        try await audioDetector.load()
-        if let detection = try await AudioLanguageProbe.detect(
-          stream: probeStream,
-          sampleRate: analyzerFormat.sampleRate,
-          detector: audioDetector,
-          logTag: "mic"
-        ) {
+    // Audio language detection (ADR-0006): runs CONCURRENTLY with
+    // transcription. Uses tiny model on CPU-only — no ANE contention
+    // with SpeechTranscriber or Sortformer. ~570ms per detection.
+    // Retries up to 3x if confidence is low. Hot-swaps locale on success.
+    let audioProbeTask: Task<Void, Never>? = probeStream.map { stream in
+      let fmt = analyzerFormat
+      let candidates = localeResolver?.candidateSet ?? []
+      let currentBcp47 = supported.bcp47Identifier
+      return Task {
+        do {
+          let audioDetector = AudioLanguageDetector(verbose: true)
+          try await audioDetector.load()
+          guard let detection = try await AudioLanguageProbe.detect(
+            stream: stream,
+            sampleRate: fmt.sampleRate,
+            detector: audioDetector,
+            logTag: "mic"
+          ) else { return }
           let detectedBcp47 = LocaleResolverWiring.resolveFullLocale(
             baseLanguage: detection.language,
-            currentLocale: supported.bcp47Identifier,
-            candidates: localeResolver.candidateSet
+            currentLocale: currentBcp47,
+            candidates: candidates
           )
-          if detectedBcp47 != supported.bcp47Identifier {
+          if detectedBcp47 != currentBcp47 {
             FileHandle.standardError.write(Data(
-              "[mic.locale] audio detected=\(detection.language) (\(String(format: "%.3f", detection.confidence))); switching from \(supported.bcp47Identifier) to \(detectedBcp47)\n".utf8
+              "[mic.locale] audio detected=\(detection.language) (\(String(format: "%.3f", detection.confidence))); switching from \(currentBcp47) to \(detectedBcp47)\n".utf8
             ))
-            if let newTranscriber = await LocaleResolverWiring.hotSwapLocale(
+            let _ = await LocaleResolverWiring.hotSwapLocale(
               logTag: "mic",
               analyzer: analyzer,
               to: detectedBcp47,
               preset: .progressiveTranscription
-            ) {
-              activeTranscriber = newTranscriber
-            }
+            )
           } else {
             FileHandle.standardError.write(Data(
-              "[mic.locale] audio confirmed=\(detection.language); staying at \(supported.bcp47Identifier)\n".utf8
+              "[mic.locale] audio confirmed=\(detection.language); staying at \(currentBcp47)\n".utf8
             ))
           }
+        } catch {
+          FileHandle.standardError.write(Data(
+            "[mic.locale] audio detection failed: \(error)\n".utf8
+          ))
         }
       }
-      // audioDetector goes out of scope here — WhisperKit model deallocated, ANE freed.
     }
+    _ = audioProbeTask
 
-    // Now start diarizer (uses ANE via Sortformer CoreML).
     let diarizerPrepareTask: Task<Void, Never>? = diarizer.map { d in
       Task {
         do {
@@ -264,7 +270,7 @@ struct Mic: AsyncParsableCommand {
       var volatileCount = 0
       var finalCount = 0
       var latencyMonitor = TranscriptionLatencyMonitor(logTag: "mic")
-      for try await result in activeTranscriber.results {
+      for try await result in transcriber.results {
           let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
           if text.isEmpty { continue }
           let offsetMs = resultClock.millisecondsSinceStart()

@@ -20,7 +20,7 @@ public final class AudioLanguageDetector: @unchecked Sendable {
   /// WhisperKit model variant used for detection. `base` recommended per
   /// ADR-0006 experiment results (~150 MB, ~270 ms detection, best
   /// multilingual confidence calibration).
-  public static let defaultModel = "base"
+  public static let defaultModel = "tiny"
 
   private var kit: WhisperKit?
   private let modelName: String
@@ -40,7 +40,17 @@ public final class AudioLanguageDetector: @unchecked Sendable {
         "[locale.audio-detect] loading WhisperKit model=\(modelName)...\n".utf8
       ))
     }
-    let config = WhisperKitConfig(model: modelName, verbose: false, logLevel: .error)
+    // CPU-only avoids ANE/GPU contention with SpeechTranscriber and
+    // Sortformer. The tiny model detects in ~570ms on CPU which is fine
+    // for a startup probe. This lets detection run concurrently with
+    // transcription and diarization.
+    let compute = ModelComputeOptions(
+      melCompute: .cpuOnly,
+      audioEncoderCompute: .cpuOnly,
+      textDecoderCompute: .cpuOnly,
+      prefillCompute: .cpuOnly
+    )
+    let config = WhisperKitConfig(model: modelName, computeOptions: compute, verbose: false, logLevel: .error)
     let loaded = try await WhisperKit(config)
     kit = loaded
     if verbose {

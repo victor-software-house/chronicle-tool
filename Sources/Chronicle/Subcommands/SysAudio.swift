@@ -188,13 +188,9 @@ struct SysAudio: AsyncParsableCommand {
       probeStream = nil
     }
 
-    // --- Audio language detection (ADR-0006) ---
-    var activeTranscriber = transcriber
-
     try await sysSource.start()
     FileHandle.standardError.write(Data("[sysaudio] capture started; play audio in any app. Ctrl-C to stop.\n".utf8))
 
-    // Start multicast fan BEFORE the probe so subscribers receive buffers.
     let multicastFanTask: Task<Void, Never>? = pcmMulticast.map { mc in
       Task {
         for await ref in sysSource.pcmBuffers {
@@ -204,43 +200,50 @@ struct SysAudio: AsyncParsableCommand {
       }
     }
 
-    do {
-      if let probeStream, let localeResolver {
-        let audioDetector = AudioLanguageDetector(verbose: verbose)
-        try await audioDetector.load()
-        if let detection = try await AudioLanguageProbe.detect(
-          stream: probeStream,
-          sampleRate: analyzerFormat.sampleRate,
-          detector: audioDetector,
-          logTag: "sysaudio"
-        ) {
+    // Audio language detection (ADR-0006): concurrent, CPU-only, no ANE contention.
+    let audioProbeTask: Task<Void, Never>? = probeStream.map { stream in
+      let fmt = analyzerFormat
+      let candidates = localeResolver?.candidateSet ?? []
+      let currentBcp47 = supported.bcp47Identifier
+      return Task {
+        do {
+          let audioDetector = AudioLanguageDetector(verbose: verbose)
+          try await audioDetector.load()
+          guard let detection = try await AudioLanguageProbe.detect(
+            stream: stream,
+            sampleRate: fmt.sampleRate,
+            detector: audioDetector,
+            logTag: "sysaudio"
+          ) else { return }
           let detectedBcp47 = LocaleResolverWiring.resolveFullLocale(
             baseLanguage: detection.language,
-            currentLocale: supported.bcp47Identifier,
-            candidates: localeResolver.candidateSet
+            currentLocale: currentBcp47,
+            candidates: candidates
           )
-          if detectedBcp47 != supported.bcp47Identifier {
+          if detectedBcp47 != currentBcp47 {
             FileHandle.standardError.write(Data(
-              "[sysaudio.locale] audio detected=\(detection.language) (\(String(format: "%.3f", detection.confidence))); switching from \(supported.bcp47Identifier) to \(detectedBcp47)\n".utf8
+              "[sysaudio.locale] audio detected=\(detection.language) (\(String(format: "%.3f", detection.confidence))); switching from \(currentBcp47) to \(detectedBcp47)\n".utf8
             ))
-            if let newTranscriber = await LocaleResolverWiring.hotSwapLocale(
+            let _ = await LocaleResolverWiring.hotSwapLocale(
               logTag: "sysaudio",
               analyzer: analyzer,
               to: detectedBcp47,
               preset: .progressiveTranscription
-            ) {
-              activeTranscriber = newTranscriber
-            }
+            )
           } else {
             FileHandle.standardError.write(Data(
-              "[sysaudio.locale] audio confirmed=\(detection.language); staying at \(supported.bcp47Identifier)\n".utf8
+              "[sysaudio.locale] audio confirmed=\(detection.language); staying at \(currentBcp47)\n".utf8
             ))
           }
+        } catch {
+          FileHandle.standardError.write(Data(
+            "[sysaudio.locale] audio detection failed: \(error)\n".utf8
+          ))
         }
       }
     }
+    _ = audioProbeTask
 
-    // Now start diarizer (uses ANE via Sortformer CoreML).
     let diarizerPrepareTask: Task<Void, Never>? = diarizer.map { d in
       Task {
         do {
@@ -259,7 +262,7 @@ struct SysAudio: AsyncParsableCommand {
       var volatileCount = 0
       var finalCount = 0
       var latencyMonitor = TranscriptionLatencyMonitor(logTag: "sysaudio")
-      for try await result in activeTranscriber.results {
+      for try await result in transcriber.results {
           let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
           if text.isEmpty { continue }
           let offsetMs = resultClock.millisecondsSinceStart()
