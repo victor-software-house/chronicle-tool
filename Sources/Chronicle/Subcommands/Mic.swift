@@ -234,6 +234,16 @@ struct Mic: AsyncParsableCommand {
             wallclockOffsetMs: offsetMs,
             wallclock: wallclock
           )
+          if case let .switchTo(to, _, _, _) = decision {
+            if let newTranscriber = await LocaleResolverWiring.hotSwapLocale(
+              logTag: "mic",
+              analyzer: analyzer,
+              to: to,
+              preset: .progressiveTranscription
+            ) {
+              _ = newTranscriber // results stream continues from same analyzer
+            }
+          }
         }
         for sink in composedSinks {
           await sink.didReceiveResult(

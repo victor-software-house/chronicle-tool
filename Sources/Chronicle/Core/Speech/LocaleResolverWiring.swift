@@ -1,5 +1,7 @@
 import Foundation
 
+@preconcurrency import Speech
+
 extension Locale {
   /// Apple's `Locale.identifier` returns Unicode-locale form with underscores
   /// (`en_US`); the resolver's candidate sets and NLLanguageRecognizer
@@ -115,6 +117,59 @@ public enum LocaleResolverWiring {
       let reasonText = describe(reason: reason)
       let line = "[\(logTag).locale suppressed] candidate=\(candidate) reason=\(reasonText)\n"
       FileHandle.standardError.write(Data(line.utf8))
+    }
+  }
+
+  /// Hot-swap the running `SpeechAnalyzer` module to a new locale without
+  /// restarting the audio source or the analyzer input stream. Uses Apple's
+  /// `SpeechAnalyzer.setModules(_:)` API (macOS 26).
+  ///
+  /// Returns the new `SpeechTranscriber` on success so the caller can read
+  /// its `results` stream, or `nil` if the swap failed (logged, non-fatal).
+  @available(macOS 26.0, *)
+  public static func hotSwapLocale(
+    logTag: String,
+    analyzer: SpeechAnalyzer,
+    to newLocaleIdentifier: String,
+    preset: SpeechTranscriber.Preset
+  ) async -> SpeechTranscriber? {
+    let newLocale = Locale(identifier: newLocaleIdentifier)
+    guard let supported = await SpeechTranscriber.supportedLocale(equivalentTo: newLocale) else {
+      FileHandle.standardError.write(Data(
+        "[\(logTag).locale] swap failed: \(newLocaleIdentifier) not supported\n".utf8
+      ))
+      return nil
+    }
+    let newTranscriber = SpeechTranscriber(locale: supported, preset: preset)
+
+    // Install model assets if not already present.
+    if !(await SpeechTranscriber.installedLocales).contains(supported) {
+      FileHandle.standardError.write(Data(
+        "[\(logTag).locale] downloading model for \(supported.identifier)...\n".utf8
+      ))
+      do {
+        if let request = try await AssetInventory.assetInstallationRequest(supporting: [newTranscriber]) {
+          try await request.downloadAndInstall()
+        }
+      } catch {
+        FileHandle.standardError.write(Data(
+          "[\(logTag).locale] model install failed for \(supported.identifier): \(error)\n".utf8
+        ))
+        return nil
+      }
+    }
+
+    do {
+      try await analyzer.setModules([newTranscriber])
+      FileHandle.standardError.write(Data(
+        "[\(logTag).locale] hot-swapped to \(supported.identifier)\n".utf8
+      ))
+      return newTranscriber
+    } catch {
+      FileHandle.standardError.write(Data(
+        "[\(logTag).locale] setModules failed: \(error)\n".utf8
+      ))
+      return nil
     }
   }
 
