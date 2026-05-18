@@ -30,14 +30,20 @@ public protocol AudioSource: AnyObject, Sendable {
   var analyzerInputs: AsyncStream<AnalyzerInput> { get }
 
   /// Async stream of raw `AVAudioPCMBuffer` values (in `analyzerFormat`) for
-  /// audio sidecar sinks. Same buffers as `analyzerInputs` (shared reference),
-  /// no copy. Multiple consumers should fan-out via `BufferMulticast` when
-  /// FR-4 lands; for now a single consumer is supported per source.
+  /// audio sidecar sinks (diarizer, WAV/Opus writer, rolling scratch).
+  ///
+  /// Each buffer is an independent copy of the audio data — not the same
+  /// reference as `analyzerInputs`. The copy is required because the Speech
+  /// framework (`SpeechAnalyzer` / `AnalyzerInput`) may take internal
+  /// ownership of the buffer it receives and invalidate its data pointers
+  /// during module reconfiguration (e.g. `setModules()` on locale switch)
+  /// or device changes. Sharing the same buffer between Speech and the
+  /// diarizer caused use-after-free crashes (SIGSEGV at address 0x0 in
+  /// `PCMFloatConverter.convert`).
   ///
   /// Wrapped in `PCMBufferRef` so the reference-typed `AVAudioPCMBuffer` can
   /// cross `AsyncStream` boundaries under Swift 6 strict concurrency.
-  /// Consumers must treat the underlying buffer as read-only; concurrent
-  /// reads are safe, concurrent writes are not.
+  /// Multiple consumers fan-out via `BufferMulticast`.
   var pcmBuffers: AsyncStream<PCMBufferRef> { get }
 
   /// Begin capture. Idempotent: calling twice is a no-op. `async` so
@@ -88,8 +94,15 @@ final class AudioSourceOutputStreams: @unchecked Sendable {
   }
 
   func yield(_ buffer: AVAudioPCMBuffer) {
+    // The Speech framework (AnalyzerInput) and the PCM sidecar stream must
+    // receive independent buffers. SpeechAnalyzer may invalidate the buffer's
+    // internal data pointers during module reconfiguration or device changes;
+    // sharing the same instance caused SIGSEGV in the diarizer's
+    // PCMFloatConverter. Copy the audio data for pcmBuffers.
     analyzerContinuation.yield(AnalyzerInput(buffer: buffer))
-    pcmContinuation.yield(PCMBufferRef(buffer))
+    if let copy = Self.copyBuffer(buffer) {
+      pcmContinuation.yield(PCMBufferRef(copy))
+    }
   }
 
   func yieldAll(_ buffers: some Sequence<AVAudioPCMBuffer>) {
@@ -101,5 +114,30 @@ final class AudioSourceOutputStreams: @unchecked Sendable {
   func finish() {
     analyzerContinuation.finish()
     pcmContinuation.finish()
+  }
+
+  /// Shallow copy of an `AVAudioPCMBuffer`: allocates a new buffer with its
+  /// own backing store and copies the audio frame data. Preserves format and
+  /// frame length. Returns `nil` only if `AVAudioPCMBuffer(pcmFormat:frameCapacity:)`
+  /// fails (should not happen with valid input).
+  private static func copyBuffer(_ src: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+    let frameCount = src.frameLength
+    guard frameCount > 0,
+          let dst = AVAudioPCMBuffer(pcmFormat: src.format, frameCapacity: frameCount)
+    else { return nil }
+    dst.frameLength = frameCount
+    // Copy raw audio data. mDataByteSize in each AudioBuffer tells us how
+    // many bytes the buffer actually contains.
+    let srcList = UnsafeMutableAudioBufferListPointer(src.mutableAudioBufferList)
+    let dstList = UnsafeMutableAudioBufferListPointer(dst.mutableAudioBufferList)
+    for i in 0..<min(srcList.count, dstList.count) {
+      let bytes = Int(min(srcList[i].mDataByteSize, dstList[i].mDataByteSize))
+      guard bytes > 0,
+            let srcData = srcList[i].mData,
+            let dstData = dstList[i].mData
+      else { continue }
+      dstData.copyMemory(from: srcData, byteCount: bytes)
+    }
+    return dst
   }
 }

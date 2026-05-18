@@ -46,6 +46,7 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
   private var rebuilding = false
   private var sawIOCallback = false
   private var noBufferWarningGeneration = 0
+  private var ioGeneration: UInt64 = 0
 
   public init(
     analyzerFormat: AVAudioFormat,
@@ -98,6 +99,10 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
 
   private func startCoreAudio() throws {
     guard tapID == kAudioObjectUnknown, aggregateID == kAudioObjectUnknown, ioProcID == nil else { return }
+
+    // Bump generation so any stale IO callbacks from a previous tap are rejected.
+    ioGeneration &+= 1
+    let expectedGeneration = ioGeneration
 
     let excludedProcesses: [AudioObjectID] = excludeSelf ? try Self.processObjectIDs(for: [getpid()]) : []
     let tapDesc = CATapDescription(stereoGlobalTapButExcludeProcesses: excludedProcesses)
@@ -166,8 +171,8 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
     let converter = newConverter
     let streams = self.streams
     let verbose = self.verbose
-    let ioBlock: AudioDeviceIOBlock = { _, inputBufferList, _, _, _ in
-      guard !self.stopped else { return }
+    let ioBlock: AudioDeviceIOBlock = { [weak self] _, inputBufferList, _, _, _ in
+      guard let self, !self.stopped, self.ioGeneration == expectedGeneration else { return }
       if !self.sawIOCallback {
         self.sawIOCallback = true
         if verbose {
@@ -219,6 +224,13 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
       AudioDeviceDestroyIOProcID(aggregateID, ioProcID)
     }
     ioProcID = nil
+
+    // Drain the ioQueue so any in-flight IO callbacks complete before we
+    // destroy the aggregate device or release the converter. This prevents
+    // use-after-free when a device change triggers rebuild while an IO
+    // callback is mid-flight on ioQueue.
+    ioQueue.sync {}
+
     if aggregateID != kAudioObjectUnknown {
       AudioHardwareDestroyAggregateDevice(aggregateID)
       aggregateID = AudioObjectID(kAudioObjectUnknown)

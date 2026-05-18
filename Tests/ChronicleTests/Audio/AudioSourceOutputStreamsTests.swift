@@ -5,7 +5,7 @@ import Testing
 
 @Suite("AudioSource output streams")
 struct AudioSourceOutputStreamsTests {
-  @Test("yield sends same buffer to analyzer and PCM streams")
+  @Test("yield sends buffer to both streams (PCM is an independent copy)")
   func yieldSendsSameBufferToBothStreams() async throws {
     let streams = AudioSourceOutputStreams()
     let buffer = try #require(makeBuffer(sampleRate: 16_000, frames: 160))
@@ -18,7 +18,12 @@ struct AudioSourceOutputStreamsTests {
 
     #expect(analyzerCount == 1)
     #expect(pcmBuffers.count == 1)
-    #expect(pcmBuffers.first?.buffer === buffer)
+    // PCM stream receives an independent copy (not the same reference) to
+    // prevent Speech framework from invalidating the diarizer's buffer.
+    let pcmBuf = try #require(pcmBuffers.first?.buffer)
+    #expect(pcmBuf !== buffer)
+    #expect(pcmBuf.frameLength == buffer.frameLength)
+    #expect(pcmBuf.format == buffer.format)
   }
 
   @Test("yieldAll sends converter tail to both streams")
