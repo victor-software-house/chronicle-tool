@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- CoreAudio process taps (CATapDescription / AudioHardwareCreateProcessTap)
+       require this entitlement on macOS Sequoia / Tahoe even for non-sandboxed
+       apps. Without it, TCC.db rows appear granted but tccd silently rejects
+       at runtime → tap delivers zero-filled buffers. -->
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+</dict>
+</plist>

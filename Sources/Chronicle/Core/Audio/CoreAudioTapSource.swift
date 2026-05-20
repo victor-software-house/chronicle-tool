@@ -39,11 +39,8 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
   private var aggregateID = AudioObjectID(kAudioObjectUnknown)
   private var ioProcID: AudioDeviceIOProcID?
   private var converter: BufferConverter?
-  private var currentDefaultOutputID = AudioDeviceID(kAudioObjectUnknown)
-  private var defaultOutputListener: AudioObjectPropertyListenerBlock?
   private var started = false
   private var stopped = false
-  private var rebuilding = false
   private var sawIOCallback = false
   private var noBufferWarningGeneration = 0
   private var ioGeneration: UInt64 = 0
@@ -86,13 +83,13 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
   public func stop() {
     guard started, !stopped else { return }
     stopped = true
-    teardownAndDrain(removeListener: true)
+    teardownAndDrain()
     streams.finish()
   }
 
   private func cleanupAfterFailedStart() {
     streams.finish()
-    teardownCoreAudio(removeListener: true)
+    teardownCoreAudio()
     started = false
     stopped = true
   }
@@ -127,7 +124,6 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
 
     let defaultOutputID = try Self.defaultOutputDeviceID()
     let outputUID = try Self.deviceUID(defaultOutputID)
-    currentDefaultOutputID = defaultOutputID
 
     let aggregateUID = Self.aggregateUIDPrefix + UUID().uuidString
     let aggregateDescription: [String: Any] = [
@@ -206,7 +202,6 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
     ioProcID = newIOProcID
 
     try Self.check(AudioDeviceStart(aggregateID, newIOProcID), "AudioDeviceStart")
-    installDefaultOutputListener()
 
     if verbose {
       FileHandle.standardError.write(Data(
@@ -215,10 +210,7 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
     }
   }
 
-  private func teardownCoreAudio(removeListener: Bool, releaseConverter: Bool = true) {
-    if removeListener {
-      removeDefaultOutputListener()
-    }
+  private func teardownCoreAudio(releaseConverter: Bool = true) {
     if let ioProcID, aggregateID != kAudioObjectUnknown {
       AudioDeviceStop(aggregateID, ioProcID)
       AudioDeviceDestroyIOProcID(aggregateID, ioProcID)
@@ -227,8 +219,7 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
 
     // Drain the ioQueue so any in-flight IO callbacks complete before we
     // destroy the aggregate device or release the converter. This prevents
-    // use-after-free when a device change triggers rebuild while an IO
-    // callback is mid-flight on ioQueue.
+    // use-after-free during shutdown.
     ioQueue.sync {}
 
     if aggregateID != kAudioObjectUnknown {
@@ -245,10 +236,10 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
     }
   }
 
-  private func teardownAndDrain(removeListener: Bool) {
+  private func teardownAndDrain() {
     // Stop/destroy IOProc before draining: AVAudioConverter is not thread-safe,
     // so no IO callback may call `convert(_:)` after this point.
-    teardownCoreAudio(removeListener: removeListener, releaseConverter: false)
+    teardownCoreAudio(releaseConverter: false)
     drainConverter()
     converter = nil
     sourceFormat = nil
@@ -285,75 +276,6 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
         "[sysaudio.tap] buffers=\(buffersReceived) lastPeak=\(peak) sessionPeak=\(peakSample) (Int16 ±32767)\n".utf8
       ))
     }
-  }
-
-  private func installDefaultOutputListener() {
-    // Rebuilds keep the existing listener installed while replacing only the
-    // tap + aggregate device, so this is intentionally idempotent.
-    guard defaultOutputListener == nil else { return }
-    var address = AudioObjectPropertyAddress(
-      mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-      mScope: kAudioObjectPropertyScopeGlobal,
-      mElement: kAudioObjectPropertyElementMain
-    )
-    let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-      self?.handleDefaultOutputChanged()
-    }
-    let status = AudioObjectAddPropertyListenerBlock(
-      AudioObjectID(kAudioObjectSystemObject),
-      &address,
-      listenerQueue,
-      listener
-    )
-    guard status == noErr else {
-      FileHandle.standardError.write(Data(
-        "[sysaudio.tap] warning: default-output listener install failed: \(status)\n".utf8
-      ))
-      return
-    }
-    defaultOutputListener = listener
-  }
-
-  private func removeDefaultOutputListener() {
-    guard let listener = defaultOutputListener else { return }
-    var address = AudioObjectPropertyAddress(
-      mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-      mScope: kAudioObjectPropertyScopeGlobal,
-      mElement: kAudioObjectPropertyElementMain
-    )
-    AudioObjectRemovePropertyListenerBlock(
-      AudioObjectID(kAudioObjectSystemObject),
-      &address,
-      listenerQueue,
-      listener
-    )
-    defaultOutputListener = nil
-  }
-
-  private func handleDefaultOutputChanged() {
-    guard started, !stopped, !rebuilding else { return }
-    guard let newDefaultID = try? Self.defaultOutputDeviceID() else { return }
-    guard newDefaultID != currentDefaultOutputID else { return }
-    rebuilding = true
-    if verbose {
-      FileHandle.standardError.write(Data(
-        "[sysaudio.tap] default output changed; rebuilding tap+aggregate\n".utf8
-      ))
-    }
-    teardownAndDrain(removeListener: false)
-    hasValidBuffer = false
-    do {
-      try startCoreAudio()
-      scheduleNoBufferWarning(context: "rebuild")
-    } catch {
-      FileHandle.standardError.write(Data(
-        "[sysaudio.tap] rebuild failed: \(error); stopping source\n".utf8
-      ))
-      rebuilding = false
-      stop()
-      return
-    }
-    rebuilding = false
   }
 
   private func scheduleNoBufferWarning(context: String) {

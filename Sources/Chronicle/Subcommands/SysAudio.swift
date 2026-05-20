@@ -78,6 +78,26 @@ struct SysAudio: AsyncParsableCommand {
       throw ValidationError("Requires macOS 26.0+.")
     }
 
+    // Best-effort TCC grant probe via private SPI. Advisory only:
+    // - The SPI runs inside the responsible-parent context (cmux/Terminal),
+    //   so an undetermined result for a child CLI does not mean "no grant".
+    // - Per ADR-0007, the real Tahoe 26.5 failure mode is the coreaudiod
+    //   zero-buffer regression — not TCC. Refusing to start here would be
+    //   strictly worse than letting the tap run and surfacing the regression.
+    // Log the probe result and continue.
+    switch TCCPreflight.systemAudioRecording() {
+    case .granted:
+      break
+    case .denied:
+      FileHandle.standardError.write(Data(
+        "[sysaudio] TCC preflight reports DENIED. Capture may produce zero buffers. \(TCCPreflight.systemAudioRecordingRemediation)\n".utf8
+      ))
+    case .undetermined:
+      FileHandle.standardError.write(Data(
+        "[sysaudio] TCC preflight is undetermined (responsible-parent context). Proceeding; see ADR-0007 for the real failure mode on Tahoe 26.5.\n".utf8
+      ))
+    }
+
     let rawLocale = locale ?? Locale.current.identifier
     let localeSpec = try LocaleSpec.parse(rawLocale)
     let requestedLocale = Locale(identifier: localeSpec.initialLocaleIdentifier(default: Locale.current.identifier))

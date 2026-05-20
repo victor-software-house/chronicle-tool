@@ -36,4 +36,27 @@ public enum TCCPreflight {
     System Settings → Privacy & Security → Microphone. \
     After granting, macOS will prompt you to relaunch the parent app.
     """
+
+  // MARK: - System Audio Recording
+
+  /// Declarative grant check for the CoreAudio process tap used by
+  /// `chronicle sysaudio`. Backed by `TCCSystemAudio` (private TCC SPI via
+  /// `dlopen`); returns `.undetermined` if the SPI is unavailable.
+  public static func systemAudioRecording() -> State {
+    TCCSystemAudio.preflight()
+  }
+
+  /// Triggers the macOS TCC prompt and blocks until the user decides.
+  /// Returns the resulting `State` (granted / denied).
+  public static func requestSystemAudioRecording() async -> State {
+    await TCCSystemAudio.requestAndWait() ? .granted : .denied
+  }
+
+  public static let systemAudioRecordingRemediation: String = """
+    System Audio Recording permission is required by `chronicle sysaudio`. \
+    macOS CoreAudio process taps silently deliver zero-amplitude buffers when this grant is absent. \
+    Grant it for the parent launcher (cmux.app, Terminal.app, iTerm.app, Ghostty, etc.) via: \
+    System Settings → Privacy & Security → System Audio Recording. \
+    Relaunch the parent app after granting so the grant propagates to child processes.
+    """
 }
