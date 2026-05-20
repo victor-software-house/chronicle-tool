@@ -28,10 +28,13 @@
 set -euo pipefail
 
 CONFIGURATION="release"
+SIGN_IDENTITY="-"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -c|--configuration)
       CONFIGURATION="$2"; shift 2 ;;
+    -s|--sign)
+      SIGN_IDENTITY="$2"; shift 2 ;;
     -h|--help)
       sed -n '2,30p' "$0"; exit 0 ;;
     *)
@@ -65,9 +68,22 @@ cp "$BINARY" "${APP_DIR}/Contents/MacOS/chronicle"
 cp Info.plist "${APP_DIR}/Contents/Info.plist"
 touch "$APP_DIR"
 
-echo "[make-app] adhoc-signing the bundle (binds Info.plist to identity)..."
+if [[ "$SIGN_IDENTITY" == "-" ]]; then
+  echo "[make-app] adhoc-signing the bundle (binds Info.plist to identity)..."
+  echo "[make-app] NOTE: adhoc CDHash changes per build → TCC grants invalidate."
+  echo "[make-app]       Run scripts/create-signing-identity.sh chronicle-dev"
+  echo "[make-app]       then re-run with --sign chronicle-dev for stable TCC."
+else
+  echo "[make-app] signing the bundle with identity '${SIGN_IDENTITY}' (stable DR → TCC survives rebuilds)..."
+fi
 BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' Info.plist)"
-codesign --force --sign - --identifier "$BUNDLE_ID" "$APP_DIR" >/dev/null
+ENTITLEMENTS_ARGS=()
+if [[ -f "chronicle.entitlements" ]]; then
+  ENTITLEMENTS_ARGS+=(--entitlements chronicle.entitlements)
+  echo "[make-app] embedding entitlements from chronicle.entitlements"
+fi
+codesign --force --sign "$SIGN_IDENTITY" --identifier "$BUNDLE_ID" \
+  "${ENTITLEMENTS_ARGS[@]}" "$APP_DIR" >/dev/null
 
 echo
 echo "[make-app] verifying bundle signature..."
