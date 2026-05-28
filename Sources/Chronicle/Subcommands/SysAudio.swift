@@ -55,6 +55,9 @@ struct SysAudio: AsyncParsableCommand {
   @Flag(name: .long, help: "Render volatile updates inline (TTY repaint) instead of one line each.")
   var inline: Bool = false
 
+  @Flag(name: .long, help: "Suppress volatile/final transcript lines on stdout. Sidecar files are still written.")
+  var quiet: Bool = false
+
   @Flag(name: .long, help: "Log CoreAudioTapSource state transitions and periodic peak summaries. Useful when audio appears silent.")
   var verbose: Bool = false
 
@@ -168,6 +171,7 @@ struct SysAudio: AsyncParsableCommand {
     let composedSinks = sinks
 
     let inline = self.inline
+    let quiet = self.quiet
     let resultClock = LiveResultClock()
 
     var localeResolver = try localeSpec.makeResolver(
@@ -363,14 +367,14 @@ struct SysAudio: AsyncParsableCommand {
                 fputs("\r" + String(repeating: " ", count: lastVolatileLineLength) + "\r", stdout)
                 lastVolatileLineLength = 0
               }
-              print("\u{1b}[32mFINAL\u{1b}[0m \(text)")
-            } else {
+              if !quiet { print("\u{1b}[32mFINAL\u{1b}[0m \(text)") }
+            } else if !quiet {
               let line = "\u{1b}[33mvolatile\u{1b}[0m \(text)"
               fputs("\r\(line)", stdout)
               fflush(stdout)
               lastVolatileLineLength = line.count
             }
-          } else {
+          } else if !quiet {
             if result.isFinal {
               print("\u{1b}[32mFINAL\u{1b}[0m \(text)")
             } else {

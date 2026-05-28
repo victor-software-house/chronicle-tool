@@ -12,37 +12,6 @@ struct TranscriptionLatencyMonitorTests {
     #expect(latency == 500.0)
   }
 
-  @Test("monitor emits final snapshots with rolling statistics")
-  func emitsFinalSnapshot() {
-    var monitor = TranscriptionLatencyMonitor(
-      logTag: "test",
-      diagnosticIntervalSeconds: 999,
-      warnLatencyMs: 999_000
-    )
-
-    _ = monitor.record(
-      isFinal: false,
-      wallclockOffsetMs: 1_100,
-      audioRange: TraceAudioRange(startSeconds: 0, endSeconds: 1),
-      speakerId: nil
-    )
-    let snapshot = monitor.record(
-      isFinal: true,
-      wallclockOffsetMs: 2_300,
-      audioRange: TraceAudioRange(startSeconds: 1, endSeconds: 2),
-      speakerId: "S0"
-    )
-
-    #expect(snapshot?.label == "final")
-    #expect(snapshot?.latestMs == 300)
-    #expect(snapshot?.sampleCount == 2)
-    #expect(snapshot?.finalCount == 1)
-    #expect(snapshot?.speakerKnownCount == 1)
-    #expect(snapshot?.speakerUnknownCount == 1)
-    #expect(snapshot?.averageMs == 200)
-    #expect(snapshot?.maxMs == 300)
-  }
-
   @Test("monitor emits warnings for high latency")
   func emitsWarningsForHighLatency() {
     var monitor = TranscriptionLatencyMonitor(
@@ -75,5 +44,38 @@ struct TranscriptionLatencyMonitorTests {
 
     #expect(snapshot == nil)
     #expect(monitor.finalSnapshot() == nil)
+  }
+
+  @Test("monitor tracks final samples but emits only on diagnostic ticks")
+  func tracksFinalSnapshotWithoutPerFinalEmission() {
+    var monitor = TranscriptionLatencyMonitor(
+      logTag: "test",
+      diagnosticIntervalSeconds: 999,
+      warnLatencyMs: 999_000
+    )
+
+    _ = monitor.record(
+      isFinal: false,
+      wallclockOffsetMs: 1_100,
+      audioRange: TraceAudioRange(startSeconds: 0, endSeconds: 1),
+      speakerId: nil
+    )
+    let snapshot = monitor.record(
+      isFinal: true,
+      wallclockOffsetMs: 2_300,
+      audioRange: TraceAudioRange(startSeconds: 1, endSeconds: 2),
+      speakerId: "S0"
+    )
+    let finalSnapshot = monitor.finalSnapshot()
+
+    #expect(snapshot == nil)
+    #expect(finalSnapshot?.label == "summary")
+    #expect(finalSnapshot?.latestMs == 300)
+    #expect(finalSnapshot?.sampleCount == 2)
+    #expect(finalSnapshot?.finalCount == 1)
+    #expect(finalSnapshot?.speakerKnownCount == 1)
+    #expect(finalSnapshot?.speakerUnknownCount == 1)
+    #expect(finalSnapshot?.averageMs == 200)
+    #expect(finalSnapshot?.maxMs == 300)
   }
 }

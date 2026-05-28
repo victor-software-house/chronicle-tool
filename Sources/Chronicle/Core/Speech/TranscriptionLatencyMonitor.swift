@@ -125,10 +125,10 @@ public struct TranscriptionLatencyMonitor: Sendable {
     }
     let shouldWarn = sample.latencyMs >= warnLatencyMs
     let shouldEmitWarn = shouldWarn && dueForTick
-    guard isFinal || dueForTick else { return nil }
+    guard dueForTick else { return nil }
 
     lastDiagnosticOffsetMs = wallclockOffsetMs
-    return snapshot(label: shouldEmitWarn ? "warn" : (isFinal ? "final" : "tick"), latestMs: sample.latencyMs)
+    return snapshot(label: shouldEmitWarn ? "warn" : "tick", latestMs: sample.latencyMs)
   }
 
   public func finalSnapshot() -> TranscriptionLatencySnapshot? {
