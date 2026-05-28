@@ -20,6 +20,13 @@ public struct CaptureStopResult: Codable, Equatable, Sendable {
   public let status: LiveCaptureStatus
 }
 
+public struct ReconfigureResult: Equatable, Sendable {
+  public let source: CaptureSource
+  public let outcome: ReconfigureOutcome
+  public let status: LiveCaptureStatus
+  public let error: RPCError?
+}
+
 /// Coordinates daemon method behavior for one physical source.
 public actor DaemonCoordinator {
   public let paths: RuntimePaths
@@ -30,6 +37,9 @@ public actor DaemonCoordinator {
   private var lease: SourceOwnerLease?
   private var ensureReplay: [ClientRequestID: CaptureEnsureResult] = [:]
   private var stopReplay: [ClientRequestID: CaptureStopResult] = [:]
+  private var reconfigureReplay: [ClientRequestID: ReconfigureResult] = [:]
+  private var events: [DaemonEvent] = []
+  private var nextEventSequence = 1
 
   public init(paths: RuntimePaths, configuration: LiveCaptureConfiguration) {
     self.paths = paths
@@ -88,6 +98,40 @@ public actor DaemonCoordinator {
     return result
   }
 
+  public func reconfigure(_ change: LiveCaptureChange, clientRequestID: ClientRequestID) async -> ReconfigureResult {
+    if let replay = reconfigureReplay[clientRequestID] { return replay }
+
+    appendControlEvent(type: "capture.reconfigure.started", payload: ["client_req_id": .string(clientRequestID.rawValue)])
+    let outcome = await session.reconfigure(change)
+    let status = await session.status()
+    let result: ReconfigureResult
+    switch outcome {
+    case .appliedLive, .futureSegment:
+      appendControlEvent(type: "capture.reconfigure.succeeded", payload: ["client_req_id": .string(clientRequestID.rawValue)])
+      result = ReconfigureResult(source: configuration.source, outcome: outcome, status: status, error: nil)
+    case .rejected(let reason, let alternative):
+      appendControlEvent(type: "capture.reconfigure.failed", payload: ["client_req_id": .string(clientRequestID.rawValue), "reason": .string(reason)])
+      result = ReconfigureResult(
+        source: configuration.source,
+        outcome: outcome,
+        status: status,
+        error: RPCError(
+          code: .invalidConfig,
+          message: reason,
+          retriable: false,
+          hint: alternative,
+          details: ["source": .string(configuration.source.rawValue)]
+        )
+      )
+    }
+    reconfigureReplay[clientRequestID] = result
+    return result
+  }
+
+  public func controlEvents() -> [DaemonEvent] {
+    events
+  }
+
   public func status() async -> DaemonStatus {
     let live = await session.status()
     guard live.lifecycle != .stopped else {
@@ -104,5 +148,19 @@ public actor DaemonCoordinator {
       idleOutput: live.lastObservedPeak == 0 && live.transcriptCounters.final == 0 && live.transcriptCounters.volatile == 0
     )
     return .project(source: configuration.source, paths: paths, heartbeat: heartbeat, freshnessTTL: 10, now: Date())
+  }
+
+  private func appendControlEvent(type: String, payload: [String: JSONValue]) {
+    events.append(DaemonEvent(
+      sequence: nextEventSequence,
+      epoch: lease?.epoch ?? DaemonEpoch(rawValue: "unowned"),
+      source: configuration.source,
+      stream: .control,
+      monotonicSeconds: ProcessInfo.processInfo.systemUptime,
+      wallClock: Date(),
+      type: type,
+      payload: payload
+    ))
+    nextEventSequence += 1
   }
 }

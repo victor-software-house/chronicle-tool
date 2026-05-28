@@ -116,7 +116,7 @@
   - _Boundary: DaemonCoordinator_
   - _Depends: 1.2, 3.1, 3.3, 4.2_
 
-- [ ] 5.2 Add reconfiguration method handling
+- [x] 5.2 Add reconfiguration method handling
   - Apply supported progressive-layer changes without stopping rough transcript capture.
   - Reject unsafe active changes with non-retriable structured errors and alternatives.
   - Record reconfiguration start, success, and failure events.
