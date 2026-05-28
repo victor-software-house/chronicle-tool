@@ -162,7 +162,7 @@
   - _Boundary: Start, Stop, Status, ChronicleRPCClient_
   - _Depends: 2.3, 6.1_
 
-- [ ] 6.3 (P) Add tail, mark, clip, and config client commands
+- [x] 6.3 (P) Add tail, mark, clip, and config client commands
   - Implement thin RPC clients for event subscription, marker creation, recent clip requests, and hot reconfiguration.
   - Render JSONL event streams for tail without polling sidecar files.
   - Preserve structured errors for no-active-session, unavailable clip ranges, and unsupported reconfigure.
