@@ -190,6 +190,10 @@ struct Mic: AsyncParsableCommand {
       ))
     }
 
+    if let diarizer {
+      FileHandle.standardError.write(Data("[mic.diarize] prewarming in background; transcript starts immediately and speaker labels appear when ready\n".utf8))
+    }
+
     // --- Audio language detection (ADR-0006) ---
     // Runs BEFORE analyzer and diarizer so WhisperKit gets exclusive ANE.
     try await micSource.start()
@@ -261,6 +265,7 @@ struct Mic: AsyncParsableCommand {
       Task {
         do {
           try await d.prepare()
+          FileHandle.standardError.write(Data("[mic.diarize] prewarm complete; live speaker labels available for covered audio ranges\n".utf8))
         } catch {
           FileHandle.standardError.write(Data(
             "[mic.diarize] prewarm failed: \(error)\n".utf8
@@ -409,6 +414,11 @@ struct Mic: AsyncParsableCommand {
     do {
       resultClock.markStarted()
       try await analyzer.start(inputSequence: micSource.analyzerInputs)
+    } catch let e as MicAudioSourceError {
+      diarizerPrepareTask?.cancel()
+      await diarizerPrepareTask?.value
+      FileHandle.standardError.write(Data("[mic] error: \(e.description)\n".utf8))
+      throw ExitCode(2)
     } catch {
       diarizerPrepareTask?.cancel()
       await diarizerPrepareTask?.value

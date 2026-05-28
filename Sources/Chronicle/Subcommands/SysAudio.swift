@@ -216,6 +216,10 @@ struct SysAudio: AsyncParsableCommand {
       probeStream = nil
     }
 
+    if let diarizer {
+      FileHandle.standardError.write(Data("[sysaudio.diarize] prewarming in background; transcript starts immediately and speaker labels appear when ready\n".utf8))
+    }
+
     try await sysSource.start()
     FileHandle.standardError.write(Data("[sysaudio] capture started; play audio in any app. Ctrl-C to stop.\n".utf8))
 
@@ -280,6 +284,7 @@ struct SysAudio: AsyncParsableCommand {
       Task {
         do {
           try await d.prepare()
+          FileHandle.standardError.write(Data("[sysaudio.diarize] prewarm complete; live speaker labels available for covered audio ranges\n".utf8))
         } catch {
           FileHandle.standardError.write(Data(
             "[sysaudio.diarize] prewarm failed: \(error)\n".utf8
