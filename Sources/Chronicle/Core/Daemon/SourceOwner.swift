@@ -99,6 +99,24 @@ public final class SourceOwnerLease: @unchecked Sendable {
 #endif
     onRelease()
   }
+
+  /// Test helper: model the kernel-side cleanup that happens after a hard
+  /// kill (`kill -9`). Closes the lock file descriptor so the flock is
+  /// released by the kernel, but intentionally leaves the PID file on disk
+  /// so the next daemon must distinguish stale ownership state from a live
+  /// owner per Req 1.3 + 9.3. Subsequent `release()` calls are no-ops.
+  public func simulateKernelCleanup() {
+    releaseLock.lock()
+    guard !released else {
+      releaseLock.unlock()
+      return
+    }
+    released = true
+    releaseLock.unlock()
+#if canImport(Darwin) || canImport(Glibc)
+    close(fileDescriptor)
+#endif
+  }
 }
 
 /// Per-source ownership gate backed by a non-blocking `flock` and PID metadata.

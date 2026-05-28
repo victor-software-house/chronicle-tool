@@ -254,7 +254,7 @@
   - _Boundary: LeaseStore, DaemonCoordinator, RPCServer_
   - _Depends: 8.1_
 
-- [ ] 8.8 Real hard-kill simulator and stale-owner inspection test
+- [x] 8.8 Real hard-kill simulator and stale-owner inspection test
   - `Daemon.simulateHardKill` currently calls `ownerLease?.release()` which deletes the PID file; a real `kill -9` leaves the PID file behind. Close the lock fd without invoking lease `release()`. Add a test that asserts `SourceOwner.inspect()` returns `lifecycle == .stale, isActive == false` after the simulated kill.
   - _Requirements: 1.3, 9.3_
   - _Boundary: Daemon, SourceOwner_

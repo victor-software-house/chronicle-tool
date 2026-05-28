@@ -82,13 +82,32 @@ public actor Daemon {
     _isRunning = true
   }
 
-  /// Test helper: simulate hard kill by dropping the lease and socket without writing the daemon.stopped trailer.
+  /// Test helper: simulate hard kill by closing the lock fd without writing
+  /// the daemon.stopped trailer or removing the PID file. To make the
+  /// in-process simulation observable as `.stale` by the next daemon (the
+  /// current test process is itself still alive, so the original PID would
+  /// flip-flop back to `.capturing`), this also rewrites the PID file with
+  /// an unreachable synthetic PID before closing the fd. The combination
+  /// matches the post-`kill -9` invariants for any out-of-process inspector.
   public func simulateHardKill() async {
     guard _isRunning else { return }
     await coordinator.stopHeartbeats()
     server?.stop()
     server = nil
-    ownerLease?.release()
+    if let lease = ownerLease {
+      let synthetic = SourceOwnerRecord(
+        source: paths.source,
+        pid: Int32.max,
+        epoch: lease.epoch,
+        acquiredAt: Date()
+      )
+      let encoder = JSONEncoder()
+      encoder.outputFormatting = [.sortedKeys]
+      if let data = try? encoder.encode(synthetic) {
+        try? data.write(to: paths.pidURL, options: .atomic)
+      }
+      lease.simulateKernelCleanup()
+    }
     ownerLease = nil
     eventLog = nil
     _isRunning = false

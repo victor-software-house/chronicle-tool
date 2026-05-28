@@ -643,15 +643,31 @@ public struct ChronicleRPCClient: Sendable {
   }
 
   public static func sendRaw(_ raw: String, to socketURL: URL) async throws -> String {
-    try await Task.detached {
-      let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-      guard fd >= 0 else { throw RPCTransportError.socketUnavailable(posixMessage()) }
-      defer { close(fd) }
-      try connectUnixSocket(fd: fd, path: socketURL.path)
-      writeAll(raw, fd: fd)
-      shutdown(fd, SHUT_WR)
-      return String(decoding: readAll(fd: fd), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-    }.value
+    // Run the blocking Unix socket round-trip on the global dispatch pool
+    // instead of a `Task.detached`. Swift's cooperative thread pool is small
+    // (often 2-4 threads); blocking it with sync `read()` calls deadlocks any
+    // parallel test that also wants to await an RPC response. The global
+    // dispatch pool scales independently.
+    return try await withCheckedThrowingContinuation { continuation in
+      DispatchQueue.global(qos: .userInitiated).async {
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else {
+          continuation.resume(throwing: RPCTransportError.socketUnavailable(posixMessage()))
+          return
+        }
+        defer { close(fd) }
+        do {
+          try connectUnixSocket(fd: fd, path: socketURL.path)
+        } catch {
+          continuation.resume(throwing: error)
+          return
+        }
+        writeAll(raw, fd: fd)
+        shutdown(fd, SHUT_WR)
+        let payload = String(decoding: readAll(fd: fd), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        continuation.resume(returning: payload)
+      }
+    }
   }
 }
 

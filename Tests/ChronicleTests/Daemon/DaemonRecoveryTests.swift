@@ -36,6 +36,22 @@ struct DaemonRecoveryTests {
     #expect(!events.contains { $0.type == "daemon.recovery" })
   }
 
+  @Test("simulateHardKill leaves PID file on disk and inspect reports .stale")
+  func simulateHardKillLeavesPIDFileOnDiskAndInspectReportsStale() async throws {
+    let paths = RuntimePaths(source: .mic, rootDirectory: try temporaryRoot())
+    let crashy = Daemon(paths: paths, configuration: directConfig(paths: paths))
+    try await crashy.start()
+    #expect(FileManager.default.fileExists(atPath: paths.pidURL.path))
+
+    await crashy.simulateHardKill()
+
+    #expect(FileManager.default.fileExists(atPath: paths.pidURL.path), "kill -9 leaves PID file on disk")
+    let snapshot = SourceOwner(paths: paths).inspect()
+    #expect(snapshot.lifecycle == .stale)
+    #expect(snapshot.isActive == false)
+    #expect(snapshot.pid == Int32.max)
+  }
+
   private func directConfig(paths: RuntimePaths) -> LiveCaptureConfiguration {
     .direct(source: paths.source, locale: "auto", output: nil, append: nil, live: nil, saveAudio: nil, audioFormat: "alac", diarize: false)
   }
