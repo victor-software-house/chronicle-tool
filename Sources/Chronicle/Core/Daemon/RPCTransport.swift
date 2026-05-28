@@ -22,13 +22,17 @@ public enum RPCTransportError: Error, Equatable, CustomStringConvertible, Sendab
 
 public final class RPCServer: @unchecked Sendable {
   public let paths: RuntimePaths
+  public let coordinator: DaemonCoordinator?
+  public let eventHub: EventHub?
   private let queue = DispatchQueue(label: "chronicle.rpc.server")
   private let stateLock = NSLock()
   private var listenFD: Int32 = -1
   private var running = false
 
-  public init(paths: RuntimePaths) {
+  public init(paths: RuntimePaths, coordinator: DaemonCoordinator? = nil, eventHub: EventHub? = nil) {
     self.paths = paths
+    self.coordinator = coordinator
+    self.eventHub = eventHub
   }
 
   deinit {
@@ -110,24 +114,304 @@ public final class RPCServer: @unchecked Sendable {
   }
 
   private func route(_ request: RPCRequest) -> RPCResponse {
-    if request.method == "status.get" {
-      let requestedSource: CaptureSource
-      if case .string(let raw)? = request.params?["source"], let source = CaptureSource(rawValue: raw) {
-        requestedSource = source
-      } else {
-        requestedSource = paths.source
-      }
-      return .success(
+    switch request.method {
+    case "meta.schema":
+      return RPCProtocol.dispatch(request, supportedMethods: OpenRPCSchema.registeredMethodNames)
+
+    case "status.get":
+      return handleStatus(request)
+
+    case "capture.ensure":
+      return handleEnsure(request)
+
+    case "capture.stop":
+      return handleStop(request)
+
+    case "capture.reconfigure":
+      return handleReconfigure(request)
+
+    case "mark.create":
+      return handleMark(request)
+
+    case "clip.create":
+      return handleClip(request)
+
+    case "events.subscribe", "lease.acquire", "lease.renew", "lease.release":
+      // Deferred to tasks 8.3 / 8.7 — return the placeholder dispatch for now.
+      return RPCProtocol.dispatch(request, supportedMethods: OpenRPCSchema.registeredMethodNames)
+
+    default:
+      return RPCProtocol.dispatch(request, supportedMethods: OpenRPCSchema.registeredMethodNames)
+    }
+  }
+
+  private func handleStatus(_ request: RPCRequest) -> RPCResponse {
+    let requestedSource: CaptureSource
+    if case .string(let raw)? = request.params?["source"], let source = CaptureSource(rawValue: raw) {
+      requestedSource = source
+    } else {
+      requestedSource = paths.source
+    }
+
+    guard let coordinator else {
+      let stopped = DaemonStatus.stopped(source: requestedSource, paths: paths)
+      return .success(id: request.id, result: encodeAsJSONObject(stopped))
+    }
+
+    let status = awaitAsync { await coordinator.status() }
+    return .success(id: request.id, result: encodeAsJSONObject(status))
+  }
+
+  private func handleEnsure(_ request: RPCRequest) -> RPCResponse {
+    guard let coordinator else { return coordinatorUnavailable(id: request.id) }
+    guard let cid = extractClientRequestID(request) else {
+      return .failure(
         id: request.id,
-        result: [
-          "source": .string(requestedSource.rawValue),
-          "lifecycle": .string(DaemonLifecycle.stopped.rawValue),
-          "socket": .string(paths.socketURL.path),
-        ]
+        error: RPCError(
+          code: .malformedRequest,
+          message: "capture.ensure requires client_req_id.",
+          retriable: false,
+          hint: "Include a non-empty string client_req_id."
+        )
       )
     }
-    return RPCProtocol.dispatch(request, supportedMethods: OpenRPCSchema.registeredMethodNames)
+    let outcome = awaitAsyncThrowing { try await coordinator.ensure(clientRequestID: cid) }
+    switch outcome {
+    case .success(let result):
+      return .success(id: request.id, result: encodeAsJSONObject(result))
+    case .failure(let error):
+      return .failure(
+        id: request.id,
+        error: RPCError(
+          code: .resourceBusy,
+          message: "capture.ensure failed: \(error.localizedDescription)",
+          retriable: false,
+          hint: "Inspect daemon logs and source-owner snapshot before retrying."
+        )
+      )
+    }
   }
+
+  private func handleStop(_ request: RPCRequest) -> RPCResponse {
+    guard let coordinator else { return coordinatorUnavailable(id: request.id) }
+    guard let cid = extractClientRequestID(request) else {
+      return .failure(
+        id: request.id,
+        error: RPCError(
+          code: .malformedRequest,
+          message: "capture.stop requires client_req_id.",
+          retriable: false,
+          hint: "Include a non-empty string client_req_id."
+        )
+      )
+    }
+    let result = awaitAsync { await coordinator.stop(clientRequestID: cid) }
+    return .success(id: request.id, result: encodeAsJSONObject(result))
+  }
+
+  private func handleReconfigure(_ request: RPCRequest) -> RPCResponse {
+    guard let coordinator else { return coordinatorUnavailable(id: request.id) }
+    guard let cid = extractClientRequestID(request) else {
+      return .failure(
+        id: request.id,
+        error: RPCError(
+          code: .malformedRequest,
+          message: "capture.reconfigure requires client_req_id.",
+          retriable: false,
+          hint: "Include a non-empty string client_req_id."
+        )
+      )
+    }
+    guard let change = extractChange(request) else {
+      return .failure(
+        id: request.id,
+        error: RPCError(
+          code: .malformedRequest,
+          message: "capture.reconfigure requires a decodable 'change' field.",
+          retriable: false,
+          hint: "Supply a LiveCaptureChange JSON payload (object or JSON-encoded string)."
+        )
+      )
+    }
+    let result = awaitAsync { await coordinator.reconfigure(change, clientRequestID: cid) }
+    if let error = result.error {
+      return .failure(id: request.id, error: error)
+    }
+    let outcomeString: String
+    switch result.outcome {
+    case .appliedLive: outcomeString = "applied_live"
+    case .futureSegment: outcomeString = "future_segment"
+    case .rejected: outcomeString = "rejected"
+    }
+    return .success(id: request.id, result: [
+      "source": .string(result.source.rawValue),
+      "outcome": .string(outcomeString),
+      "status": encodeAsJSON(result.status),
+    ])
+  }
+
+  private func handleMark(_ request: RPCRequest) -> RPCResponse {
+    guard let coordinator else { return coordinatorUnavailable(id: request.id) }
+    guard let cid = extractClientRequestID(request) else {
+      return .failure(
+        id: request.id,
+        error: RPCError(
+          code: .malformedRequest,
+          message: "mark.create requires client_req_id.",
+          retriable: false,
+          hint: "Include a non-empty string client_req_id."
+        )
+      )
+    }
+    let label: String
+    if case .string(let raw)? = request.params?["label"] {
+      label = raw
+    } else {
+      return .failure(
+        id: request.id,
+        error: RPCError(
+          code: .malformedRequest,
+          message: "mark.create requires a string label.",
+          retriable: false,
+          hint: "Include a non-empty string label."
+        )
+      )
+    }
+    let result = awaitAsync { await coordinator.createMarker(label: label, clientRequestID: cid) }
+    if let error = result.error {
+      return .failure(id: request.id, error: error)
+    }
+    var dict: [String: JSONValue] = ["source": .string(result.source.rawValue)]
+    if let event = result.event {
+      dict["event"] = encodeAsJSON(event)
+    }
+    return .success(id: request.id, result: dict)
+  }
+
+  private func handleClip(_ request: RPCRequest) -> RPCResponse {
+    guard let coordinator else { return coordinatorUnavailable(id: request.id) }
+    guard let cid = extractClientRequestID(request) else {
+      return .failure(
+        id: request.id,
+        error: RPCError(
+          code: .malformedRequest,
+          message: "clip.create requires client_req_id.",
+          retriable: false,
+          hint: "Include a non-empty string client_req_id."
+        )
+      )
+    }
+    guard let clipRequest = extractClipRequest(request) else {
+      return .failure(
+        id: request.id,
+        error: RPCError(
+          code: .malformedRequest,
+          message: "clip.create requires numeric last_seconds and string output.",
+          retriable: false,
+          hint: "Supply last_seconds > 0 and an absolute output path."
+        )
+      )
+    }
+    let result = awaitAsync { await coordinator.createClip(request: clipRequest, clientRequestID: cid) }
+    if let error = result.error {
+      return .failure(id: request.id, error: error)
+    }
+    var dict: [String: JSONValue] = ["source": .string(result.source.rawValue)]
+    if let outputURL = result.outputURL {
+      dict["output"] = .string(outputURL.path)
+    }
+    if let availableRange = result.availableRange {
+      dict["available_range"] = .object(["duration_seconds": .number(availableRange.durationSeconds)])
+    }
+    return .success(id: request.id, result: dict)
+  }
+
+  private func extractClientRequestID(_ request: RPCRequest) -> ClientRequestID? {
+    if case .string(let raw)? = request.params?["client_req_id"], !raw.isEmpty {
+      return ClientRequestID(rawValue: raw)
+    }
+    return nil
+  }
+
+  private func extractChange(_ request: RPCRequest) -> LiveCaptureChange? {
+    let decoder = RPCProtocol.decoder()
+    switch request.params?["change"] {
+    case .string(let raw)?:
+      guard let data = raw.data(using: .utf8) else { return nil }
+      return try? decoder.decode(LiveCaptureChange.self, from: data)
+    case .object(let dict)?:
+      let encoder = RPCProtocol.encoder()
+      guard let data = try? encoder.encode(dict) else { return nil }
+      return try? decoder.decode(LiveCaptureChange.self, from: data)
+    default:
+      return nil
+    }
+  }
+
+  private func extractClipRequest(_ request: RPCRequest) -> ClipRequest? {
+    guard case .number(let seconds)? = request.params?["last_seconds"],
+          case .string(let outputPath)? = request.params?["output"] else { return nil }
+    return ClipRequest(lastSeconds: TimeInterval(seconds), outputURL: URL(fileURLWithPath: outputPath))
+  }
+
+  private func coordinatorUnavailable(id: RPCID?) -> RPCResponse {
+    .failure(
+      id: id,
+      error: RPCError(
+        code: .daemonUnavailable,
+        message: "Daemon coordinator is not attached to this RPC server.",
+        retriable: false,
+        hint: "Start the daemon through Daemon.start so the coordinator is wired into the RPC server."
+      )
+    )
+  }
+}
+
+private final class ResultBox<T>: @unchecked Sendable {
+  var value: T?
+}
+
+@discardableResult
+private func awaitAsync<T: Sendable>(_ body: @escaping @Sendable () async -> T) -> T {
+  let semaphore = DispatchSemaphore(value: 0)
+  let box = ResultBox<T>()
+  Task {
+    let result = await body()
+    box.value = result
+    semaphore.signal()
+  }
+  semaphore.wait()
+  return box.value!
+}
+
+private func awaitAsyncThrowing<T: Sendable>(_ body: @escaping @Sendable () async throws -> T) -> Result<T, Error> {
+  let semaphore = DispatchSemaphore(value: 0)
+  let box = ResultBox<Result<T, Error>>()
+  Task {
+    do {
+      let result = try await body()
+      box.value = .success(result)
+    } catch {
+      box.value = .failure(error)
+    }
+    semaphore.signal()
+  }
+  semaphore.wait()
+  return box.value!
+}
+
+private func encodeAsJSON<T: Encodable>(_ value: T) -> JSONValue {
+  do {
+    let data = try RPCProtocol.encoder().encode(value)
+    return try RPCProtocol.decoder().decode(JSONValue.self, from: data)
+  } catch {
+    return .null
+  }
+}
+
+private func encodeAsJSONObject<T: Encodable>(_ value: T) -> [String: JSONValue] {
+  if case .object(let dict) = encodeAsJSON(value) { return dict }
+  return [:]
 }
 
 public struct ChronicleRPCClient: Sendable {

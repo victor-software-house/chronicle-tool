@@ -35,6 +35,7 @@ public actor DaemonCoordinator {
   private let owner: SourceOwner
   private let session: LiveCaptureSession
   private var lease: SourceOwnerLease?
+  private var externallyManagedLease = false
   private var ensureReplay: [ClientRequestID: CaptureEnsureResult] = [:]
   private var stopReplay: [ClientRequestID: CaptureStopResult] = [:]
   private var reconfigureReplay: [ClientRequestID: ReconfigureResult] = [:]
@@ -50,6 +51,15 @@ public actor DaemonCoordinator {
     owner = SourceOwner(paths: paths)
     session = LiveCaptureSession(configuration: configuration)
     coordinationLeases = LeaseStore(epoch: DaemonEpoch(rawValue: "unowned"), source: configuration.source)
+  }
+
+  /// Attach a pre-acquired owner lease (e.g. from `Daemon.start`) so subsequent
+  /// `ensure` calls reuse it instead of trying to flock the source again. The
+  /// coordinator will not release an externally attached lease on `stop`.
+  public func attachOwnerLease(_ lease: SourceOwnerLease) {
+    self.lease = lease
+    self.externallyManagedLease = true
+    self.coordinationLeases = LeaseStore(epoch: lease.epoch, source: configuration.source)
   }
 
   public var scratchDirectory: URL {
@@ -72,7 +82,9 @@ public actor DaemonCoordinator {
     }
 
     do {
-      lease = try owner.acquire()
+      if lease == nil {
+        lease = try owner.acquire()
+      }
       let started = try await session.start()
       let result = CaptureEnsureResult(source: configuration.source, lifecycle: started.lifecycle, status: started, existingOwner: nil)
       ensureReplay[clientRequestID] = result
@@ -99,8 +111,10 @@ public actor DaemonCoordinator {
     }
 
     let stopped = await session.stop(reason: .clientRequest)
-    lease?.release()
-    lease = nil
+    if !externallyManagedLease {
+      lease?.release()
+      lease = nil
+    }
     let result = CaptureStopResult(source: configuration.source, lifecycle: stopped.lifecycle, outcome: .graceful, status: stopped)
     stopReplay[clientRequestID] = result
     return result

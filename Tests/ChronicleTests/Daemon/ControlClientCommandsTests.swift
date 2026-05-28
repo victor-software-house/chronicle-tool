@@ -4,8 +4,8 @@ import Testing
 
 @Suite("Control client commands")
 struct ControlClientCommandsTests {
-  @Test("status command renders machine readable JSON against running daemon")
-  func statusCommandRendersMachineReadableJSONAgainstRunningDaemon() async throws {
+  @Test("status command returns coordinator-projected status against running daemon")
+  func statusCommandReturnsCoordinatorProjectedStatusAgainstRunningDaemon() async throws {
     let paths = RuntimePaths(source: .mic, rootDirectory: try temporaryRoot())
     let daemon = Daemon(paths: paths, configuration: directConfig(paths: paths))
     try await daemon.start()
@@ -13,10 +13,17 @@ struct ControlClientCommandsTests {
 
     let response = await StatusClient.fetch(paths: paths)
     #expect(response.error == nil)
-    let json = response.encodedString()
-    #expect(json.contains("\"source\":\"mic\""))
-    #expect(json.contains("\"lifecycle\":\"stopped\""))
-    #expect(json.contains("\"socket\":\"\(paths.socketURL.path)\""))
+    #expect(response.result?["source"] == .string("mic"))
+    #expect(response.result?["lifecycle"] == .string("stopped"))
+    #expect(response.result?["health"] == .string("stopped"))
+    if case .object(let sidecars)? = response.result?["sidecars"] {
+      #expect(sidecars["socket"] != nil)
+      #expect(sidecars["lock"] != nil)
+      #expect(sidecars["pid"] != nil)
+      #expect(sidecars["log"] != nil)
+    } else {
+      Issue.record("status result missing sidecars object")
+    }
   }
 
   @Test("status command returns daemon_unavailable when no daemon running")
@@ -29,8 +36,8 @@ struct ControlClientCommandsTests {
     #expect(response.error?.retriable == true)
   }
 
-  @Test("start command sends capture.ensure with client request id")
-  func startCommandSendsCaptureEnsureWithClientRequestID() async throws {
+  @Test("start command returns capturing lifecycle from coordinator ensure")
+  func startCommandReturnsCapturingLifecycleFromCoordinatorEnsure() async throws {
     let paths = RuntimePaths(source: .mic, rootDirectory: try temporaryRoot())
     let daemon = Daemon(paths: paths, configuration: directConfig(paths: paths))
     try await daemon.start()
@@ -39,11 +46,17 @@ struct ControlClientCommandsTests {
     let response = await StartClient.send(paths: paths, clientRequestID: ClientRequestID(rawValue: "start-1"))
 
     #expect(response.error == nil)
-    #expect(response.result?["accepted"] == .bool(true))
+    #expect(response.result?["source"] == .string("mic"))
+    #expect(response.result?["lifecycle"] == .string("capturing"))
+    if case .object(let status)? = response.result?["status"] {
+      #expect(status["lifecycle"] == .string("capturing"))
+    } else {
+      Issue.record("ensure result missing status object")
+    }
   }
 
-  @Test("stop command sends capture.stop with client request id")
-  func stopCommandSendsCaptureStopWithClientRequestID() async throws {
+  @Test("stop command returns already_stopped when capture was never started")
+  func stopCommandReturnsAlreadyStoppedWhenCaptureWasNeverStarted() async throws {
     let paths = RuntimePaths(source: .mic, rootDirectory: try temporaryRoot())
     let daemon = Daemon(paths: paths, configuration: directConfig(paths: paths))
     try await daemon.start()
@@ -52,7 +65,9 @@ struct ControlClientCommandsTests {
     let response = await StopClient.send(paths: paths, clientRequestID: ClientRequestID(rawValue: "stop-1"))
 
     #expect(response.error == nil)
-    #expect(response.result?["accepted"] == .bool(true))
+    #expect(response.result?["source"] == .string("mic"))
+    #expect(response.result?["lifecycle"] == .string("stopped"))
+    #expect(response.result?["outcome"] == .string("already_stopped"))
   }
 
   private func directConfig(paths: RuntimePaths) -> LiveCaptureConfiguration {

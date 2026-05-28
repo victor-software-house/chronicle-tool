@@ -54,6 +54,7 @@ public actor Daemon {
 
     let lease = try owner.acquire()
     ownerLease = lease
+    await coordinator.attachOwnerLease(lease)
 
     let resumedSequence = (priorEvents.last?.sequence ?? 0) + 1
     var log = DaemonEventLog(url: paths.logURL, source: configuration.source, epoch: lease.epoch, nextSequence: resumedSequence)
@@ -66,7 +67,7 @@ public actor Daemon {
     ])
     eventLog = log
 
-    let rpc = RPCServer(paths: paths)
+    let rpc = RPCServer(paths: paths, coordinator: coordinator, eventHub: eventHub)
     try rpc.start()
     server = rpc
 

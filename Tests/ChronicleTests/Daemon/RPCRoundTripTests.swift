@@ -1,0 +1,144 @@
+import Foundation
+import Testing
+@testable import Chronicle
+
+@Suite("RPC round trip against running daemon")
+struct RPCRoundTripTests {
+  @Test("capture lifecycle round trip: ensure → status → stop → status")
+  func captureLifecycleRoundTrip() async throws {
+    let paths = RuntimePaths(source: .mic, rootDirectory: try temporaryRoot())
+    let daemon = Daemon(paths: paths, configuration: directConfig(paths: paths))
+    try await daemon.start()
+    defer { Task { await daemon.stop() } }
+
+    let ensure = await StartClient.send(paths: paths, clientRequestID: ClientRequestID(rawValue: "rt-ensure-1"))
+    #expect(ensure.error == nil)
+    #expect(ensure.result?["lifecycle"] == .string("capturing"))
+
+    let statusAfterEnsure = await StatusClient.fetch(paths: paths)
+    #expect(statusAfterEnsure.error == nil)
+    #expect(statusAfterEnsure.result?["lifecycle"] == .string("capturing"))
+    // health may be either "healthy" or "idleOutput" depending on heartbeat peak/counter accumulation in mock session
+    let projectedHealth = statusAfterEnsure.result?["health"]
+    #expect(projectedHealth == .string("healthy") || projectedHealth == .string("idleOutput"))
+
+    let stop = await StopClient.send(paths: paths, clientRequestID: ClientRequestID(rawValue: "rt-stop-1"))
+    #expect(stop.error == nil)
+    #expect(stop.result?["lifecycle"] == .string("stopped"))
+    #expect(stop.result?["outcome"] == .string("graceful"))
+
+    let statusAfterStop = await StatusClient.fetch(paths: paths)
+    #expect(statusAfterStop.error == nil)
+    #expect(statusAfterStop.result?["lifecycle"] == .string("stopped"))
+  }
+
+  @Test("ensure replays prior result for same client_req_id")
+  func ensureReplaysPriorResultForSameClientRequestID() async throws {
+    let paths = RuntimePaths(source: .mic, rootDirectory: try temporaryRoot())
+    let daemon = Daemon(paths: paths, configuration: directConfig(paths: paths))
+    try await daemon.start()
+    defer { Task { await daemon.stop() } }
+
+    let cid = ClientRequestID(rawValue: "rt-replay-1")
+    let first = await StartClient.send(paths: paths, clientRequestID: cid)
+    let second = await StartClient.send(paths: paths, clientRequestID: cid)
+
+    #expect(first.error == nil)
+    #expect(second.error == nil)
+    #expect(first.result?["lifecycle"] == second.result?["lifecycle"])
+    #expect(first.result?["status"] == second.result?["status"])
+  }
+
+  @Test("mark.create returns no_active_session when capture is stopped")
+  func markCreateReturnsNoActiveSessionWhenCaptureStopped() async throws {
+    let paths = RuntimePaths(source: .mic, rootDirectory: try temporaryRoot())
+    let daemon = Daemon(paths: paths, configuration: directConfig(paths: paths))
+    try await daemon.start()
+    defer { Task { await daemon.stop() } }
+
+    let response = await MarkClient.send(
+      paths: paths,
+      label: "anchor",
+      clientRequestID: ClientRequestID(rawValue: "rt-mark-1")
+    )
+
+    #expect(response.error?.code == .noActiveSession)
+    #expect(response.error?.retriable == false)
+  }
+
+  @Test("mark.create after ensure produces a marker.created event in the result")
+  func markCreateAfterEnsureProducesMarkerCreatedEvent() async throws {
+    let paths = RuntimePaths(source: .mic, rootDirectory: try temporaryRoot())
+    let daemon = Daemon(paths: paths, configuration: directConfig(paths: paths))
+    try await daemon.start()
+    defer { Task { await daemon.stop() } }
+
+    _ = await StartClient.send(paths: paths, clientRequestID: ClientRequestID(rawValue: "rt-mark-ensure"))
+    let response = await MarkClient.send(
+      paths: paths,
+      label: "anchor",
+      clientRequestID: ClientRequestID(rawValue: "rt-mark-2")
+    )
+
+    #expect(response.error == nil)
+    #expect(response.result?["source"] == .string("mic"))
+    if case .object(let event)? = response.result?["event"] {
+      #expect(event["type"] == .string("marker.created"))
+      if case .object(let payload)? = event["payload"] {
+        #expect(payload["label"] == .string("anchor"))
+      } else {
+        Issue.record("marker event missing payload object")
+      }
+    } else {
+      Issue.record("mark result missing event object")
+    }
+  }
+
+  @Test("clip.create returns range_unavailable when no scratch exists")
+  func clipCreateReturnsRangeUnavailableWhenNoScratchExists() async throws {
+    let paths = RuntimePaths(source: .mic, rootDirectory: try temporaryRoot())
+    let daemon = Daemon(paths: paths, configuration: directConfig(paths: paths))
+    try await daemon.start()
+    defer { Task { await daemon.stop() } }
+
+    let outputURL = paths.sourceDirectory.appendingPathComponent("clip.caf")
+    let response = await ClipClient.send(
+      paths: paths,
+      request: ClipRequest(lastSeconds: 5, outputURL: outputURL),
+      clientRequestID: ClientRequestID(rawValue: "rt-clip-1")
+    )
+
+    #expect(response.error?.code == .rangeUnavailable)
+    #expect(response.error?.retriable == false)
+  }
+
+  @Test("capture.reconfigure applies setDiarization and emits status update")
+  func captureReconfigureAppliesSetDiarizationAndEmitsStatusUpdate() async throws {
+    let paths = RuntimePaths(source: .mic, rootDirectory: try temporaryRoot())
+    let daemon = Daemon(paths: paths, configuration: directConfig(paths: paths))
+    try await daemon.start()
+    defer { Task { await daemon.stop() } }
+
+    _ = await StartClient.send(paths: paths, clientRequestID: ClientRequestID(rawValue: "rt-reconfig-ensure"))
+    let response = await ConfigClient.send(
+      paths: paths,
+      change: .setDiarization(enabled: true),
+      clientRequestID: ClientRequestID(rawValue: "rt-reconfig-1")
+    )
+
+    #expect(response.error == nil)
+    #expect(response.result?["source"] == .string("mic"))
+    #expect(response.result?["outcome"] == .string("applied_live"))
+  }
+
+  private func directConfig(paths: RuntimePaths) -> LiveCaptureConfiguration {
+    .direct(source: paths.source, locale: "auto", output: nil, append: nil, live: nil, saveAudio: nil, audioFormat: "alac", diarize: false)
+  }
+
+  private func temporaryRoot() throws -> URL {
+    let root = URL(fileURLWithPath: "/tmp", isDirectory: true)
+      .appendingPathComponent("crrt-\(UUID().uuidString.prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    return root
+  }
+}
