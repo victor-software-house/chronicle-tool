@@ -44,6 +44,9 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
   private var sawIOCallback = false
   private var noBufferWarningGeneration = 0
   private var ioGeneration: UInt64 = 0
+  private var currentDefaultOutputID = AudioDeviceID(kAudioObjectUnknown)
+  private var defaultOutputListenerInstalled = false
+  private var defaultOutputListenerBlock: AudioObjectPropertyListenerBlock?
 
   public init(
     analyzerFormat: AVAudioFormat,
@@ -72,6 +75,7 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
     do {
       try Self.destroyStaleAggregateDevices()
       try startCoreAudio()
+      try installDefaultOutputDeviceListener()
     } catch {
       cleanupAfterFailedStart()
       throw error
@@ -83,11 +87,13 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
   public func stop() {
     guard started, !stopped else { return }
     stopped = true
+    removeDefaultOutputDeviceListener()
     teardownAndDrain()
     streams.finish()
   }
 
   private func cleanupAfterFailedStart() {
+    removeDefaultOutputDeviceListener()
     streams.finish()
     teardownCoreAudio()
     started = false
@@ -123,6 +129,7 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
     let tapFormat = try Self.readTapFormat(tapID)
 
     let defaultOutputID = try Self.defaultOutputDeviceID()
+    currentDefaultOutputID = defaultOutputID
     let outputUID = try Self.deviceUID(defaultOutputID)
 
     let aggregateUID = Self.aggregateUIDPrefix + UUID().uuidString
@@ -158,6 +165,7 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
 
     sourceFormat = tapFormat
     sawIOCallback = false
+    hasValidBuffer = false
     guard let newConverter = BufferConverter(from: tapFormat, to: analyzerFormat) else {
       throw CoreAudioTapSourceError.converterUnavailable(from: tapFormat, to: analyzerFormat)
     }
@@ -243,6 +251,64 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
     drainConverter()
     converter = nil
     sourceFormat = nil
+    currentDefaultOutputID = AudioDeviceID(kAudioObjectUnknown)
+  }
+
+  private func installDefaultOutputDeviceListener() throws {
+    guard !defaultOutputListenerInstalled else { return }
+    var address = Self.defaultOutputDeviceAddress()
+    let listenerBlock: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+      self?.handleDefaultOutputDeviceChanged()
+    }
+    try Self.check(
+      AudioObjectAddPropertyListenerBlock(
+        AudioObjectID(kAudioObjectSystemObject),
+        &address,
+        listenerQueue,
+        listenerBlock
+      ),
+      "AudioObjectAddPropertyListenerBlock(kAudioHardwarePropertyDefaultOutputDevice)"
+    )
+    defaultOutputListenerBlock = listenerBlock
+    defaultOutputListenerInstalled = true
+  }
+
+  private func removeDefaultOutputDeviceListener() {
+    guard defaultOutputListenerInstalled, let listenerBlock = defaultOutputListenerBlock else { return }
+    var address = Self.defaultOutputDeviceAddress()
+    AudioObjectRemovePropertyListenerBlock(
+      AudioObjectID(kAudioObjectSystemObject),
+      &address,
+      listenerQueue,
+      listenerBlock
+    )
+    defaultOutputListenerBlock = nil
+    defaultOutputListenerInstalled = false
+  }
+
+  private func handleDefaultOutputDeviceChanged() {
+    guard started, !stopped else { return }
+    guard let newDefaultOutputID = try? Self.defaultOutputDeviceID() else { return }
+    guard newDefaultOutputID != currentDefaultOutputID else { return }
+
+    let oldOutputID = currentDefaultOutputID
+    currentDefaultOutputID = newDefaultOutputID
+    let newUID = (try? Self.deviceUID(newDefaultOutputID)) ?? "unknown"
+    FileHandle.standardError.write(Data(
+      "[sysaudio.tap] default output changed old=\(oldOutputID) new=\(newDefaultOutputID) uid=\(newUID); rebuilding tap\n".utf8
+    ))
+
+    teardownCoreAudio()
+    do {
+      try startCoreAudio()
+      scheduleNoBufferWarning(context: "default-output-change")
+    } catch {
+      FileHandle.standardError.write(Data(
+        "[sysaudio.tap] failed to rebuild after default output change: \(error)\n".utf8
+      ))
+      stopped = true
+      streams.finish()
+    }
   }
 
   private func drainConverter() {
@@ -348,11 +414,7 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
   private static func defaultOutputDeviceID() throws -> AudioDeviceID {
     var outputID = AudioDeviceID(kAudioObjectUnknown)
     var dataSize = UInt32(MemoryLayout<AudioDeviceID>.stride)
-    var address = AudioObjectPropertyAddress(
-      mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-      mScope: kAudioObjectPropertyScopeGlobal,
-      mElement: kAudioObjectPropertyElementMain
-    )
+    var address = Self.defaultOutputDeviceAddress()
     try check(
       AudioObjectGetPropertyData(
         AudioObjectID(kAudioObjectSystemObject),
@@ -368,6 +430,14 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
       throw CoreAudioTapSourceError.noDefaultOutputDevice
     }
     return outputID
+  }
+
+  private static func defaultOutputDeviceAddress() -> AudioObjectPropertyAddress {
+    AudioObjectPropertyAddress(
+      mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+      mScope: kAudioObjectPropertyScopeGlobal,
+      mElement: kAudioObjectPropertyElementMain
+    )
   }
 
   private static func processObjectIDs(for pids: [pid_t]) throws -> [AudioObjectID] {

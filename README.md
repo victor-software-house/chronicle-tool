@@ -65,14 +65,18 @@ data, commit style), see [`AGENTS.md`](AGENTS.md).
   missing.
 - **`.app` bundle required for `mic` / `sysaudio`** — macOS Sequoia/Tahoe
   attributes audio TCC to a stable bundle identity. The bare
-  `swift build` binary has `Info.plist=not bound`; build the proper bundle:
+  `swift build` binary has `Info.plist=not bound`; build and install the
+  proper local app bundle with a stable Apple Development signing identity:
 
   ```sh
-  scripts/make-app.sh
+  CHRONICLE_TEAM_ID=<your-team-id> scripts/make-app.sh --install
   ```
 
-  Then run via `.build/release/chronicle.app/Contents/MacOS/chronicle`.
-  See [`AGENTS.md`](AGENTS.md) for the full first-run TCC setup.
+  `CHRONICLE_TEAM_ID` is optional when only one Apple Development identity is
+  present. The signed app is installed at `/Applications/chronicle.app`; run via
+  `/Applications/chronicle.app/Contents/MacOS/chronicle` for live capture.
+  Use `scripts/make-app.sh --ad-hoc` only for throwaway CI/debug builds because
+  ad-hoc TCC grants do not survive rebuilds.
 - **Microphone TCC permission** — grant `chronicle.app` (bundle ID
   `com.victor-software-house.chronicle`) under System Settings → Privacy
   & Security → Microphone.
@@ -112,8 +116,8 @@ swift build -c release
   --save-audio out/audio.wav \
   -o out/trace.jsonl
 
-# Live system-audio capture (everything playing through the default output device).
-.build/release/chronicle sysaudio \
+# Live system-audio capture (everything playing through the current default output device).
+/Applications/chronicle.app/Contents/MacOS/chronicle sysaudio \
   --locale auto \
   --diarize \
   --live out/sys-live.md \

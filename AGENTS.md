@@ -71,19 +71,23 @@ proper app bundle before live capture so macOS can resolve a stable TCC identity
 for Microphone and System Audio Recording.
 
 ```sh
-scripts/make-app.sh              # builds .build/release/chronicle.app, adhoc-signs it
+CHRONICLE_TEAM_ID=<your-team-id> scripts/make-app.sh --install
 ```
 
-The bundle has bundle ID `com.victor-software-house.chronicle`. **First
-run requires the operator to grant TCC to this bundle** (one-time):
+The bundle has bundle ID `com.victor-software-house.chronicle`. `make-app.sh`
+auto-selects a stable Apple Development signing identity; set
+`CHRONICLE_TEAM_ID` (or pass `--team-id`) when this machine has multiple Apple
+teams. Use `--ad-hoc` only for throwaway CI/debug builds because ad-hoc CDHash
+changes invalidate TCC grants across rebuilds. **First run requires the operator
+to grant TCC to `/Applications/chronicle.app`** (one-time per signing identity):
 
-1. Build the bundle: `scripts/make-app.sh`
-2. System Settings → Privacy & Security → Screen & System Audio
-   Recording → `+` → add `.build/release/chronicle.app`
+1. Build and install the bundle: `CHRONICLE_TEAM_ID=<your-team-id> scripts/make-app.sh --install`
+2. System Settings → Privacy & Security → Screen & System
+   Audio Recording → `+` → add `/Applications/chronicle.app`
 3. (For `chronicle mic`) Same flow under Privacy & Security → Microphone.
-4. Run via the bundle path:
+4. Run via the installed bundle path:
    ```sh
-   .build/release/chronicle.app/Contents/MacOS/chronicle sysaudio ...
+   /Applications/chronicle.app/Contents/MacOS/chronicle sysaudio ...
    ```
 
 Without the grant, `chronicle sysaudio` fails while creating or validating the
@@ -97,7 +101,7 @@ failure.
 Current live commands are source-isolated:
 
 * `chronicle mic` opens `MicAudioSource` / microphone only and logs `captureSource=MicAudioSource source=microphone systemOutput=not-opened`.
-* `chronicle sysaudio` opens `CoreAudioTapSource` / CoreAudio process tap only and logs `captureSource=CoreAudioTapSource source=system-output mic=not-opened`.
+* `chronicle sysaudio` opens `CoreAudioTapSource` / CoreAudio process tap only and logs `captureSource=CoreAudioTapSource source=system-output mic=not-opened`. It captures the current default output device; operators should not choose an output source manually.
 
 `AnalyzerInput(buffer:)` carries audio only, not source metadata. Do not feed mic and system buffers into one raw analyzer stream without adding source labels before the merge; that would destroy source awareness at the SpeechAnalyzer boundary. Keep current one-source-per-transcriber commands or merge source-prefixed finals/traces later.
 
@@ -169,25 +173,28 @@ Verification expectations:
 
 ## TCC + signing realities
 
-This binary is unsigned during dev. macOS attributes TCC requests to the
-**parent process** in the responsibility chain (the terminal / cmux /
-launcher / etc.). Implications:
+Live capture must run through a signed app bundle, even though Chronicle remains
+a CLI internally. `swift build` is fine for tests and offline subcommands; it is
+not the live-capture artifact.
 
-- `mic` (Microphone): grant once at the parent terminal/cmux app. The
-  Info.plist string surfaces on first run.
-- `sysaudio` (System Audio Recording): build `chronicle.app` with
-  `scripts/make-app.sh`, grant the bundle under System Settings → Privacy
-  & Security → Screen & System Audio Recording, then run via
-  `.build/release/chronicle.app/Contents/MacOS/chronicle`. If buffers come
-  back silent and `--verbose` shows zero peak, suspect TCC or output-device
-  routing first.
+- `scripts/make-app.sh --install` builds `.build/release/chronicle.app`, signs
+  it with a stable Apple Development identity (filtered by `CHRONICLE_TEAM_ID` /
+  `--team-id` when needed), installs `/Applications/chronicle.app`, and registers
+  it with Launch Services.
+- `mic` (Microphone): grant `/Applications/chronicle.app` under System Settings
+  → Privacy & Security → Microphone, then run via
+  `/Applications/chronicle.app/Contents/MacOS/chronicle mic ...`.
+- `sysaudio` (System Audio Recording): grant `/Applications/chronicle.app` under
+  System Settings → Privacy & Security → Screen & System Audio Recording, then
+  run via `/Applications/chronicle.app/Contents/MacOS/chronicle sysaudio ...`.
+  If buffers come back silent and `--verbose` shows zero peak, suspect TCC,
+  stale signing identity, output-device routing, or the Tahoe CATap zero-buffer
+  regression first.
 
-The bare `swift build` binary is fine for tests and offline subcommands;
-use the app bundle for live capture.
-
-Future signed-bundle work (`chronicle.app` with stable
-`CFBundleIdentifier`) will give chronicle its own TCC identity. Not
-blocking; document the friction when it bites.
+Use `scripts/make-app.sh --ad-hoc` only for CI or throwaway tests. Ad-hoc CDHash
+changes invalidate TCC grants across rebuilds. For outside-machine distribution,
+add a Developer ID Application certificate + notarization flow; not needed for
+this local-only app.
 
 ## Parity reference data
 
