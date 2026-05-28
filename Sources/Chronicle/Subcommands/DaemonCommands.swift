@@ -46,7 +46,8 @@ struct DaemonRun: AsyncParsableCommand {
     let daemon = Daemon(paths: paths, configuration: configuration)
     try await daemon.start()
     FileHandle.standardError.write(Data("[daemon-run] source=\(captured.rawValue) socket=\(paths.socketURL.path)\n".utf8))
-    try await Task.sleep(nanoseconds: UInt64.max)
+    await SignalHandler.waitForTermination()
+    await daemon.stop()
   }
 }
 
