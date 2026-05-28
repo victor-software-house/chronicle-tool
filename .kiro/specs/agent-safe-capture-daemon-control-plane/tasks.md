@@ -9,7 +9,7 @@
   - _Requirements: 1.4, 10.1_
   - _Boundary: DaemonTypes, RuntimePaths_
 
-- [ ] 1.2 Add physical source ownership guard
+- [x] 1.2 Add physical source ownership guard
   - Add per-source ownership acquisition that rejects an active owner before capture starts.
   - Detect stale ownership state after an unclean exit and allow recovery only when the prior owner is no longer live.
   - Report existing owner information in a machine-readable snapshot for duplicate-start responses.
