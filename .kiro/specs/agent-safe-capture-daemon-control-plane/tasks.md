@@ -241,7 +241,7 @@
   - _Boundary: IdempotencyStore, DaemonCoordinator_
   - _Depends: 8.1_
 
-- [ ] 8.6 Trim OpenRPCSchema to implemented intersection until wiring lands
+- [x] 8.6 Trim OpenRPCSchema to implemented intersection until wiring lands
   - `OpenRPCSchema` advertises methods and error codes the server does not honor. Either gate schema by implementation status or hold the schema trim commit until 8.1–8.3 land.
   - _Requirements: 3.1, 3.3_
   - _Boundary: OpenRPCSchema, RPCServer_
