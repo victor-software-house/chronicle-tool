@@ -88,7 +88,7 @@
   - _Requirements: 6.1, 6.2_
   - _Boundary: LiveCaptureConfiguration_
 
-- [ ] 4.2 Extract reusable live capture session runner
+- [x] 4.2 Extract reusable live capture session runner
   - Move shared mic/sysaudio pipeline orchestration behind a reusable session boundary while preserving direct command behavior.
   - Surface session status for paths, peaks, transcript counters, latency, speaker labels, and progressive-layer state.
   - Keep base rough transcript active before progressive quality layers are ready.
