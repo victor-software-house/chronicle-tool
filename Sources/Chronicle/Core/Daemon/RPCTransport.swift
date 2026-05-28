@@ -177,10 +177,14 @@ public final class RPCServer: @unchecked Sendable {
     case "events.subscribe":
       return handleEventsSubscribe(request)
 
-    // lease.acquire / lease.renew / lease.release are intentionally absent
-    // from OpenRPCSchema.registeredMethodNames until task 8.7 wires the
-    // LeaseStore RPC surface; they fall through to the default branch and
-    // return unsupported_method so the schema and server stay consistent.
+    case "lease.acquire":
+      return handleLeaseAcquire(request)
+
+    case "lease.renew":
+      return handleLeaseRenew(request)
+
+    case "lease.release":
+      return handleLeaseRelease(request)
 
     default:
       return RPCProtocol.dispatch(request, supportedMethods: OpenRPCSchema.registeredMethodNames)
@@ -366,6 +370,105 @@ public final class RPCServer: @unchecked Sendable {
       dict["available_range"] = .object(["duration_seconds": .number(availableRange.durationSeconds)])
     }
     return .success(id: request.id, result: dict)
+  }
+
+  private func handleLeaseAcquire(_ request: RPCRequest) -> RPCResponse {
+    guard let coordinator else { return coordinatorUnavailable(id: request.id) }
+    guard let cid = extractClientRequestID(request) else {
+      return malformedRequest(id: request.id, method: "lease.acquire", hint: "Include a non-empty string client_req_id.")
+    }
+    guard case .string(let purpose)? = request.params?["purpose"], !purpose.isEmpty else {
+      return malformedRequest(id: request.id, method: "lease.acquire", hint: "Include a non-empty string purpose.")
+    }
+    guard case .number(let ttl)? = request.params?["ttl"], ttl > 0 else {
+      return malformedRequest(id: request.id, method: "lease.acquire", hint: "Include a positive numeric ttl (seconds).")
+    }
+    let holder: String
+    if case .string(let raw)? = request.params?["holder"], !raw.isEmpty {
+      holder = raw
+    } else {
+      holder = cid.rawValue
+    }
+    let outcome = awaitAsyncThrowing { try await coordinator.acquireCoordinationLease(purpose: purpose, holder: holder, ttl: TimeInterval(ttl)) }
+    switch outcome {
+    case .success(let lease):
+      return .success(id: request.id, result: encodeAsJSONObject(lease))
+    case .failure(let error):
+      return .failure(
+        id: request.id,
+        error: RPCError(
+          code: .invalidConfig,
+          message: "lease.acquire rejected: \(error.localizedDescription)",
+          retriable: false,
+          hint: "Supply a positive ttl and unique client_req_id."
+        )
+      )
+    }
+  }
+
+  private func handleLeaseRenew(_ request: RPCRequest) -> RPCResponse {
+    guard let coordinator else { return coordinatorUnavailable(id: request.id) }
+    guard extractClientRequestID(request) != nil else {
+      return malformedRequest(id: request.id, method: "lease.renew", hint: "Include a non-empty string client_req_id.")
+    }
+    guard case .string(let raw)? = request.params?["lease_id"], !raw.isEmpty else {
+      return malformedRequest(id: request.id, method: "lease.renew", hint: "Include a non-empty string lease_id.")
+    }
+    guard case .number(let ttl)? = request.params?["ttl"], ttl > 0 else {
+      return malformedRequest(id: request.id, method: "lease.renew", hint: "Include a positive numeric ttl (seconds).")
+    }
+    let leaseID = LeaseID(rawValue: raw)
+    let outcome = awaitAsyncThrowing { try await coordinator.renewCoordinationLease(id: leaseID, ttl: TimeInterval(ttl)) }
+    switch outcome {
+    case .success(let lease):
+      return .success(id: request.id, result: encodeAsJSONObject(lease))
+    case .failure:
+      return .failure(
+        id: request.id,
+        error: RPCError(
+          code: .noActiveSession,
+          message: "lease.renew failed: lease not found or expired.",
+          retriable: false,
+          hint: "Call lease.acquire again with a fresh client_req_id."
+        )
+      )
+    }
+  }
+
+  private func handleLeaseRelease(_ request: RPCRequest) -> RPCResponse {
+    guard let coordinator else { return coordinatorUnavailable(id: request.id) }
+    guard extractClientRequestID(request) != nil else {
+      return malformedRequest(id: request.id, method: "lease.release", hint: "Include a non-empty string client_req_id.")
+    }
+    guard case .string(let raw)? = request.params?["lease_id"], !raw.isEmpty else {
+      return malformedRequest(id: request.id, method: "lease.release", hint: "Include a non-empty string lease_id.")
+    }
+    let leaseID = LeaseID(rawValue: raw)
+    let outcome = awaitAsyncThrowing { try await coordinator.releaseCoordinationLease(id: leaseID) }
+    switch outcome {
+    case .success(let lease):
+      return .success(id: request.id, result: [
+        "released": .bool(true),
+        "lease": encodeAsJSON(lease),
+      ])
+    case .failure:
+      return .success(id: request.id, result: [
+        "released": .bool(false),
+        "lease_id": .string(raw),
+      ])
+    }
+  }
+
+  private func malformedRequest(id: RPCID?, method: String, hint: String) -> RPCResponse {
+    .failure(
+      id: id,
+      error: RPCError(
+        code: .malformedRequest,
+        message: "\(method) request is malformed.",
+        retriable: false,
+        hint: hint
+      )
+    )
   }
 
   private func extractClientRequestID(_ request: RPCRequest) -> ClientRequestID? {

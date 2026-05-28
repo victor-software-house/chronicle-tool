@@ -38,7 +38,7 @@ public actor Daemon {
 
   public var isRunning: Bool { _isRunning }
 
-  public func start() async throws {
+  public func start(heartbeatInterval: TimeInterval = 0) async throws {
     guard !_isRunning else { throw DaemonError.alreadyRunning }
 
     let snapshot = owner.inspect()
@@ -75,7 +75,9 @@ public actor Daemon {
     try rpc.start()
     server = rpc
 
-    await coordinator.startHeartbeats(interval: 1.0)
+    if heartbeatInterval > 0 {
+      await coordinator.startHeartbeats(interval: heartbeatInterval)
+    }
 
     _isRunning = true
   }

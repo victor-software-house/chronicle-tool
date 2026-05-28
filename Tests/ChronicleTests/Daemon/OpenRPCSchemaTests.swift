@@ -21,10 +21,10 @@ struct OpenRPCSchemaTests {
       "events.subscribe",
       "mark.create",
       "clip.create",
+      "lease.acquire",
+      "lease.renew",
+      "lease.release",
     ]))
-    #expect(!methodNames.contains("lease.acquire"))
-    #expect(!methodNames.contains("lease.renew"))
-    #expect(!methodNames.contains("lease.release"))
   }
 
   @Test("mutating methods declare client_req_id request field")
@@ -49,6 +49,8 @@ struct OpenRPCSchemaTests {
       "heartbeat",
       "capture.starting",
       "marker.created",
+      "lease.acquired",
+      "lease.released",
       "subscriber_lagged",
     ]))
     #expect(Set(schema.errorCodes.map(\.code)).isSuperset(of: [
@@ -85,13 +87,14 @@ struct OpenRPCSchemaTests {
     #expect(status.responseFields.contains { $0.name == "lifecycle" })
   }
 
-  @Test("lease.* methods are advertised as unsupported until task 8.7 lands")
-  func leaseMethodsAreAdvertisedAsUnsupportedUntilTask87Lands() {
-    for method in ["lease.acquire", "lease.renew", "lease.release"] {
-      let request = RPCRequest(id: .string("lease-\(method)"), method: method, params: ["client_req_id": .string("c-1")])
-      let response = RPCProtocol.dispatch(request, supportedMethods: OpenRPCSchema.registeredMethodNames)
-      #expect(response.error?.code == .unsupportedMethod)
-      #expect(response.error?.retriable == false)
+  @Test("lease.* methods are advertised as supported mutating RPC methods")
+  func leaseMethodsAreAdvertisedAsSupportedMutatingRPCMethods() {
+    let schema = OpenRPCSchema.current()
+    for name in ["lease.acquire", "lease.renew", "lease.release"] {
+      let method = schema.methods.first { $0.name == name }
+      #expect(method != nil, "schema must register \(name)")
+      #expect(method?.mutating == true)
+      #expect(method?.requestFields.contains { $0.name == "client_req_id" && $0.required } == true)
     }
   }
 }

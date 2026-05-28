@@ -247,7 +247,7 @@
   - _Boundary: OpenRPCSchema, RPCServer_
   - _Depends: 8.1_
 
-- [ ] 8.7 LeaseStore lifetime + `lease.*` RPC
+- [x] 8.7 LeaseStore lifetime + `lease.*` RPC
   - `DaemonCoordinator.swift:181-184` reconstructs `LeaseStore` on every `createClip`; promote to coordinator lifetime, sweep expired entries on a TTL, and wire `lease.acquire/renew/release` through `RPCServer`.
   - Observable completion: concurrent lease holders observe each other; expired leases emit control events; orphaned multi-step state never blocks future operations indefinitely.
   - _Requirements: 7.5_

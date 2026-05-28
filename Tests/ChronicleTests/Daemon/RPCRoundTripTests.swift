@@ -209,6 +209,61 @@ struct RPCRoundTripTests {
     #expect(markers.count == 1)
   }
 
+  @Test("lease.acquire → lease.renew → lease.release round trip")
+  func leaseAcquireRenewReleaseRoundTrip() async throws {
+    let paths = RuntimePaths(source: .mic, rootDirectory: try temporaryRoot())
+    let daemon = Daemon(paths: paths, configuration: directConfig(paths: paths))
+    try await daemon.start()
+    defer { Task { await daemon.stop() } }
+
+    let client = ChronicleRPCClient(socketURL: paths.socketURL)
+
+    let acquire = try await client.send(RPCRequest(
+      id: .string("lease-acquire-1"),
+      method: "lease.acquire",
+      params: [
+        "client_req_id": .string("rt-lease-acquire"),
+        "purpose": .string("clip.write"),
+        "ttl": .number(30),
+      ]
+    ))
+    #expect(acquire.error == nil)
+    let leaseID: String
+    if case .string(let raw)? = acquire.result?["id"] {
+      leaseID = raw
+    } else {
+      Issue.record("lease.acquire result missing id string: \(acquire.encodedString())")
+      return
+    }
+
+    let renew = try await client.send(RPCRequest(
+      id: .string("lease-renew-1"),
+      method: "lease.renew",
+      params: [
+        "client_req_id": .string("rt-lease-renew"),
+        "lease_id": .string(leaseID),
+        "ttl": .number(60),
+      ]
+    ))
+    #expect(renew.error == nil)
+    if case .string(let raw)? = renew.result?["id"] {
+      #expect(raw == leaseID)
+    } else {
+      Issue.record("lease.renew result missing id string")
+    }
+
+    let release = try await client.send(RPCRequest(
+      id: .string("lease-release-1"),
+      method: "lease.release",
+      params: [
+        "client_req_id": .string("rt-lease-release"),
+        "lease_id": .string(leaseID),
+      ]
+    ))
+    #expect(release.error == nil)
+    #expect(release.result?["released"] == .bool(true))
+  }
+
   @Test("clip.create returns range_unavailable when no scratch exists")
   func clipCreateReturnsRangeUnavailableWhenNoScratchExists() async throws {
     let paths = RuntimePaths(source: .mic, rootDirectory: try temporaryRoot())

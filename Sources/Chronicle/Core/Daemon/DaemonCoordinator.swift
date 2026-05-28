@@ -96,6 +96,7 @@ public actor DaemonCoordinator {
   }
 
   private func emitHeartbeat() async {
+    sweepLeases()
     let live = await session.status()
     guard live.lifecycle != .stopped else { return }
     let idleOutput = live.lastObservedPeak == 0
@@ -231,16 +232,18 @@ public actor DaemonCoordinator {
 
   public func createClip(request: ClipRequest, clientRequestID: ClientRequestID) async -> ClipResult {
     if let replay = clipReplay[clientRequestID] { return replay }
-    let leaseEpoch = lease?.epoch ?? DaemonEpoch(rawValue: "unowned")
-    coordinationLeases = LeaseStore(epoch: leaseEpoch, source: configuration.source)
+    sweepLeases()
     let coordinationLease = try? coordinationLeases.acquire(purpose: "clip.create", holder: clientRequestID.rawValue, ttl: 30)
+    if let lease = coordinationLease {
+      _ = record(stream: .control, type: "lease.acquired", payload: leasePayload(lease))
+    }
     let result = await ClipCoordinator.export(
       source: configuration.source,
       scratchDirectory: scratchDirectory,
       request: request
     )
-    if let id = coordinationLease?.id {
-      _ = try? coordinationLeases.release(id: id)
+    if let leaseID = coordinationLease?.id, let released = try? coordinationLeases.release(id: leaseID) {
+      _ = record(stream: .control, type: "lease.released", payload: leasePayload(released))
     }
     clipReplay[clientRequestID] = result
     return result
@@ -263,9 +266,53 @@ public actor DaemonCoordinator {
       transcriptFinalCount: live.transcriptCounters.final,
       transcriptVolatileCount: live.transcriptCounters.volatile,
       speakerLabelState: live.speakerLabelState,
-      idleOutput: live.lastObservedPeak == 0 && live.transcriptCounters.final == 0 && live.transcriptCounters.volatile == 0
+      idleOutput: live.lastObservedPeak == 0
+        && live.transcriptCounters.final == 0
+        && live.transcriptCounters.volatile == 0
     )
     return .project(source: configuration.source, paths: paths, heartbeat: heartbeat, freshnessTTL: 10, now: Date())
+  }
+
+  /// Acquire a TTL coordination lease for multi-step client operations.
+  /// Lease lifetime is bounded by `ttl`; expired leases are swept on every
+  /// acquire/renew call and on every heartbeat tick (Req 7.5).
+  @discardableResult
+  public func acquireCoordinationLease(purpose: String, holder: String, ttl: TimeInterval) throws -> Lease {
+    sweepLeases()
+    let lease = try coordinationLeases.acquire(purpose: purpose, holder: holder, ttl: ttl)
+    _ = record(stream: .control, type: "lease.acquired", payload: leasePayload(lease))
+    return lease
+  }
+
+  @discardableResult
+  public func renewCoordinationLease(id: LeaseID, ttl: TimeInterval) throws -> Lease {
+    sweepLeases()
+    let lease = try coordinationLeases.renew(id: id, ttl: ttl)
+    _ = record(stream: .control, type: "lease.renewed", payload: leasePayload(lease))
+    return lease
+  }
+
+  @discardableResult
+  public func releaseCoordinationLease(id: LeaseID) throws -> Lease {
+    let lease = try coordinationLeases.release(id: id)
+    _ = record(stream: .control, type: "lease.released", payload: leasePayload(lease))
+    return lease
+  }
+
+  private func sweepLeases() {
+    let expired = coordinationLeases.expire()
+    for lease in expired {
+      _ = record(stream: .control, type: "lease.expired", payload: leasePayload(lease))
+    }
+  }
+
+  private func leasePayload(_ lease: Lease) -> [String: JSONValue] {
+    [
+      "lease_id": .string(lease.id.rawValue),
+      "purpose": .string(lease.purpose),
+      "holder": .string(lease.holder),
+      "expires_at": .string(ISO8601DateFormatter().string(from: lease.expiresAt)),
+    ]
   }
 
   private func appendControlEvent(type: String, payload: [String: JSONValue]) {

@@ -17,6 +17,9 @@ public struct OpenRPCSchema: Codable, Equatable, Sendable {
     "events.subscribe",
     "mark.create",
     "clip.create",
+    "lease.acquire",
+    "lease.renew",
+    "lease.release",
   ]
 
   public static func current() -> OpenRPCSchema {
@@ -111,6 +114,46 @@ public struct OpenRPCSchema: Codable, Equatable, Sendable {
       requestFields: [optionalSourceField, clientRequestIDField, OpenRPCField(name: "window", type: "object", required: true, description: "Requested recent clip time window.")],
       responseFields: [OpenRPCField(name: "output", type: "string", required: false, description: "Exported clip path.")]
     ),
+    OpenRPCMethod(
+      name: "lease.acquire",
+      summary: "Acquire a TTL client coordination lease.",
+      mutating: true,
+      requestFields: [
+        clientRequestIDField,
+        OpenRPCField(name: "purpose", type: "string", required: true, description: "Free-form lease purpose tag."),
+        OpenRPCField(name: "holder", type: "string", required: false, description: "Holder identifier; defaults to client_req_id."),
+        OpenRPCField(name: "ttl", type: "number", required: true, description: "Lease TTL in seconds (must be > 0)."),
+      ],
+      responseFields: [
+        OpenRPCField(name: "id", type: "string", required: true, description: "Lease identifier."),
+        OpenRPCField(name: "expiresAt", type: "string", required: true, description: "ISO-8601 expiry time."),
+      ]
+    ),
+    OpenRPCMethod(
+      name: "lease.renew",
+      summary: "Renew an existing client coordination lease.",
+      mutating: true,
+      requestFields: [
+        clientRequestIDField,
+        OpenRPCField(name: "lease_id", type: "string", required: true, description: "Lease identifier."),
+        OpenRPCField(name: "ttl", type: "number", required: true, description: "Updated TTL in seconds (must be > 0)."),
+      ],
+      responseFields: [
+        OpenRPCField(name: "expiresAt", type: "string", required: true, description: "Updated expiry time."),
+      ]
+    ),
+    OpenRPCMethod(
+      name: "lease.release",
+      summary: "Release an existing client coordination lease (idempotent).",
+      mutating: true,
+      requestFields: [
+        clientRequestIDField,
+        OpenRPCField(name: "lease_id", type: "string", required: true, description: "Lease identifier."),
+      ],
+      responseFields: [
+        OpenRPCField(name: "released", type: "boolean", required: true, description: "Whether a lease was released."),
+      ]
+    ),
   ]
 
   private static let eventDefinitions: [OpenRPCEvent] = [
@@ -125,6 +168,10 @@ public struct OpenRPCSchema: Codable, Equatable, Sendable {
     OpenRPCEvent(name: "capture.reconfigure.succeeded", stream: .control, description: "A live reconfiguration request was applied."),
     OpenRPCEvent(name: "capture.reconfigure.failed", stream: .control, description: "A live reconfiguration request was rejected."),
     OpenRPCEvent(name: "marker.created", stream: .control, description: "A client-requested marker was recorded."),
+    OpenRPCEvent(name: "lease.acquired", stream: .control, description: "A coordination lease was granted."),
+    OpenRPCEvent(name: "lease.renewed", stream: .control, description: "An existing coordination lease was renewed."),
+    OpenRPCEvent(name: "lease.released", stream: .control, description: "A coordination lease was released."),
+    OpenRPCEvent(name: "lease.expired", stream: .control, description: "A coordination lease expired and was swept."),
     OpenRPCEvent(name: "subscriber_lagged", stream: .control, description: "A subscriber fell behind the bounded event queue."),
   ]
 
