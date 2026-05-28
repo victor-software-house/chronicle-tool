@@ -26,7 +26,7 @@
   - _Boundary: DaemonEvent, DaemonEventLog_
 
 - [ ] 2. Build local RPC protocol and schema
-- [ ] 2.1 Add JSON-RPC envelopes and structured errors
+- [x] 2.1 Add JSON-RPC envelopes and structured errors
   - Define request, response, notification, and error envelopes for the local control surface.
   - Ensure all normal errors include stable code, retriable flag, remediation hint, and optional details.
   - Reject malformed and unsupported requests without exposing stack traces.
