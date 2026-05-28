@@ -42,7 +42,7 @@
   - _Requirements: 3.1, 3.2_
   - _Boundary: OpenRPCSchema_
 
-- [ ] 2.3 Add local RPC server and client transport
+- [x] 2.3 Add local RPC server and client transport
   - Serve JSON-RPC over the per-source local socket without exposing a network listener.
   - Provide a shared client used by thin command wrappers.
   - Return daemon-unavailable and malformed-request errors in the same structured shape as in-process method errors.

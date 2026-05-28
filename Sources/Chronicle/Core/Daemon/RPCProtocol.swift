@@ -84,11 +84,18 @@ public struct RPCRequest: Codable, Equatable, Sendable {
   }
 }
 
-public struct RPCResponse: Equatable, Sendable {
-  public let jsonrpc = "2.0"
+public struct RPCResponse: Codable, Equatable, Sendable {
+  public let jsonrpc: String
   public let id: RPCID?
   public let result: [String: JSONValue]?
   public let error: RPCError?
+
+  public init(jsonrpc: String = "2.0", id: RPCID?, result: [String: JSONValue]?, error: RPCError?) {
+    self.jsonrpc = jsonrpc
+    self.id = id
+    self.result = result
+    self.error = error
+  }
 
   public static func success(id: RPCID?, result: [String: JSONValue]) -> RPCResponse {
     RPCResponse(id: id, result: result, error: nil)
@@ -101,23 +108,6 @@ public struct RPCResponse: Equatable, Sendable {
   public func encodedString() -> String {
     let data = (try? RPCProtocol.encoder().encode(self)) ?? Data(#"{"jsonrpc":"2.0","error":{"code":"malformed_request","message":"failed to encode response","retriable":false,"hint":"Report this Chronicle bug."}}"#.utf8)
     return String(decoding: data, as: UTF8.self)
-  }
-}
-
-extension RPCResponse: Encodable {
-  enum CodingKeys: String, CodingKey {
-    case jsonrpc
-    case id
-    case result
-    case error
-  }
-
-  public func encode(to encoder: Encoder) throws {
-    var container = encoder.container(keyedBy: CodingKeys.self)
-    try container.encode(jsonrpc, forKey: .jsonrpc)
-    try container.encodeIfPresent(id, forKey: .id)
-    try container.encodeIfPresent(result, forKey: .result)
-    try container.encodeIfPresent(error, forKey: .error)
   }
 }
 
