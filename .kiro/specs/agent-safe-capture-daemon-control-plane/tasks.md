@@ -171,7 +171,7 @@
   - _Boundary: Tail, Mark, Clip, Config, ChronicleRPCClient_
   - _Depends: 2.3, 5.2, 5.3, 5.4_
 
-- [ ] 6.4 Register subcommands and preserve local-only behavior
+- [x] 6.4 Register subcommands and preserve local-only behavior
   - Register all daemon and client commands in the executable command list.
   - Ensure no command starts a network listener or requires cloud services for production behavior.
   - Keep generated-voice smoke fixture usage limited to scripts/tests.

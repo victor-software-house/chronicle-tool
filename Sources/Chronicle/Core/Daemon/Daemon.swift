@@ -47,10 +47,19 @@ public actor Daemon {
     }
 
     try paths.prepareDirectories()
+
+    let priorEvents = (try? DaemonEventLog.read(url: paths.logURL)) ?? []
+    let priorEpoch = priorEvents.last?.epoch
+    let crashed = !priorEvents.isEmpty && priorEvents.last?.type != "daemon.stopped"
+
     let lease = try owner.acquire()
     ownerLease = lease
 
-    var log = DaemonEventLog(url: paths.logURL, source: configuration.source, epoch: lease.epoch)
+    let resumedSequence = (priorEvents.last?.sequence ?? 0) + 1
+    var log = DaemonEventLog(url: paths.logURL, source: configuration.source, epoch: lease.epoch, nextSequence: resumedSequence)
+    if crashed, let priorEpoch {
+      _ = try log.appendRecovery(previousEpoch: priorEpoch, reason: "unclean termination detected on restart")
+    }
     _ = try log.append(stream: .manifest, type: "daemon.started", payload: [
       "pid": .number(Double(lease.pid)),
       "socket": .string(paths.socketURL.path),
@@ -62,6 +71,17 @@ public actor Daemon {
     server = rpc
 
     _isRunning = true
+  }
+
+  /// Test helper: simulate hard kill by dropping the lease and socket without writing the daemon.stopped trailer.
+  public func simulateHardKill() async {
+    guard _isRunning else { return }
+    server?.stop()
+    server = nil
+    ownerLease?.release()
+    ownerLease = nil
+    eventLog = nil
+    _isRunning = false
   }
 
   public func stop() async {
