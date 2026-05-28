@@ -8,12 +8,23 @@ PRD/ADR/architecture docs remain source references until migrated.
 
 Last refresh: 2026-05-28 — `/Applications/chronicle.app` signed with Apple
 Development Team ID `CXLYTY8DMR` has verified live `chronicle sysaudio` capture
-through CoreAudio taps. Proof receipts from live `say` smokes showed nonzero
-`sessionPeak` values up to 25251 and transcript text in `finals.md` / `live.md`.
-The private TCC preflight can still report DENIED from launcher context; that
-probe is advisory only. Runtime PCM peak plus transcript output is the capture
-authority. Chronicle sysaudio follows the current default output directly and
-does not require BlackHole 2ch or a Multi-Output Device for normal operation.
+through CoreAudio taps. Current rollback tag is
+`baseline-sysaudio-diarize-live-2026-05-28`; direct-mode proof is guarded by
+`scripts/smoke-sysaudio-diarize.sh`, which uses `fnox get ELEVENLABS_API_KEY`
+and ElevenLabs `eleven_v3` generated Sarah/George/Charlie/Alice fixtures to
+assert nonzero `sessionPeak`, clean `--quiet` stdout, four marker transcripts,
+and ≥3 marker speakers. The private TCC preflight can still report DENIED from
+launcher context; that probe is advisory only. Runtime PCM peak plus transcript
+output is the capture authority. Chronicle sysaudio follows the current default
+output directly and does not require BlackHole 2ch or a Multi-Output Device for
+normal operation.
+
+Next governed work is the 24/7 agent-safe control plane in
+[`PRD-003`](prd/PRD-003-agent-safe-capture-daemon-control-plane.md): one daemon
+owns each physical source, thin CLI clients talk JSON-RPC over a Unix socket,
+append-only JSONL sidecars carry schema versions/epochs/dual clocks, and agents
+use leases, idempotency keys, `meta.schema`, `status.get`, and `events.subscribe`
+instead of spawning duplicate capture processes.
 
 The active cleanup is governed by
 [`.kiro/specs/sysaudio-runtime-hardening`](../.kiro/specs/sysaudio-runtime-hardening/):
@@ -44,6 +55,7 @@ The recurring single `E5RT encountered an STL exception. msg = unordered_map::at
 | P1 | WAV transitional rotation | FR-1 | ✘ skipped | Superseded by P11; was meant as a stepping stone toward Opus. |
 | P9 | End-to-end verification | — | ⏳ pending | Run PRD-001 §15 appendix on a fresh session; capture receipts. |
 | P10 | Post-impl documentation | — | ⏳ pending | Update README + research-notes + a verification spike doc with the final numbers. |
+| P12 | Agent-safe daemon control plane | PRD-003 | ⏳ next | One daemon per physical source; thin RPC clients; Unix socket JSON-RPC; OpenRPC `meta.schema`; leases + idempotency; subscribe API; JSONL v1 with epoch, sequence, monotonic + wall clocks; kill -9 recovery gate. |
 
 ## Functional batch checkpoint
 
@@ -128,7 +140,7 @@ TCC resolves a stable identity. See AGENTS.md.
 
 ## How to pick the next thing to do
 
-Default order is the table above. The functional batch in [`plan-functional-trace-merge-diarize-locale`](architecture/plan-functional-trace-merge-diarize-locale.md) (FR-2/FR-7/FR-4/FR-6) is done; next priority is FR-5 live tagging, then verification. After compaction or restart, resume at #26 unless the operator changes priority. If you have a real reason to deviate:
+Default order is the table above. The functional batch in [`plan-functional-trace-merge-diarize-locale`](architecture/plan-functional-trace-merge-diarize-locale.md) (FR-2/FR-7/FR-4/FR-6) is done. The operator has promoted PRD-003 ahead of live tagging: next priority is P12 agent-safe daemon control plane, then FR-5 live tagging, then verification. If you have a real reason to deviate:
 
 - The protocol-oriented core (ADR-0001) means **any single phase is
   cheap to land** because every other phase composes against the same
