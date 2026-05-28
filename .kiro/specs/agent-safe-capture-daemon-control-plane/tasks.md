@@ -125,7 +125,7 @@
   - _Boundary: DaemonCoordinator, LiveCaptureConfiguration_
   - _Depends: 4.1, 5.1_
 
-- [ ] 5.3 (P) Add event filtering and subscription fan-out
+- [x] 5.3 (P) Add event filtering and subscription fan-out
   - Filter events by source, stream, type prefix, sequence, final-only, speaker-label availability, and heartbeat inclusion.
   - Deliver daemon events and bridged transcript trace events to local subscribers.
   - Apply bounded slow-subscriber behavior and emit lag notifications.
