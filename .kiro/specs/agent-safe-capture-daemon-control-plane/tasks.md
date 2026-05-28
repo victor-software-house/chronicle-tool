@@ -61,7 +61,7 @@
   - _Boundary: IdempotencyStore_
   - _Depends: 2.1_
 
-- [ ] 3.2 (P) Add TTL client leases
+- [x] 3.2 (P) Add TTL client leases
   - Support lease acquire, renew, release, and automatic expiry for multi-step client operations.
   - Keep leases separate from physical source ownership.
   - Emit visible lease lifecycle events for acquire, release, and expiry.
