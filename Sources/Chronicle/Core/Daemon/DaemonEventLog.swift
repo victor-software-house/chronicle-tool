@@ -17,10 +17,11 @@ public enum DaemonEventLogError: Error, Equatable, CustomStringConvertible, Send
 /// durability contract. A hard kill can invalidate at most the final line; the
 /// reader ignores one malformed trailing record and rejects malformed middle
 /// records.
-public struct DaemonEventLog: Sendable {
+public final class DaemonEventLog: @unchecked Sendable {
   public let url: URL
   public let source: CaptureSource
   public let epoch: DaemonEpoch
+  private let lock = NSLock()
   private var nextSequence: Int
 
   public init(url: URL, source: CaptureSource, epoch: DaemonEpoch, nextSequence: Int = 1) {
@@ -31,7 +32,7 @@ public struct DaemonEventLog: Sendable {
   }
 
   @discardableResult
-  public mutating func append(
+  public func append(
     stream: DaemonEventStream,
     type: String,
     payload: [String: JSONValue] = [:],
@@ -42,8 +43,12 @@ public struct DaemonEventLog: Sendable {
       at: url.deletingLastPathComponent(),
       withIntermediateDirectories: true
     )
+    lock.lock()
+    let sequence = nextSequence
+    nextSequence += 1
+    lock.unlock()
     let event = DaemonEvent(
-      sequence: nextSequence,
+      sequence: sequence,
       epoch: epoch,
       source: source,
       stream: stream,
@@ -52,13 +57,21 @@ public struct DaemonEventLog: Sendable {
       type: type,
       payload: payload
     )
-    try AtomicFile.appendJSONLine(event, to: url, encoder: Self.encoder())
-    nextSequence += 1
+    do {
+      try AtomicFile.appendJSONLine(event, to: url, encoder: Self.encoder())
+    } catch {
+      // Roll back the sequence so a retry uses the same slot, preserving
+      // monotonic ordering of successful appends.
+      lock.lock()
+      nextSequence = min(nextSequence, sequence)
+      lock.unlock()
+      throw error
+    }
     return event
   }
 
   @discardableResult
-  public mutating func appendRecovery(
+  public func appendRecovery(
     previousEpoch: DaemonEpoch,
     reason: String,
     monotonicSeconds: Double = ProcessInfo.processInfo.systemUptime,

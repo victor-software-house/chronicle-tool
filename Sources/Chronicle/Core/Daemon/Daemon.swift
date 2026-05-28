@@ -57,7 +57,7 @@ public actor Daemon {
     await coordinator.attachOwnerLease(lease)
 
     let resumedSequence = (priorEvents.last?.sequence ?? 0) + 1
-    var log = DaemonEventLog(url: paths.logURL, source: configuration.source, epoch: lease.epoch, nextSequence: resumedSequence)
+    let log = DaemonEventLog(url: paths.logURL, source: configuration.source, epoch: lease.epoch, nextSequence: resumedSequence)
     if crashed, let priorEpoch {
       _ = try log.appendRecovery(previousEpoch: priorEpoch, reason: "unclean termination detected on restart")
     }
@@ -66,6 +66,7 @@ public actor Daemon {
       "socket": .string(paths.socketURL.path),
     ])
     eventLog = log
+    await coordinator.attachEventStreams(eventHub: eventHub, eventLog: log)
 
     let rpc = RPCServer(paths: paths, coordinator: coordinator, eventHub: eventHub)
     try rpc.start()
@@ -90,15 +91,15 @@ public actor Daemon {
     server?.stop()
     server = nil
 
-    if var log = eventLog {
+    if let log = eventLog {
       _ = try? log.append(stream: .manifest, type: "daemon.stopped", payload: [
         "pid": .number(Double(ownerLease?.pid ?? 0)),
       ])
-      eventLog = log
     }
 
     ownerLease?.release()
     ownerLease = nil
+    eventLog = nil
     _isRunning = false
   }
 }

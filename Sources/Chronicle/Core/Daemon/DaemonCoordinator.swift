@@ -44,6 +44,8 @@ public actor DaemonCoordinator {
   private var events: [DaemonEvent] = []
   private var nextEventSequence = 1
   private var coordinationLeases: LeaseStore
+  private var eventHub: EventHub?
+  private var eventLog: DaemonEventLog?
 
   public init(paths: RuntimePaths, configuration: LiveCaptureConfiguration) {
     self.paths = paths
@@ -60,6 +62,14 @@ public actor DaemonCoordinator {
     self.lease = lease
     self.externallyManagedLease = true
     self.coordinationLeases = LeaseStore(epoch: lease.epoch, source: configuration.source)
+  }
+
+  /// Attach a shared EventHub and DaemonEventLog so coordinator events are
+  /// fanned out to in-process subscribers and persisted to durable JSONL with
+  /// monotonically increasing sequences owned by the log.
+  public func attachEventStreams(eventHub: EventHub?, eventLog: DaemonEventLog?) {
+    self.eventHub = eventHub
+    self.eventLog = eventLog
   }
 
   public var scratchDirectory: URL {
@@ -172,21 +182,10 @@ public actor DaemonCoordinator {
       markerReplay[clientRequestID] = result
       return result
     }
-    let event = DaemonEvent(
-      sequence: nextEventSequence,
-      epoch: lease?.epoch ?? DaemonEpoch(rawValue: "unowned"),
-      source: configuration.source,
-      stream: .control,
-      monotonicSeconds: ProcessInfo.processInfo.systemUptime,
-      wallClock: Date(),
-      type: "marker.created",
-      payload: [
-        "label": .string(label),
-        "client_req_id": .string(clientRequestID.rawValue),
-      ]
-    )
-    events.append(event)
-    nextEventSequence += 1
+    let event = record(stream: .control, type: "marker.created", payload: [
+      "label": .string(label),
+      "client_req_id": .string(clientRequestID.rawValue),
+    ])
     let result = MarkerResult(source: configuration.source, event: event, error: nil)
     markerReplay[clientRequestID] = result
     return result
@@ -232,16 +231,40 @@ public actor DaemonCoordinator {
   }
 
   private func appendControlEvent(type: String, payload: [String: JSONValue]) {
-    events.append(DaemonEvent(
+    _ = record(stream: .control, type: type, payload: payload)
+  }
+
+  /// Single sink for coordinator-owned events. Uses the attached DaemonEventLog
+  /// for durable sequence ownership and JSONL persistence when present; falls
+  /// back to an in-memory sequence so unit tests of the coordinator alone keep
+  /// working. Always publishes to the attached EventHub (if any) and to the
+  /// in-memory `events` audit array.
+  @discardableResult
+  private func record(stream: DaemonEventStream, type: String, payload: [String: JSONValue]) -> DaemonEvent {
+    if let eventLog {
+      do {
+        let event = try eventLog.append(stream: stream, type: type, payload: payload)
+        events.append(event)
+        nextEventSequence = max(nextEventSequence, event.sequence + 1)
+        eventHub?.publish(event)
+        return event
+      } catch {
+        // fall through to in-memory event
+      }
+    }
+    let event = DaemonEvent(
       sequence: nextEventSequence,
       epoch: lease?.epoch ?? DaemonEpoch(rawValue: "unowned"),
       source: configuration.source,
-      stream: .control,
+      stream: stream,
       monotonicSeconds: ProcessInfo.processInfo.systemUptime,
       wallClock: Date(),
       type: type,
       payload: payload
-    ))
+    )
+    events.append(event)
     nextEventSequence += 1
+    eventHub?.publish(event)
+    return event
   }
 }

@@ -94,6 +94,59 @@ struct RPCRoundTripTests {
     }
   }
 
+  @Test("mark.create persists marker.created to durable DaemonEventLog")
+  func markCreatePersistsMarkerCreatedToDurableEventLog() async throws {
+    let paths = RuntimePaths(source: .mic, rootDirectory: try temporaryRoot())
+    let daemon = Daemon(paths: paths, configuration: directConfig(paths: paths))
+    try await daemon.start()
+    defer { Task { await daemon.stop() } }
+
+    _ = await StartClient.send(paths: paths, clientRequestID: ClientRequestID(rawValue: "rt-mark-persist-ensure"))
+    let response = await MarkClient.send(
+      paths: paths,
+      label: "persist",
+      clientRequestID: ClientRequestID(rawValue: "rt-mark-persist-1")
+    )
+    #expect(response.error == nil)
+
+    let events = try DaemonEventLog.read(url: paths.logURL)
+    let markerEvents = events.filter { $0.type == "marker.created" }
+    #expect(!markerEvents.isEmpty)
+    #expect(markerEvents.first?.payload["label"] == .string("persist"))
+  }
+
+  @Test("events.subscribe returns marker.created after mark.create")
+  func eventsSubscribeReturnsMarkerCreatedAfterMarkCreate() async throws {
+    let paths = RuntimePaths(source: .mic, rootDirectory: try temporaryRoot())
+    let daemon = Daemon(paths: paths, configuration: directConfig(paths: paths))
+    try await daemon.start()
+    defer { Task { await daemon.stop() } }
+
+    _ = await StartClient.send(paths: paths, clientRequestID: ClientRequestID(rawValue: "rt-sub-ensure"))
+    _ = await MarkClient.send(
+      paths: paths,
+      label: "subscribed",
+      clientRequestID: ClientRequestID(rawValue: "rt-sub-mark")
+    )
+    let response = await TailClient.send(
+      paths: paths,
+      request: TailRequest(source: .mic, typePrefix: "marker.")
+    )
+
+    #expect(response.error == nil)
+    if case .array(let arr)? = response.result?["events"] {
+      let labels = arr.compactMap { value -> String? in
+        if case .object(let obj) = value, case .object(let payload)? = obj["payload"], case .string(let label)? = payload["label"] {
+          return label
+        }
+        return nil
+      }
+      #expect(labels.contains("subscribed"))
+    } else {
+      Issue.record("events.subscribe result missing events array")
+    }
+  }
+
   @Test("clip.create returns range_unavailable when no scratch exists")
   func clipCreateReturnsRangeUnavailableWhenNoScratchExists() async throws {
     let paths = RuntimePaths(source: .mic, rootDirectory: try temporaryRoot())

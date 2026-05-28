@@ -136,8 +136,11 @@ public final class RPCServer: @unchecked Sendable {
     case "clip.create":
       return handleClip(request)
 
-    case "events.subscribe", "lease.acquire", "lease.renew", "lease.release":
-      // Deferred to tasks 8.3 / 8.7 — return the placeholder dispatch for now.
+    case "events.subscribe":
+      return handleEventsSubscribe(request)
+
+    case "lease.acquire", "lease.renew", "lease.release":
+      // Deferred to task 8.7 — return the placeholder dispatch for now.
       return RPCProtocol.dispatch(request, supportedMethods: OpenRPCSchema.registeredMethodNames)
 
     default:
@@ -363,6 +366,56 @@ public final class RPCServer: @unchecked Sendable {
         retriable: false,
         hint: "Start the daemon through Daemon.start so the coordinator is wired into the RPC server."
       )
+    )
+  }
+
+  private func handleEventsSubscribe(_ request: RPCRequest) -> RPCResponse {
+    let filter = extractEventFilter(request.params)
+    let events: [DaemonEvent]
+    do {
+      events = try DaemonEventLog.read(url: paths.logURL)
+    } catch {
+      return .failure(
+        id: request.id,
+        error: RPCError(
+          code: .rangeUnavailable,
+          message: "Failed to read durable event log: \(error.localizedDescription)",
+          retriable: true,
+          hint: "Inspect the daemon log file for malformed records.",
+          details: ["log": .string(paths.logURL.path)]
+        )
+      )
+    }
+    let filtered = events.filter { filter.matches($0) }
+    let payload = filtered.map { encodeAsJSON($0) }
+    return .success(id: request.id, result: [
+      "source": .string(paths.source.rawValue),
+      "events": .array(payload),
+    ])
+  }
+
+  private func extractEventFilter(_ params: [String: JSONValue]?) -> EventFilter {
+    var source: CaptureSource?
+    if case .string(let raw)? = params?["source"], let parsed = CaptureSource(rawValue: raw) {
+      source = parsed
+    }
+    var streams: Set<DaemonEventStream>?
+    if case .string(let raw)? = params?["streams"] {
+      let parsed = raw.split(separator: ",").compactMap { DaemonEventStream(rawValue: String($0)) }
+      if !parsed.isEmpty { streams = Set(parsed) }
+    }
+    var typePrefix: String?
+    if case .string(let raw)? = params?["type_prefix"] { typePrefix = raw }
+    var sinceSequence: Int?
+    if case .number(let raw)? = params?["since_sequence"] { sinceSequence = Int(raw) }
+    var includeHeartbeat = true
+    if case .bool(let raw)? = params?["include_heartbeat"] { includeHeartbeat = raw }
+    return EventFilter(
+      source: source,
+      streams: streams,
+      typePrefix: typePrefix,
+      sinceSequence: sinceSequence,
+      includeHeartbeat: includeHeartbeat
     )
   }
 }

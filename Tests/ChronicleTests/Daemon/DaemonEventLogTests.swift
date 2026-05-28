@@ -9,7 +9,7 @@ struct DaemonEventLogTests {
     let url = try temporaryLogURL()
     defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
     let epoch = DaemonEpoch(rawValue: "epoch-1")
-    var log = DaemonEventLog(url: url, source: .sysaudio, epoch: epoch)
+    let log = DaemonEventLog(url: url, source: .sysaudio, epoch: epoch)
 
     let first = try log.append(
       stream: .control,
@@ -47,7 +47,7 @@ struct DaemonEventLogTests {
     defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
     let previous = DaemonEpoch(rawValue: "old-epoch")
     let current = DaemonEpoch(rawValue: "new-epoch")
-    var log = DaemonEventLog(url: url, source: .mic, epoch: current)
+    let log = DaemonEventLog(url: url, source: .mic, epoch: current)
 
     let recovery = try log.appendRecovery(
       previousEpoch: previous,
@@ -71,7 +71,7 @@ struct DaemonEventLogTests {
   func readerIgnoresOneTornTrailingRecord() throws {
     let url = try temporaryLogURL()
     defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-    var log = DaemonEventLog(url: url, source: .sysaudio, epoch: DaemonEpoch(rawValue: "epoch"))
+    let log = DaemonEventLog(url: url, source: .sysaudio, epoch: DaemonEpoch(rawValue: "epoch"))
     let complete = try log.append(stream: .control, type: "capture.started")
     let handle = try FileHandle(forWritingTo: url)
     try handle.seekToEnd()
