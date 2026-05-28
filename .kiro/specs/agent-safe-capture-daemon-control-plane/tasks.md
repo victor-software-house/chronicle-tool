@@ -153,7 +153,7 @@
   - _Boundary: Daemon, SourceOwner, DaemonCoordinator_
   - _Depends: 5.1_
 
-- [ ] 6.2 Add start, stop, and status client commands
+- [x] 6.2 Add start, stop, and status client commands
   - Implement thin RPC clients for source/full start, stop, and JSON status.
   - Keep command logic limited to request serialization, daemon bootstrap where allowed, and response rendering.
   - Ensure status succeeds with stopped states when no owner is active.
