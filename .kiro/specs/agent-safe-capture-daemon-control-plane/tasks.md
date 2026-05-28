@@ -34,7 +34,7 @@
   - _Requirements: 3.3, 3.4_
   - _Boundary: RPCProtocol_
 
-- [ ] 2.2 (P) Add self-describing schema output
+- [x] 2.2 (P) Add self-describing schema output
   - Produce a schema response covering protocol version, methods, request and response fields, events, error codes, and examples.
   - Mark mutating methods as requiring `client_req_id`.
   - Add compatibility version checks for breaking contract changes.
@@ -197,3 +197,6 @@
   - _Requirements: 1.1, 2.1, 2.5, 5.1, 6.1, 7.1, 7.3, 8.4, 9.1, 10.4_
   - _Boundary: Validation_
   - _Depends: 7.1_
+## Implementation Notes
+
+- 2026-05-28: Live direct capture may be running while this spec is implemented. Do not kill, restart, signal, overwrite sidecars for, or otherwise disrupt existing `/Applications/chronicle.app/Contents/MacOS/chronicle mic` / `sysaudio` processes. Implementation/tests must use isolated temp paths and must not bind to the active live sidecar directory unless the operator explicitly asks.

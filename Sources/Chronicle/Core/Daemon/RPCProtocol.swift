@@ -150,6 +150,22 @@ public enum RPCProtocol {
   }
 
   public static func dispatch(_ request: RPCRequest, supportedMethods: Set<String>) -> RPCResponse {
+    if request.method == "meta.schema" {
+      do {
+        return .success(id: request.id, result: try OpenRPCSchema.current().resultObject())
+      } catch {
+        return .failure(
+          id: request.id,
+          error: RPCError(
+            code: .malformedRequest,
+            message: "Failed to encode schema",
+            retriable: false,
+            hint: "Report this Chronicle schema encoding bug."
+          )
+        )
+      }
+    }
+
     guard supportedMethods.contains(request.method) else {
       return .failure(
         id: request.id,
