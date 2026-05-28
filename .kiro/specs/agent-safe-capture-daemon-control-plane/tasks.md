@@ -17,7 +17,7 @@
   - _Requirements: 1.1, 1.2, 1.3, 1.4_
   - _Boundary: SourceOwner_
 
-- [ ] 1.3 Add daemon event log envelope and recovery reader
+- [x] 1.3 Add daemon event log envelope and recovery reader
   - Persist control, manifest, heartbeat, marker, and recovery events with version, source, epoch, sequence, monotonic time, wall clock, type, and payload.
   - Reuse append-only durability so a hard kill can corrupt at most the trailing record.
   - Add reader behavior that ignores one torn trailing record and fails on malformed middle records.
