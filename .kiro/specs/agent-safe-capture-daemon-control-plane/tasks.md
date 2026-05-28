@@ -97,7 +97,7 @@
   - _Boundary: LiveCaptureSession, LiveCaptureStatus_
   - _Depends: 4.1_
 
-- [ ] 4.3 Wire direct commands through the shared session without changing rollback behavior
+- [x] 4.3 Wire direct commands through the shared session without changing rollback behavior
   - Update direct `mic` and `sysaudio` commands to use the shared session runner.
   - Preserve existing flags, sidecar outputs, diagnostics, and direct smoke compatibility.
   - Ensure direct commands remain usable when no daemon is running.

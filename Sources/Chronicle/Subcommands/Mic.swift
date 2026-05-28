@@ -81,7 +81,19 @@ struct Mic: AsyncParsableCommand {
       throw ValidationError("Requires macOS 26.0+.")
     }
 
-    let rawLocale = locale ?? Locale.current.identifier
+    let captureConfiguration = LiveCaptureConfiguration.direct(
+      source: .mic,
+      locale: locale,
+      output: output,
+      append: append,
+      live: live,
+      saveAudio: saveAudio,
+      audioFormat: audioFormat,
+      diarize: diarize,
+      rotateAudio: rotateAudio
+    )
+
+    let rawLocale = captureConfiguration.locale ?? Locale.current.identifier
     let localeSpec = try LocaleSpec.parse(rawLocale)
     let requestedLocale = Locale(identifier: localeSpec.initialLocaleIdentifier(default: Locale.current.identifier))
     let engine = try await TranscriptionEngine.make(
@@ -105,9 +117,9 @@ struct Mic: AsyncParsableCommand {
 
     // Optional raw-audio sidecar.
     let audioSink: AudioSidecarSink? = try makeAudioSidecarSink(
-      path: saveAudio,
+      path: captureConfiguration.audioPath,
       analyzerFormat: analyzerFormat,
-      audioFormat: audioFormat,
+      audioFormat: captureConfiguration.audioFormat,
       opusBitRate: opusBitRate,
       scratchTtl: scratchTtl,
       scratchRotate: scratchRotate,
@@ -119,7 +131,7 @@ struct Mic: AsyncParsableCommand {
     // Optional live diarizer. When enabled, route PCM buffers through a
     // multicast so the sidecar consumer and the diarizer each get an
     // independent stream without re-reading the source.
-    let diarizer: SortformerStreamingDiarizer? = diarize
+    let diarizer: SortformerStreamingDiarizer? = captureConfiguration.diarizationEnabled
       ? SortformerStreamingDiarizer(logTag: "mic.diarize")
       : nil
     // Use a multicast when diarization or locale auto-detect needs a
@@ -150,9 +162,9 @@ struct Mic: AsyncParsableCommand {
     // otherwise auto-generate a timestamped session directory.
     let paths = try SessionOutputPaths.resolve(
       source: "mic",
-      outputOverride: self.output,
-      appendOverride: self.append,
-      liveOverride: self.live
+      outputOverride: captureConfiguration.tracePath,
+      appendOverride: captureConfiguration.finalsPath,
+      liveOverride: captureConfiguration.livePath
     )
     FileHandle.standardError.write(Data("[mic] session dir: \(paths.sessionDir.path)\n".utf8))
 
