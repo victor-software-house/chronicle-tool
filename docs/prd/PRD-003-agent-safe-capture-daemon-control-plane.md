@@ -149,16 +149,19 @@ other commands return a structured `daemon_unavailable` error with a hint.
 
 **Initial command surface:**
 
-| Command                                                  | Behavior                                                              |                                                  |                                   |
-| -------------------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------ | --------------------------------- |
-| `chronicle start full`                                   | Ensure sysaudio + mic daemons are running with default 24/7 sidecars. |                                                  |                                   |
-| \`chronicle start sysaudio                               | mic\`                                                                 | Ensure one source daemon is running; idempotent. |                                   |
-| \`chronicle stop sysaudio                                | mic                                                                   | full\`                                           | Gracefully stop capture owner(s). |
-| `chronicle status --json`                                | Print a complete state snapshot for all known sources.                |                                                  |                                   |
-| `chronicle tail --jsonl --source sysaudio --event final` | Subscribe and stream matching events.                                 |                                                  |                                   |
-| `chronicle mark "label"`                                 | Append a timestamped control marker to active sessions.               |                                                  |                                   |
-| `chronicle clip --last 5m -o out/`                       | Export recent audio + transcript slice from sidecars.                 |                                                  |                                   |
-| `chronicle config set --source sysaudio diarize=true`    | Hot-reconfigure supported knobs.                                      |                                                  |                                   |
+| Command | Behavior |
+| --- | --- |
+| `chronicle start full` | Ensure sysaudio + mic daemons are running with default 24/7 sidecars. |
+| `chronicle start sysaudio` | Ensure the sysaudio daemon is running; idempotent. |
+| `chronicle start mic` | Ensure the mic daemon is running; idempotent. |
+| `chronicle stop sysaudio` | Gracefully stop sysaudio capture. |
+| `chronicle stop mic` | Gracefully stop mic capture. |
+| `chronicle stop full` | Gracefully stop all capture owners. |
+| `chronicle status --json` | Print a complete state snapshot for all known sources. |
+| `chronicle tail --jsonl --source sysaudio --event final` | Subscribe and stream matching events. |
+| `chronicle mark "label"` | Append a timestamped control marker to active sessions. |
+| `chronicle clip --last 5m -o out/` | Export recent audio + transcript slice from sidecars. |
+| `chronicle config set --source sysaudio diarize=true` | Hot-reconfigure supported knobs. |
 
 **Acceptance criteria:**
 
