@@ -22,9 +22,27 @@ private func printResponse(_ response: RPCResponse) {
   print(response.encodedString())
 }
 
+struct DaemonGroup: AsyncParsableCommand {
+  static let configuration = CommandConfiguration(
+    commandName: "daemon",
+    abstract: "Chronicle source-owner daemon: run the local capture owner and talk to it.",
+    subcommands: [
+      DaemonRun.self,
+      DaemonStart.self,
+      DaemonStop.self,
+      DaemonStatusCommand.self,
+      DaemonTail.self,
+      DaemonMark.self,
+      DaemonClip.self,
+      DaemonConfig.self,
+    ],
+    defaultSubcommand: nil
+  )
+}
+
 struct DaemonRun: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
-    commandName: "daemon-run",
+    commandName: "run",
     abstract: "Run the Chronicle source-owner daemon for one physical source."
   )
 

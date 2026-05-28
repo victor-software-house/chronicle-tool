@@ -260,7 +260,7 @@
   - _Boundary: Daemon, SourceOwner_
   - _Depends: 1.2, 6.1_
 
-- [ ] 8.9 Nest daemon verbs under `chronicle daemon` subcommand
+- [x] 8.9 Nest daemon verbs under `chronicle daemon` subcommand
   - Move `start`, `stop`, `status`, `tail`, `mark`, `clip`, `config`, `daemon-run` under a single `chronicle daemon` ArgumentParser group to avoid collisions with `mic`, `sysaudio`, `live`.
   - Update tests, smokes, and `AGENTS.md` references.
   - _Requirements: 10.4_

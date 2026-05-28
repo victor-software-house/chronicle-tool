@@ -4,12 +4,25 @@ import Testing
 
 @Suite("Daemon command registration")
 struct DaemonCommandRegistrationTests {
-  @Test("chronicle CLI registers daemon subcommands")
-  func chronicleCLIRegistersDaemonSubcommands() {
-    let names = Chronicle.configuration.subcommands.map { $0.configuration.commandName ?? "" }
-    let required = ["daemon-run", "start", "stop", "status", "tail", "mark", "clip", "config"]
+  @Test("chronicle CLI nests daemon verbs under `chronicle daemon`")
+  func chronicleCLINestsDaemonVerbsUnderDaemon() {
+    let topLevel = Chronicle.configuration.subcommands.map { $0.configuration.commandName ?? "" }
+    #expect(topLevel.contains("daemon"))
+    // Flat daemon verbs must no longer collide with mic / sysaudio / live.
+    #expect(!topLevel.contains("daemon-run"))
+    #expect(!topLevel.contains("start"))
+    #expect(!topLevel.contains("stop"))
+    #expect(!topLevel.contains("status"))
+    #expect(!topLevel.contains("tail"))
+    #expect(!topLevel.contains("mark"))
+    #expect(!topLevel.contains("clip"))
+    #expect(!topLevel.contains("config"))
+
+    let daemonGroup = Chronicle.configuration.subcommands.first { $0.configuration.commandName == "daemon" }
+    let nested = (daemonGroup?.configuration.subcommands ?? []).map { $0.configuration.commandName ?? "" }
+    let required = ["run", "start", "stop", "status", "tail", "mark", "clip", "config"]
     for name in required {
-      #expect(names.contains(name), "missing chronicle subcommand: \(name)")
+      #expect(nested.contains(name), "missing chronicle daemon subcommand: \(name)")
     }
   }
 

@@ -23,14 +23,7 @@ struct Chronicle: AsyncParsableCommand {
       EncodeALAC.self,
       ScratchExport.self,
       Merge.self,
-      DaemonRun.self,
-      DaemonStart.self,
-      DaemonStop.self,
-      DaemonStatusCommand.self,
-      DaemonTail.self,
-      DaemonMark.self,
-      DaemonClip.self,
-      DaemonConfig.self
+      DaemonGroup.self,
     ],
     defaultSubcommand: nil
   )

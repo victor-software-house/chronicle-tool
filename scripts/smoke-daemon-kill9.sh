@@ -2,9 +2,9 @@
 # Daemon kill -9 recovery smoke.
 #
 # Asserts that:
-#   1. `chronicle daemon-run` starts a source-owner daemon and publishes a socket + pid file.
-#   2. `chronicle status` returns a JSON-RPC response (lifecycle=stopped while no capture is running).
-#   3. After kill -9 of the daemon process, a fresh `chronicle daemon-run` start:
+#   1. `chronicle daemon run` starts a source-owner daemon and publishes a socket + pid file.
+#   2. `chronicle daemon status` returns a JSON-RPC response (lifecycle=stopped while no capture is running).
+#   3. After kill -9 of the daemon process, a fresh `chronicle daemon run` start:
 #        a. Appends a `daemon.recovery` event referencing the prior epoch.
 #        b. Leaves the daemon JSONL parseable (at most the final line may be malformed).
 #        c. Publishes a fresh `daemon.started` event and a new socket.
@@ -43,7 +43,7 @@ export XDG_RUNTIME_DIR="$XDG_DIR"
 echo "[smoke-daemon-kill9] XDG_RUNTIME_DIR=$XDG_DIR source=$SRC"
 
 # Start first daemon.
-"$BIN" daemon-run --source "$SRC" >"$LOG_FIRST" 2>&1 &
+"$BIN" daemon run --source "$SRC" >"$LOG_FIRST" 2>&1 &
 FIRST_PID=$!
 
 # Wait for socket.
@@ -58,7 +58,7 @@ if [[ ! -S "$SOCKET_DIR/control.sock" ]]; then
 fi
 
 # Verify status RPC works.
-STATUS_JSON="$("$BIN" status --source "$SRC")"
+STATUS_JSON="$("$BIN" daemon status --source "$SRC")"
 echo "$STATUS_JSON" | grep -q '"source":"'"$SRC"'"' \
   || { echo "[smoke-daemon-kill9] status RPC missing source: $STATUS_JSON"; exit 1; }
 
@@ -69,7 +69,7 @@ sleep 0.2
 unset FIRST_PID
 
 # Restart daemon.
-"$BIN" daemon-run --source "$SRC" >"$LOG_SECOND" 2>&1 &
+"$BIN" daemon run --source "$SRC" >"$LOG_SECOND" 2>&1 &
 SECOND_PID=$!
 for _ in $(seq 1 50); do
   if [[ -S "$SOCKET_DIR/control.sock" ]]; then break; fi
