@@ -80,7 +80,7 @@
   - _Depends: 1.3_
 
 - [ ] 4. Extract reusable live capture session
-- [ ] 4.1 Extract shared capture configuration and hot-change policy
+- [x] 4.1 Extract shared capture configuration and hot-change policy
   - Normalize current direct command settings into a reusable capture configuration.
   - Classify which settings can change live, which apply only to future segments, and which require rejection while capture is active.
   - Add tests for supported, unsupported, and future-segment-only changes.
