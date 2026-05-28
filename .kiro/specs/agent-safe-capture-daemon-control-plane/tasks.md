@@ -52,7 +52,7 @@
   - _Depends: 1.1, 2.1, 2.2_
 
 - [ ] 3. Add coordination stores and status projection
-- [ ] 3.1 (P) Add idempotency replay for mutating requests
+- [x] 3.1 (P) Add idempotency replay for mutating requests
   - Store recent mutating request outcomes by method and client request id.
   - Replay the same success or error response when the same request is retried.
   - Reject conflicting payloads that reuse a previous client request id.
