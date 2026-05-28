@@ -144,7 +144,7 @@
   - _Depends: 3.2, 5.1_
 
 - [ ] 6. Add daemon and thin client command surface
-- [ ] 6.1 Add daemon run command
+- [x] 6.1 Add daemon run command
   - Start one source-owner daemon for `sysaudio` or `mic` from the signed app runtime.
   - Publish socket, manifest/control logs, status, and heartbeat while capture is running.
   - Fail duplicate starts before opening audio resources.
