@@ -218,7 +218,7 @@
   - _Boundary: RPCServer, DaemonStatus, Heartbeat_
   - _Depends: 8.1_
 
-- [ ] 8.3 Publish coordinator events through EventHub and DaemonEventLog
+- [x] 8.3 Publish coordinator events through EventHub and DaemonEventLog
   - Every `DaemonCoordinator` event append also calls `eventHub.publish(event)` and writes through `DaemonEventLog` for durability.
   - Stream subscriber output as JSONL over the RPC connection (keep `clientFD` open after `events.subscribe`).
   - Observable completion: subscriber receives `marker.created` after `MarkClient.send` against a running daemon; durable JSONL contains the same record.

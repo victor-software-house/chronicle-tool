@@ -46,6 +46,7 @@ public actor DaemonCoordinator {
   private var coordinationLeases: LeaseStore
   private var eventHub: EventHub?
   private var eventLog: DaemonEventLog?
+  private var heartbeatTask: Task<Void, Never>?
 
   public init(paths: RuntimePaths, configuration: LiveCaptureConfiguration) {
     self.paths = paths
@@ -70,6 +71,43 @@ public actor DaemonCoordinator {
   public func attachEventStreams(eventHub: EventHub?, eventLog: DaemonEventLog?) {
     self.eventHub = eventHub
     self.eventLog = eventLog
+  }
+
+  /// Start (or restart) a background heartbeat loop. Each tick reads
+  /// `session.status()`, builds a heartbeat payload, and records it through
+  /// the shared event sink (durable JSONL + EventHub). Ticks where the session
+  /// lifecycle is `.stopped` are skipped so an idle daemon does not emit
+  /// noisy stopped-heartbeat records.
+  public func startHeartbeats(interval: TimeInterval = 1.0) {
+    heartbeatTask?.cancel()
+    let safeInterval = max(0.01, interval)
+    heartbeatTask = Task { [weak self] in
+      while !Task.isCancelled {
+        try? await Task.sleep(nanoseconds: UInt64(safeInterval * 1_000_000_000))
+        if Task.isCancelled { break }
+        await self?.emitHeartbeat()
+      }
+    }
+  }
+
+  public func stopHeartbeats() {
+    heartbeatTask?.cancel()
+    heartbeatTask = nil
+  }
+
+  private func emitHeartbeat() async {
+    let live = await session.status()
+    guard live.lifecycle != .stopped else { return }
+    let idleOutput = live.lastObservedPeak == 0
+      && live.transcriptCounters.final == 0
+      && live.transcriptCounters.volatile == 0
+    _ = record(stream: .heartbeat, type: "heartbeat", payload: [
+      "lifecycle": .string(live.lifecycle.rawValue),
+      "peak": .number(Double(live.lastObservedPeak)),
+      "transcript_final": .number(Double(live.transcriptCounters.final)),
+      "transcript_volatile": .number(Double(live.transcriptCounters.volatile)),
+      "idle_output": .bool(idleOutput),
+    ])
   }
 
   public var scratchDirectory: URL {

@@ -147,6 +147,34 @@ struct RPCRoundTripTests {
     }
   }
 
+  @Test("heartbeat emitter publishes heartbeat events while capturing")
+  func heartbeatEmitterPublishesHeartbeatEventsWhileCapturing() async throws {
+    let paths = RuntimePaths(source: .mic, rootDirectory: try temporaryRoot())
+    let daemon = Daemon(paths: paths, configuration: directConfig(paths: paths))
+    try await daemon.start()
+    defer { Task { await daemon.stop() } }
+
+    _ = await StartClient.send(paths: paths, clientRequestID: ClientRequestID(rawValue: "rt-hb-ensure"))
+    await daemon.coordinator.startHeartbeats(interval: 0.05)
+    try await Task.sleep(nanoseconds: 250_000_000)
+
+    let response = await TailClient.send(
+      paths: paths,
+      request: TailRequest(source: .mic, streams: [.heartbeat])
+    )
+
+    #expect(response.error == nil)
+    if case .array(let arr)? = response.result?["events"] {
+      let heartbeats = arr.filter { value -> Bool in
+        if case .object(let obj) = value, case .string(let type)? = obj["type"] { return type == "heartbeat" }
+        return false
+      }
+      #expect(!heartbeats.isEmpty)
+    } else {
+      Issue.record("events.subscribe heartbeat result missing events array")
+    }
+  }
+
   @Test("clip.create returns range_unavailable when no scratch exists")
   func clipCreateReturnsRangeUnavailableWhenNoScratchExists() async throws {
     let paths = RuntimePaths(source: .mic, rootDirectory: try temporaryRoot())

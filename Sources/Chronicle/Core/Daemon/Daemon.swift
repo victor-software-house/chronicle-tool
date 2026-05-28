@@ -72,12 +72,15 @@ public actor Daemon {
     try rpc.start()
     server = rpc
 
+    await coordinator.startHeartbeats(interval: 1.0)
+
     _isRunning = true
   }
 
   /// Test helper: simulate hard kill by dropping the lease and socket without writing the daemon.stopped trailer.
   public func simulateHardKill() async {
     guard _isRunning else { return }
+    await coordinator.stopHeartbeats()
     server?.stop()
     server = nil
     ownerLease?.release()
@@ -88,6 +91,7 @@ public actor Daemon {
 
   public func stop() async {
     guard _isRunning else { return }
+    await coordinator.stopHeartbeats()
     server?.stop()
     server = nil
 
