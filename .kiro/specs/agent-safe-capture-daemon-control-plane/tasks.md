@@ -134,7 +134,7 @@
   - _Boundary: EventFilter, EventHub_
   - _Depends: 1.3_
 
-- [ ] 5.4 Add marker and recent clip coordination
+- [x] 5.4 Add marker and recent clip coordination
   - Create timestamped marker events for active source sessions.
   - Return clear no-active-session responses when markers cannot attach to live sessions.
   - Coordinate bounded recent clip requests and report either output location or available range.

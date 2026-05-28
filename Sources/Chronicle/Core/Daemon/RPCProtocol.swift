@@ -28,6 +28,8 @@ public enum RPCErrorCode: String, Codable, Equatable, Sendable {
   case resourceBusy = "resource_busy"
   case invalidConfig = "invalid_config"
   case daemonUnavailable = "daemon_unavailable"
+  case noActiveSession = "no_active_session"
+  case rangeUnavailable = "range_unavailable"
 }
 
 public struct RPCError: Codable, Equatable, Sendable {

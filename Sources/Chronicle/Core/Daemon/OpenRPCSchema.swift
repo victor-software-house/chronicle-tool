@@ -143,6 +143,8 @@ public struct OpenRPCSchema: Codable, Equatable, Sendable {
     OpenRPCErrorCode(code: .resourceBusy, retriable: true, description: "Source is already owned by another live capture."),
     OpenRPCErrorCode(code: .invalidConfig, retriable: false, description: "Requested configuration is invalid or unsafe while active."),
     OpenRPCErrorCode(code: .daemonUnavailable, retriable: true, description: "No daemon socket was available for the requested source."),
+    OpenRPCErrorCode(code: .noActiveSession, retriable: false, description: "No active capture session is available for the requested operation."),
+    OpenRPCErrorCode(code: .rangeUnavailable, retriable: false, description: "Requested clip window is outside retained sidecar data."),
   ]
 
   private static let exampleDefinitions: [OpenRPCExample] = [

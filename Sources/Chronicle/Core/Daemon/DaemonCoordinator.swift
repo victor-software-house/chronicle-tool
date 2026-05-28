@@ -38,14 +38,22 @@ public actor DaemonCoordinator {
   private var ensureReplay: [ClientRequestID: CaptureEnsureResult] = [:]
   private var stopReplay: [ClientRequestID: CaptureStopResult] = [:]
   private var reconfigureReplay: [ClientRequestID: ReconfigureResult] = [:]
+  private var markerReplay: [ClientRequestID: MarkerResult] = [:]
+  private var clipReplay: [ClientRequestID: ClipResult] = [:]
   private var events: [DaemonEvent] = []
   private var nextEventSequence = 1
+  private var coordinationLeases: LeaseStore
 
   public init(paths: RuntimePaths, configuration: LiveCaptureConfiguration) {
     self.paths = paths
     self.configuration = configuration
     owner = SourceOwner(paths: paths)
     session = LiveCaptureSession(configuration: configuration)
+    coordinationLeases = LeaseStore(epoch: DaemonEpoch(rawValue: "unowned"), source: configuration.source)
+  }
+
+  public var scratchDirectory: URL {
+    paths.sourceDirectory.appendingPathComponent("scratch", isDirectory: true)
   }
 
   public func ensure(clientRequestID: ClientRequestID) async throws -> CaptureEnsureResult {
@@ -130,6 +138,65 @@ public actor DaemonCoordinator {
 
   public func controlEvents() -> [DaemonEvent] {
     events
+  }
+
+  public func createMarker(label: String, clientRequestID: ClientRequestID) async -> MarkerResult {
+    if let replay = markerReplay[clientRequestID] { return replay }
+    let live = await session.status()
+    guard live.lifecycle == .capturing || live.lifecycle == .reconfiguring || live.lifecycle == .degraded else {
+      let result = MarkerResult(
+        source: configuration.source,
+        event: nil,
+        error: RPCError(
+          code: .noActiveSession,
+          message: "No active capture session for marker.",
+          retriable: false,
+          hint: "Call capture.ensure before mark.create.",
+          details: ["source": .string(configuration.source.rawValue)]
+        )
+      )
+      markerReplay[clientRequestID] = result
+      return result
+    }
+    let event = DaemonEvent(
+      sequence: nextEventSequence,
+      epoch: lease?.epoch ?? DaemonEpoch(rawValue: "unowned"),
+      source: configuration.source,
+      stream: .control,
+      monotonicSeconds: ProcessInfo.processInfo.systemUptime,
+      wallClock: Date(),
+      type: "marker.created",
+      payload: [
+        "label": .string(label),
+        "client_req_id": .string(clientRequestID.rawValue),
+      ]
+    )
+    events.append(event)
+    nextEventSequence += 1
+    let result = MarkerResult(source: configuration.source, event: event, error: nil)
+    markerReplay[clientRequestID] = result
+    return result
+  }
+
+  public func createClip(request: ClipRequest, clientRequestID: ClientRequestID) async -> ClipResult {
+    if let replay = clipReplay[clientRequestID] { return replay }
+    let leaseEpoch = lease?.epoch ?? DaemonEpoch(rawValue: "unowned")
+    coordinationLeases = LeaseStore(epoch: leaseEpoch, source: configuration.source)
+    let coordinationLease = try? coordinationLeases.acquire(purpose: "clip.create", holder: clientRequestID.rawValue, ttl: 30)
+    let result = await ClipCoordinator.export(
+      source: configuration.source,
+      scratchDirectory: scratchDirectory,
+      request: request
+    )
+    if let id = coordinationLease?.id {
+      _ = try? coordinationLeases.release(id: id)
+    }
+    clipReplay[clientRequestID] = result
+    return result
+  }
+
+  public func activeCoordinationLeases(now: Date = Date()) -> [Lease] {
+    coordinationLeases.activeLeases(now: now)
   }
 
   public func status() async -> DaemonStatus {
