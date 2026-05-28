@@ -55,8 +55,11 @@ struct SysAudio: AsyncParsableCommand {
   @Flag(name: .long, help: "Render volatile updates inline (TTY repaint) instead of one line each.")
   var inline: Bool = false
 
-  @Flag(name: .long, help: "Log CoreAudioTapSource buffer diagnostics every ~1.2s (buffer count + peak amplitude). Useful when audio appears silent.")
+  @Flag(name: .long, help: "Log CoreAudioTapSource state transitions and periodic peak summaries. Useful when audio appears silent.")
   var verbose: Bool = false
+
+  @Flag(name: .long, help: "Log per-buffer tap diagnostics (very noisy). Use only when debugging CoreAudio capture internals.")
+  var debugTap: Bool = false
 
   @Flag(name: .long, help: "Live speaker diarization via FluidAudio Sortformer. Attaches speakerId to JSONL trace events and prefixes finals with the speaker label.")
   var diarize: Bool = false
@@ -90,11 +93,11 @@ struct SysAudio: AsyncParsableCommand {
       break
     case .denied:
       FileHandle.standardError.write(Data(
-        "[sysaudio] TCC preflight reports DENIED. Capture may produce zero buffers. \(TCCPreflight.systemAudioRecordingRemediation)\n".utf8
+        "[sysaudio.tcc] preflight reports DENIED, but this private check is advisory only. Continuing; runtime PCM peak and transcript output determine capture health. \(TCCPreflight.systemAudioRecordingRemediation)\n".utf8
       ))
     case .undetermined:
       FileHandle.standardError.write(Data(
-        "[sysaudio] TCC preflight is undetermined (responsible-parent context). Proceeding; see ADR-0007 for the real failure mode on Tahoe 26.5.\n".utf8
+        "[sysaudio.tcc] preflight is undetermined (responsible-parent context). Continuing; runtime PCM peak and transcript output determine capture health.\n".utf8
       ))
     }
 
@@ -117,7 +120,8 @@ struct SysAudio: AsyncParsableCommand {
     let sysSource = CoreAudioTapSource(
       analyzerFormat: analyzerFormat,
       excludeCurrentProcessAudio: !includeSelfAudio,
-      verbose: verbose
+      verbose: verbose || debugTap,
+      debugBuffers: debugTap
     )
     FileHandle.standardError.write(Data(
       "[sysaudio] captureSource=CoreAudioTapSource source=system-output mic=not-opened sidecarFormat=analyzer-pcm\n".utf8

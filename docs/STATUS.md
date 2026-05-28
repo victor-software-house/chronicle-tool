@@ -3,9 +3,23 @@
 One-screen quick reference for "what's done, what's next, what's the
 plan". Authoritative scope and acceptance criteria live in
 [`PRD-001`](prd/PRD-001-resilient-multi-source-daemon.md); this is the
-operator-facing dashboard.
+operator-facing dashboard. New governed work starts in `.kiro/specs/`; legacy
+PRD/ADR/architecture docs remain source references until migrated.
 
-Last refresh: 2026-05-18 — FR-2 JSONL trace, FR-4 streaming diarization, FR-6 locale resolver, and robustness hardening have all landed. `chronicle mic --diarize` and `chronicle sysaudio --diarize` now fan analyzer PCM through `BufferMulticast` into `SortformerStreamingDiarizer` (FluidAudio Sortformer CoreML), attach `speakerId` to source-aware `trace.jsonl`, and prefix finals with `[S0]/[S1]...` labels. `chronicle merge` preserves `(speaker, locale)` once events carry the fields. Latest stability work added live `--locale auto` swap and crash-safe buffer-copying in `AudioSourceOutputStreams`.
+Last refresh: 2026-05-28 — `/Applications/chronicle.app` signed with Apple
+Development Team ID `CXLYTY8DMR` has verified live `chronicle sysaudio` capture
+through CoreAudio taps. Proof receipts from live `say` smokes showed nonzero
+`sessionPeak` values up to 25251 and transcript text in `finals.md` / `live.md`.
+The private TCC preflight can still report DENIED from launcher context; that
+probe is advisory only. Runtime PCM peak plus transcript output is the capture
+authority. Chronicle sysaudio follows the current default output directly and
+does not require BlackHole 2ch or a Multi-Output Device for normal operation.
+
+The active cleanup is governed by
+[`.kiro/specs/sysaudio-runtime-hardening`](../.kiro/specs/sysaudio-runtime-hardening/):
+fix advisory TCC warning text, debounce default-output rebuilds, and split tap
+diagnostics by channel/verbosity. Earlier 2026-05-18 status remains below for
+functional-batch history.
 
 Sysaudio/diarize smoke on 6-speaker fixture (6× speeds) was clean: no segfaults, 1.00x/1.25x/1.50x/2.00x speech quality near-perfect-to-good, 2.50x degraded, 3.00x unusable; all runs recovered stable speaker tags across dynamic output-device changes.
 

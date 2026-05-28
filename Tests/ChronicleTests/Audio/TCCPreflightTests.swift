@@ -21,4 +21,14 @@ struct TCCPreflightTests {
     #expect(msg.contains("System Settings"))
     #expect(msg.contains("Microphone"))
   }
+
+  @Test("systemAudioRecordingRemediation treats preflight as advisory and names signed app")
+  func systemAudioRecordingRemediation() {
+    let msg = TCCPreflight.systemAudioRecordingRemediation
+
+    #expect(msg.contains("/Applications/chronicle.app"))
+    #expect(msg.contains("Screen & System Audio Recording"))
+    #expect(msg.contains("runtime PCM peak"))
+    #expect(msg.contains("preflight check can be inconclusive"))
+  }
 }

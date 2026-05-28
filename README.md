@@ -82,8 +82,11 @@ data, commit style), see [`AGENTS.md`](AGENTS.md).
   & Security → Microphone.
 - **Screen & System Audio Recording TCC permission** — grant
   `chronicle.app` under System Settings → Privacy & Security → Screen
-  & System Audio Recording. Without it, `chronicle sysaudio` fails fast
-  in ~5 s with a clear remediation error — it does not hang.
+  & System Audio Recording. The private preflight probe can report an
+  advisory denial from launcher context; runtime evidence is authoritative:
+  nonzero tap peak plus text in `live.md` / `finals.md` means capture works.
+  If runtime buffers stay silent while audible audio is playing, check this
+  grant, stale signing identity, output routing, or CoreAudio state.
 - **Xcode 26 or Swift 6.2+**.
 
 ## Install / build
@@ -208,12 +211,16 @@ shape follows [ADR-0001](docs/adr/ADR-0001-modular-pipeline-architecture.md).
 ### `sysaudio` capture scope
 
 `CoreAudioTapSource` captures the mix flowing through the macOS **default
-audio output device** at the time of capture. Apps routing audio to other
-devices (a specific HDMI out, an audio interface bypass, etc.) may bypass
-capture. `--include-self-audio` opts chronicle's own audio back in (default
-is excluded to prevent feedback loops). When capture appears silent but the
-daemon is otherwise healthy, run with `--verbose` to see per-buffer amplitude
-diagnostics every ~1.2 s.
+audio output device** at the time of capture and follows default-output
+switches by rebuilding the tap after the new output stabilizes. It does **not**
+require BlackHole 2ch or a Multi-Output Device for normal Chronicle capture.
+Those remain useful only for external fallback recorders such as OBS/ffmpeg
+loopback. Apps routing audio to other devices (a specific HDMI out, an audio
+interface bypass, etc.) may bypass capture. `--include-self-audio` opts
+chronicle's own audio back in (default is excluded to prevent feedback loops).
+When capture appears silent but the daemon is otherwise healthy, run with
+`--verbose` to see state transitions and periodic peak summaries; use
+`--debug-tap` only for very noisy per-buffer tap diagnostics.
 
 ## Running it under the Pi process tool
 

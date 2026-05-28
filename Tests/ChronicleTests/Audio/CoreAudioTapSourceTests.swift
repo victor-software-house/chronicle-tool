@@ -82,4 +82,10 @@ struct CoreAudioTapSourceTests {
     #expect(CoreAudioTapSource.recurringNoBufferWarningSeconds > CoreAudioTapSource.noBufferWarningSeconds)
     #expect(recurringWarning.contains("\(CoreAudioTapSource.recurringNoBufferWarningSeconds)s"))
   }
+
+  @Test("default output debounce coalesces transient switch notifications")
+  func defaultOutputDebounceIntervalIsShortButNonZero() {
+    #expect(CoreAudioTapSource.defaultOutputDebounceSeconds >= 0.5)
+    #expect(CoreAudioTapSource.defaultOutputDebounceSeconds <= 0.75)
+  }
 }

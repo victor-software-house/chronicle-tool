@@ -53,10 +53,11 @@ public enum TCCPreflight {
   }
 
   public static let systemAudioRecordingRemediation: String = """
-    System Audio Recording permission is required by `chronicle sysaudio`. \
-    macOS CoreAudio process taps silently deliver zero-amplitude buffers when this grant is absent. \
-    Grant it for the parent launcher (cmux.app, Terminal.app, iTerm.app, Ghostty, etc.) via: \
-    System Settings → Privacy & Security → System Audio Recording. \
-    Relaunch the parent app after granting so the grant propagates to child processes.
+    System Audio Recording permission is required for `chronicle sysaudio` runtime capture. \
+    The private preflight check can be inconclusive when launched from cmux/Terminal/Pi; \
+    verify capture with runtime PCM peak and transcript output. \
+    For the local signed build, grant `/Applications/chronicle.app` via: \
+    System Settings → Privacy & Security → Screen & System Audio Recording. \
+    Relaunch the app/launcher after granting so the grant propagates to child processes.
     """
 }

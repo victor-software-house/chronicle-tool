@@ -1,9 +1,34 @@
 # ADR-0007 · Tahoe 26.5 CATap zero-buffer regression and Developer-ID signing path
 
-* Status: **Proposed** (2026-05-20)
+* Status: **Proposed** (2026-05-20; amended by 2026-05-28 field evidence)
 * Supersedes: none
 * Amends: ADR-0004 (Tahoe system-audio capture), AGENTS.md robustness layer
 * Owner: Victor
+
+## 2026-05-28 field-evidence addendum
+
+The 2026-05-20 conclusion that Chronicle had no working live-system-audio path
+on this machine is no longer current. After moving local live capture to a
+stable Apple Development signed `/Applications/chronicle.app` bundle (Team ID
+`CXLYTY8DMR`) and running through the installed app path, CoreAudio process taps
+captured real system audio and produced SpeechAnalyzer transcripts.
+
+Verified receipts:
+
+* `say -v Samantha` live smoke produced nonzero `sessionPeak` values up to
+  `25251`.
+* `finals.md` / `live.md` contained the spoken TTS text.
+* Default-output switching mid-capture triggered tap rebuilds and capture
+  continued afterward.
+* BlackHole 2ch and Multi-Output Device were present on the machine but not the
+  active output route; normal Chronicle sysaudio worked without them.
+
+The private TCC preflight SPI can still report DENIED from launcher context even
+when runtime capture works. Treat that preflight as advisory. Runtime evidence
+(nonzero PCM peak and transcript sidecars) is authoritative for capture health.
+Current cleanup is tracked in `.kiro/specs/sysaudio-runtime-hardening` and
+focuses on advisory warning text, default-output debounce, and diagnostic
+verbosity/channel separation.
 
 ## Context
 

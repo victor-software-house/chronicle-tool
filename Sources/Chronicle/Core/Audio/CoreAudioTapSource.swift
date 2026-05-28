@@ -24,9 +24,11 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
   public private(set) var hasValidBuffer = false
 
   public let verbose: Bool
+  public let debugBuffers: Bool
 
   public static let noBufferWarningSeconds: Double = 5.0
   public static let recurringNoBufferWarningSeconds: Double = 30.0
+  public static let defaultOutputDebounceSeconds: Double = 0.65
 
   private static let aggregateUIDBase = "com.victor-software-house.chronicle.sysaudio."
 
@@ -47,15 +49,18 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
   private var currentDefaultOutputID = AudioDeviceID(kAudioObjectUnknown)
   private var defaultOutputListenerInstalled = false
   private var defaultOutputListenerBlock: AudioObjectPropertyListenerBlock?
+  private var defaultOutputDebounceGeneration = 0
 
   public init(
     analyzerFormat: AVAudioFormat,
     excludeCurrentProcessAudio: Bool = true,
-    verbose: Bool = false
+    verbose: Bool = false,
+    debugBuffers: Bool = false
   ) {
     self.analyzerFormat = analyzerFormat
     self.excludeSelf = excludeCurrentProcessAudio
     self.verbose = verbose
+    self.debugBuffers = debugBuffers
 
     let streams = AudioSourceOutputStreams()
     self.streams = streams
@@ -288,14 +293,32 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
 
   private func handleDefaultOutputDeviceChanged() {
     guard started, !stopped else { return }
-    guard let newDefaultOutputID = try? Self.defaultOutputDeviceID() else { return }
-    guard newDefaultOutputID != currentDefaultOutputID else { return }
+    defaultOutputDebounceGeneration += 1
+    let generation = defaultOutputDebounceGeneration
+    let activeOutputID = currentDefaultOutputID
+
+    listenerQueue.asyncAfter(deadline: .now() + Self.defaultOutputDebounceSeconds) { [weak self] in
+      guard let self, self.started, !self.stopped, generation == self.defaultOutputDebounceGeneration else { return }
+      self.rebuildForStableDefaultOutputIfNeeded(previousOutputID: activeOutputID)
+    }
+  }
+
+  private func rebuildForStableDefaultOutputIfNeeded(previousOutputID: AudioDeviceID) {
+    guard let stableOutputID = try? Self.defaultOutputDeviceID() else { return }
+    guard stableOutputID != currentDefaultOutputID else {
+      if debugBuffers {
+        FileHandle.standardError.write(Data(
+          "[sysaudio.tap.debug] ignored default-output notification; stable output unchanged id=\(stableOutputID)\n".utf8
+        ))
+      }
+      return
+    }
 
     let oldOutputID = currentDefaultOutputID
-    currentDefaultOutputID = newDefaultOutputID
-    let newUID = (try? Self.deviceUID(newDefaultOutputID)) ?? "unknown"
+    let oldUID = (try? Self.deviceUID(oldOutputID)) ?? "unknown"
+    let stableUID = (try? Self.deviceUID(stableOutputID)) ?? "unknown"
     FileHandle.standardError.write(Data(
-      "[sysaudio.tap] default output changed old=\(oldOutputID) new=\(newDefaultOutputID) uid=\(newUID); rebuilding tap\n".utf8
+      "[sysaudio.tap] default output stable old=\(oldOutputID) uid=\(oldUID) new=\(stableOutputID) uid=\(stableUID); rebuilding tap\n".utf8
     ))
 
     teardownCoreAudio()
@@ -304,7 +327,7 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
       scheduleNoBufferWarning(context: "default-output-change")
     } catch {
       FileHandle.standardError.write(Data(
-        "[sysaudio.tap] failed to rebuild after default output change: \(error)\n".utf8
+        "[sysaudio.tap] failed to rebuild after stable default output change from \(previousOutputID): \(error)\n".utf8
       ))
       stopped = true
       streams.finish()
@@ -317,7 +340,6 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
   }
 
   private func updatePeak(from converted: AVAudioPCMBuffer) {
-    guard buffersReceived % 64 == 0 else { return }
     var peak: Int16 = 0
     if let int16Data = converted.int16ChannelData {
       let count = Int(converted.frameLength)
@@ -336,10 +358,21 @@ public final class CoreAudioTapSource: AudioSource, @unchecked Sendable {
         if magnitude > peak { peak = magnitude }
       }
     }
+    let previousSessionPeak = peakSample
     if peak > peakSample { peakSample = peak }
-    if verbose {
+    let firstNonZero = previousSessionPeak == 0 && peak > 0
+    if verbose, firstNonZero {
       FileHandle.standardError.write(Data(
-        "[sysaudio.tap] buffers=\(buffersReceived) lastPeak=\(peak) sessionPeak=\(peakSample) (Int16 ±32767)\n".utf8
+        "[sysaudio.tap] first nonzero buffer peak=\(peak) buffers=\(buffersReceived)\n".utf8
+      ))
+    }
+    if debugBuffers, buffersReceived % 64 == 0 {
+      FileHandle.standardError.write(Data(
+        "[sysaudio.tap.debug] buffers=\(buffersReceived) lastPeak=\(peak) sessionPeak=\(peakSample) (Int16 ±32767)\n".utf8
+      ))
+    } else if verbose, buffersReceived % 512 == 0 {
+      FileHandle.standardError.write(Data(
+        "[sysaudio.tap] summary buffers=\(buffersReceived) lastPeak=\(peak) sessionPeak=\(peakSample)\n".utf8
       ))
     }
   }
