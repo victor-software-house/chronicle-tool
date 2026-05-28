@@ -404,7 +404,7 @@ including C4: **XL, ~3 weeks**.
   design's RPC server contract (sync-to-actor bridge, EventHub publication
   site, durable idempotency policy) before opening Phase 8 implementation
   tasks.
-- Do **not** start C4 (real audio extraction) until installed live capture is
-  explicitly paused; current operator instruction is to keep
-  `/Applications/chronicle.app/Contents/MacOS/chronicle {mic,sysaudio}`
-  untouched.
+- 2026-05-28 update: operator paused installed live capture. C4 (real audio
+  extraction in `LiveCaptureSession`) is unblocked. Re-instate the guard only
+  if the operator restarts `/Applications/chronicle.app/Contents/MacOS/chronicle
+  {mic,sysaudio}` before Phase 8 completes.

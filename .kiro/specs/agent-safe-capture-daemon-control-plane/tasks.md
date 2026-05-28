@@ -199,7 +199,7 @@
   - _Depends: 7.1_
 ## Implementation Notes
 
-- 2026-05-28: Live direct capture may be running while this spec is implemented. Do not kill, restart, signal, overwrite sidecars for, or otherwise disrupt existing `/Applications/chronicle.app/Contents/MacOS/chronicle mic` / `sysaudio` processes. Implementation/tests must use isolated temp paths and must not bind to the active live sidecar directory unless the operator explicitly asks.
+- 2026-05-28: Live direct capture guard lifted by operator after Phase 7 (recording paused). Phase 8 implementation is free to extract the real audio pipeline into `LiveCaptureSession` and exercise direct `mic` / `sysaudio` plus the `sysaudio-diarize` smoke. If live capture resumes, re-instate the guard before continuing.
 - 2026-05-28 (validate-gap): Phases 1–7 above are recorded as `[x]` because their acceptance criteria as written passed against in-actor surfaces and isolated smokes. A post-impl architect review (see `research.md` §Post-Implementation Gap Validation) found that the RPC server is not wired to `DaemonCoordinator`, `EventHub` is never published to, and `LiveCaptureSession` does not open audio. Phase 8 below tracks the remediation work; previous tasks are not retroactively rewound.
 
 - [ ] 8. Remediate post-impl gaps from validate-gap
@@ -270,13 +270,12 @@
 - [ ] 8.10 Extract real audio pipeline into `LiveCaptureSession`
   - Move engine/source/analyzer/sinks construction out of `Mic.swift:80-585` and `SysAudio.swift:107-525` into `LiveCaptureSession.start/stop/reconfigure`. Direct subcommands delegate. Daemon `coordinator.ensure` opens a real source-owner capture.
   - Observable completion: byte-identical parity against the 2026-05-13 Zoom receipts (`out/full-session/transcribe.txt`, `diarize.json`) plus a daemon-mode smoke that produces nonzero peak and durable sidecars under `paths.sourceDirectory`.
-  - This task **requires** the installed `/Applications/chronicle.app` live capture to be paused before execution. Do not start without explicit operator approval.
   - _Requirements: 1.1, 4.4, 6.1, 6.4, 8.1, 8.4, 9.1, 9.2, 10.4_
   - _Boundary: LiveCaptureSession, Mic, SysAudio, DaemonCoordinator_
   - _Depends: 8.1, 8.2, 8.3, 8.4, 8.5, 8.7, 8.8, 8.9_
 
 - [ ] 8.11 Phase 8 verification
-  - Run `swift test`, `scripts/smoke-daemon-kill9.sh` (mic + sysaudio), `scripts/smoke-daemon-integration.sh` (mic + sysaudio), and (only with operator approval) `scripts/smoke-sysaudio-diarize.sh` against the rebuilt daemon path.
+  - Run `swift test`, `scripts/smoke-daemon-kill9.sh` (mic + sysaudio), `scripts/smoke-daemon-integration.sh` (mic + sysaudio), and `scripts/smoke-sysaudio-diarize.sh` against the rebuilt daemon path.
   - Add an RPC round-trip behavior smoke that exercises ensure → status → mark → clip (success + range_unavailable) → config (applied + rejected) → subscribe → stop using real responses, not `accepted=true`.
   - _Requirements: all_
   - _Boundary: Validation_
