@@ -1,7 +1,7 @@
 # Implementation Plan
 
 - [ ] 1. Establish daemon runtime foundation
-- [ ] 1.1 Add source identity, lifecycle, and runtime path models
+- [x] 1.1 Add source identity, lifecycle, and runtime path models
   - Define the supported capture sources and lifecycle states used by daemon status, ownership, and RPC responses.
   - Resolve per-user socket, lock, PID, and log paths for each source without opening any audio resource.
   - Add focused tests that prove `sysaudio` and `mic` paths are independent and local-only.
