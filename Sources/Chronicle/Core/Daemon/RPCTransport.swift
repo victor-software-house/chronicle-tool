@@ -177,9 +177,10 @@ public final class RPCServer: @unchecked Sendable {
     case "events.subscribe":
       return handleEventsSubscribe(request)
 
-    case "lease.acquire", "lease.renew", "lease.release":
-      // Deferred to task 8.7 — return the placeholder dispatch for now.
-      return RPCProtocol.dispatch(request, supportedMethods: OpenRPCSchema.registeredMethodNames)
+    // lease.acquire / lease.renew / lease.release are intentionally absent
+    // from OpenRPCSchema.registeredMethodNames until task 8.7 wires the
+    // LeaseStore RPC surface; they fall through to the default branch and
+    // return unsupported_method so the schema and server stay consistent.
 
     default:
       return RPCProtocol.dispatch(request, supportedMethods: OpenRPCSchema.registeredMethodNames)

@@ -17,9 +17,6 @@ public struct OpenRPCSchema: Codable, Equatable, Sendable {
     "events.subscribe",
     "mark.create",
     "clip.create",
-    "lease.acquire",
-    "lease.renew",
-    "lease.release",
   ]
 
   public static func current() -> OpenRPCSchema {
@@ -88,8 +85,17 @@ public struct OpenRPCSchema: Codable, Equatable, Sendable {
       name: "events.subscribe",
       summary: "Subscribe to filtered daemon and transcript events.",
       mutating: false,
-      requestFields: [optionalSourceField, OpenRPCField(name: "filters", type: "object", required: false, description: "Event stream filters.")],
-      responseFields: [OpenRPCField(name: "events", type: "jsonl-stream", required: true, description: "Filtered event stream.")]
+      requestFields: [
+        optionalSourceField,
+        OpenRPCField(name: "streams", type: "string", required: false, description: "Comma-separated daemon event streams (manifest, control, heartbeat)."),
+        OpenRPCField(name: "type_prefix", type: "string", required: false, description: "Filter events whose type starts with this prefix."),
+        OpenRPCField(name: "since_sequence", type: "number", required: false, description: "Exclusive lower bound on event sequence."),
+        OpenRPCField(name: "include_heartbeat", type: "boolean", required: false, description: "Include heartbeat events (default true)."),
+      ],
+      responseFields: [
+        sourceField,
+        OpenRPCField(name: "events", type: "array", required: true, description: "Filtered durable events array (one-shot replay; streaming is a follow-up task)."),
+      ]
     ),
     OpenRPCMethod(
       name: "mark.create",
@@ -105,35 +111,20 @@ public struct OpenRPCSchema: Codable, Equatable, Sendable {
       requestFields: [optionalSourceField, clientRequestIDField, OpenRPCField(name: "window", type: "object", required: true, description: "Requested recent clip time window.")],
       responseFields: [OpenRPCField(name: "output", type: "string", required: false, description: "Exported clip path.")]
     ),
-    OpenRPCMethod(
-      name: "lease.acquire",
-      summary: "Acquire a TTL client coordination lease.",
-      mutating: true,
-      requestFields: [clientRequestIDField, OpenRPCField(name: "purpose", type: "string", required: true, description: "Lease purpose."), OpenRPCField(name: "ttl", type: "number", required: true, description: "Lease TTL seconds.")],
-      responseFields: [OpenRPCField(name: "lease_id", type: "string", required: true, description: "Lease identifier.")]
-    ),
-    OpenRPCMethod(
-      name: "lease.renew",
-      summary: "Renew an existing client coordination lease.",
-      mutating: true,
-      requestFields: [clientRequestIDField, OpenRPCField(name: "lease_id", type: "string", required: true, description: "Lease identifier.")],
-      responseFields: [OpenRPCField(name: "expires_at", type: "string", required: true, description: "Updated expiry time.")]
-    ),
-    OpenRPCMethod(
-      name: "lease.release",
-      summary: "Release an existing client coordination lease.",
-      mutating: true,
-      requestFields: [clientRequestIDField, OpenRPCField(name: "lease_id", type: "string", required: true, description: "Lease identifier.")],
-      responseFields: [OpenRPCField(name: "released", type: "boolean", required: true, description: "Whether a lease was released.")]
-    ),
   ]
 
   private static let eventDefinitions: [OpenRPCEvent] = [
+    OpenRPCEvent(name: "daemon.started", stream: .manifest, description: "Daemon started and acquired source ownership."),
+    OpenRPCEvent(name: "daemon.stopped", stream: .manifest, description: "Daemon performed a graceful shutdown."),
     OpenRPCEvent(name: "daemon.recovery", stream: .manifest, description: "A daemon restarted after previous ownership state."),
     OpenRPCEvent(name: "heartbeat", stream: .heartbeat, description: "Periodic liveness and source lifecycle event."),
     OpenRPCEvent(name: "capture.starting", stream: .control, description: "Capture startup has begun."),
     OpenRPCEvent(name: "capture.started", stream: .control, description: "Capture is active."),
     OpenRPCEvent(name: "capture.stopped", stream: .control, description: "Capture stopped."),
+    OpenRPCEvent(name: "capture.reconfigure.started", stream: .control, description: "A live reconfiguration request has begun."),
+    OpenRPCEvent(name: "capture.reconfigure.succeeded", stream: .control, description: "A live reconfiguration request was applied."),
+    OpenRPCEvent(name: "capture.reconfigure.failed", stream: .control, description: "A live reconfiguration request was rejected."),
+    OpenRPCEvent(name: "marker.created", stream: .control, description: "A client-requested marker was recorded."),
     OpenRPCEvent(name: "subscriber_lagged", stream: .control, description: "A subscriber fell behind the bounded event queue."),
   ]
 
@@ -151,6 +142,9 @@ public struct OpenRPCSchema: Codable, Equatable, Sendable {
     OpenRPCExample(method: "meta.schema", request: #"{"jsonrpc":"2.0","id":"schema-1","method":"meta.schema"}"#),
     OpenRPCExample(method: "status.get", request: #"{"jsonrpc":"2.0","id":"status-1","method":"status.get","params":{"source":"sysaudio"}}"#),
     OpenRPCExample(method: "capture.ensure", request: #"{"jsonrpc":"2.0","id":"ensure-1","method":"capture.ensure","params":{"source":"mic","client_req_id":"client-req-123"}}"#),
+    OpenRPCExample(method: "capture.stop", request: #"{"jsonrpc":"2.0","id":"stop-1","method":"capture.stop","params":{"source":"mic","client_req_id":"stop-req-1"}}"#),
+    OpenRPCExample(method: "mark.create", request: #"{"jsonrpc":"2.0","id":"mark-1","method":"mark.create","params":{"source":"mic","label":"checkpoint","client_req_id":"mark-req-1"}}"#),
+    OpenRPCExample(method: "events.subscribe", request: #"{"jsonrpc":"2.0","id":"sub-1","method":"events.subscribe","params":{"source":"mic","streams":"control,heartbeat","include_heartbeat":true}}"#),
   ]
 }
 
