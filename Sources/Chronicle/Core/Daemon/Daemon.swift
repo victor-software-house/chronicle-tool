@@ -68,7 +68,10 @@ public actor Daemon {
     eventLog = log
     await coordinator.attachEventStreams(eventHub: eventHub, eventLog: log)
 
-    let rpc = RPCServer(paths: paths, coordinator: coordinator, eventHub: eventHub)
+    let idempotencyStore = IdempotencyStore(epoch: lease.epoch)
+    idempotencyStore.load(from: paths.idempotencyURL)
+
+    let rpc = RPCServer(paths: paths, coordinator: coordinator, eventHub: eventHub, idempotencyStore: idempotencyStore)
     try rpc.start()
     server = rpc
 

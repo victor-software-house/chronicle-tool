@@ -6,7 +6,7 @@ import Testing
 struct IdempotencyStoreTests {
   @Test("replays same successful mutating request outcome")
   func replaysSameSuccessfulMutatingRequestOutcome() throws {
-    var store = IdempotencyStore(epoch: DaemonEpoch(rawValue: "epoch"))
+    let store = IdempotencyStore(epoch: DaemonEpoch(rawValue: "epoch"))
     let request = RPCRequest(id: .string("rpc-1"), method: "capture.ensure", params: ["source": .string("mic"), "client_req_id": .string("req-1")])
     let response = RPCResponse.success(id: .string("rpc-1"), result: ["lifecycle": .string("capturing")])
 
@@ -16,7 +16,7 @@ struct IdempotencyStoreTests {
 
   @Test("replays same structured error outcome")
   func replaysSameStructuredErrorOutcome() throws {
-    var store = IdempotencyStore(epoch: DaemonEpoch(rawValue: "epoch"))
+    let store = IdempotencyStore(epoch: DaemonEpoch(rawValue: "epoch"))
     let request = RPCRequest(id: .string("rpc-1"), method: "capture.stop", params: ["source": .string("sysaudio"), "client_req_id": .string("req-err")])
     let response = RPCResponse.failure(id: .string("rpc-1"), error: RPCError(code: .daemonUnavailable, message: "daemon unavailable", retriable: true, hint: "retry later"))
 
@@ -26,7 +26,7 @@ struct IdempotencyStoreTests {
 
   @Test("rejects conflicting payload for reused client request id")
   func rejectsConflictingPayloadForReusedClientRequestID() throws {
-    var store = IdempotencyStore(epoch: DaemonEpoch(rawValue: "epoch"))
+    let store = IdempotencyStore(epoch: DaemonEpoch(rawValue: "epoch"))
     let first = RPCRequest(id: .string("rpc-1"), method: "capture.ensure", params: ["source": .string("mic"), "client_req_id": .string("req-1")])
     let second = RPCRequest(id: .string("rpc-2"), method: "capture.ensure", params: ["source": .string("sysaudio"), "client_req_id": .string("req-1")])
     let response = RPCResponse.success(id: .string("rpc-1"), result: ["lifecycle": .string("capturing")])
@@ -39,7 +39,7 @@ struct IdempotencyStoreTests {
 
   @Test("non mutating or missing client_req_id requests are ignored")
   func nonMutatingOrMissingClientRequestIDRequestsAreIgnored() throws {
-    var store = IdempotencyStore(epoch: DaemonEpoch(rawValue: "epoch"))
+    let store = IdempotencyStore(epoch: DaemonEpoch(rawValue: "epoch"))
     let status = RPCRequest(id: .string("status"), method: "status.get", params: ["source": .string("mic")])
     let missing = RPCRequest(id: .string("ensure"), method: "capture.ensure", params: ["source": .string("mic")])
     let response = RPCResponse.success(id: .string("status"), result: [:])
@@ -50,7 +50,7 @@ struct IdempotencyStoreTests {
 
   @Test("snapshot includes source epoch timestamp and method")
   func snapshotIncludesSourceEpochTimestampAndMethod() throws {
-    var store = IdempotencyStore(epoch: DaemonEpoch(rawValue: "epoch"))
+    let store = IdempotencyStore(epoch: DaemonEpoch(rawValue: "epoch"))
     let request = RPCRequest(id: .string("rpc-1"), method: "mark.create", params: ["source": .string("mic"), "client_req_id": .string("mark-1"), "label": .string("demo")])
     let response = RPCResponse.success(id: .string("rpc-1"), result: ["ok": .bool(true)])
     let now = Date(timeIntervalSince1970: 42)

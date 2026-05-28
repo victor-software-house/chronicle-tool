@@ -175,6 +175,40 @@ struct RPCRoundTripTests {
     }
   }
 
+  @Test("idempotent mark.create replays prior response across daemon restart")
+  func idempotentMarkCreateReplaysPriorResponseAcrossDaemonRestart() async throws {
+    let paths = RuntimePaths(source: .mic, rootDirectory: try temporaryRoot())
+    let cid = ClientRequestID(rawValue: "rt-idem-restart-1")
+
+    do {
+      let daemon = Daemon(paths: paths, configuration: directConfig(paths: paths))
+      try await daemon.start()
+      _ = await StartClient.send(paths: paths, clientRequestID: ClientRequestID(rawValue: "rt-idem-restart-ensure"))
+      let first = await MarkClient.send(paths: paths, label: "durable-replay", clientRequestID: cid)
+      #expect(first.error == nil)
+      await daemon.stop()
+    }
+
+    let restarted = Daemon(paths: paths, configuration: directConfig(paths: paths))
+    try await restarted.start()
+    defer { Task { await restarted.stop() } }
+
+    let replay = await MarkClient.send(paths: paths, label: "durable-replay", clientRequestID: cid)
+    #expect(replay.error == nil)
+    if case .object(let event)? = replay.result?["event"], case .object(let payload)? = event["payload"], case .string(let label)? = payload["label"] {
+      #expect(label == "durable-replay")
+    } else {
+      Issue.record("replayed mark.create result missing event payload label")
+    }
+
+    // The replay must not produce a duplicate marker.created entry in the
+    // durable JSONL: persisted IdempotencyStore intercepts the request before
+    // the coordinator records a second event.
+    let events = try DaemonEventLog.read(url: paths.logURL)
+    let markers = events.filter { $0.type == "marker.created" }
+    #expect(markers.count == 1)
+  }
+
   @Test("clip.create returns range_unavailable when no scratch exists")
   func clipCreateReturnsRangeUnavailableWhenNoScratchExists() async throws {
     let paths = RuntimePaths(source: .mic, rootDirectory: try temporaryRoot())

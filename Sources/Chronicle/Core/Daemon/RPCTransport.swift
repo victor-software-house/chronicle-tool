@@ -24,15 +24,22 @@ public final class RPCServer: @unchecked Sendable {
   public let paths: RuntimePaths
   public let coordinator: DaemonCoordinator?
   public let eventHub: EventHub?
+  public let idempotencyStore: IdempotencyStore?
   private let queue = DispatchQueue(label: "chronicle.rpc.server")
   private let stateLock = NSLock()
   private var listenFD: Int32 = -1
   private var running = false
 
-  public init(paths: RuntimePaths, coordinator: DaemonCoordinator? = nil, eventHub: EventHub? = nil) {
+  public init(
+    paths: RuntimePaths,
+    coordinator: DaemonCoordinator? = nil,
+    eventHub: EventHub? = nil,
+    idempotencyStore: IdempotencyStore? = nil
+  ) {
     self.paths = paths
     self.coordinator = coordinator
     self.eventHub = eventHub
+    self.idempotencyStore = idempotencyStore
   }
 
   deinit {
@@ -106,7 +113,38 @@ public final class RPCServer: @unchecked Sendable {
     let response: RPCResponse
     do {
       let request = try RPCRequest.decode(data)
-      response = route(request)
+      if let cached = idempotencyStore?.lookup(request) {
+        response = cached
+      } else {
+        let routed = route(request)
+        if let store = idempotencyStore {
+          do {
+            _ = try store.record(request: request, response: routed, source: paths.source)
+            try? store.save(to: paths.idempotencyURL)
+          } catch IdempotencyStoreError.conflict(let existing) {
+            let conflict = RPCResponse.failure(
+              id: request.id,
+              error: RPCError(
+                code: .malformedRequest,
+                message: "client_req_id reuse with different payload for \(request.method)",
+                retriable: false,
+                hint: "Use a fresh client_req_id for new payloads.",
+                details: [
+                  "stored_method": .string(existing.method),
+                  "stored_client_req_id": .string(existing.clientRequestID.rawValue),
+                ]
+              )
+            )
+            writeAll(conflict.encodedString() + "\n", fd: clientFD)
+            return
+          } catch {
+            // Any other persistence error: prefer correctness — return the
+            // routed response without persisting (Req 9.3 evidence path
+            // remains durable via DaemonEventLog).
+          }
+        }
+        response = routed
+      }
     } catch {
       response = RPCProtocol.handleDecodeFailure(data)
     }

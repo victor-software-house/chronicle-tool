@@ -23,6 +23,7 @@ public struct RuntimePaths: Equatable, Sendable {
   public let pidURL: URL
   /// Append-only daemon control/event log.
   public let logURL: URL
+  public let idempotencyURL: URL
 
   public init(
     source: CaptureSource,
@@ -35,6 +36,7 @@ public struct RuntimePaths: Equatable, Sendable {
     lockURL = sourceDirectory.appendingPathComponent("owner.lock")
     pidURL = sourceDirectory.appendingPathComponent("owner.pid")
     logURL = sourceDirectory.appendingPathComponent("daemon.jsonl")
+    idempotencyURL = sourceDirectory.appendingPathComponent("idempotency.json")
   }
 
   /// Resolve Chronicle's per-user runtime root.
