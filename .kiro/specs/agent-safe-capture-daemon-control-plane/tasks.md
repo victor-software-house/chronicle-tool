@@ -107,7 +107,7 @@
   - _Depends: 4.2_
 
 - [ ] 5. Implement daemon coordinator methods
-- [ ] 5.1 Add ensure, stop, and status method handling
+- [x] 5.1 Add ensure, stop, and status method handling
   - Coordinate source ownership, idempotency, capture start, stopped-state responses, and stop outcomes.
   - Return existing running state for duplicate start requests.
   - Attempt bounded graceful stop and report finalization/escalation outcome.
