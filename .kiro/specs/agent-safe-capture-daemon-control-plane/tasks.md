@@ -70,7 +70,7 @@
   - _Boundary: LeaseStore_
   - _Depends: 1.3_
 
-- [ ] 3.3 Add heartbeat and status snapshots
+- [x] 3.3 Add heartbeat and status snapshots
   - Publish periodic heartbeat state for running owners.
   - Project stopped, starting, capturing, reconfiguring, degraded, stopping, stale, and failed states.
   - Include sidecar paths, heartbeat freshness, peaks, transcript counters, speaker-label state, idle output, and last actionable error.
