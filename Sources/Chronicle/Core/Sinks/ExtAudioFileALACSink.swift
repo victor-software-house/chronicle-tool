@@ -4,7 +4,7 @@ import AudioToolbox
 
 /// Apple Lossless (ALAC) sidecar writer using AudioToolbox `ExtAudioFile`.
 ///
-/// Drop-in replacement for `AVAudioFileALACSink`. `ExtAudioFileDispose` reliably
+/// ALAC sidecar writer using AudioToolbox `ExtAudioFile`. `ExtAudioFileDispose` reliably
 /// writes the `pakt` (packet table) chunk required for ALAC VBR — unlike
 /// `AVAudioFile.close()` which silently omits `pakt` on macOS Tahoe, producing
 /// undecodable CAFs. See ADR-0002 Tahoe amendment for the full failure analysis.
