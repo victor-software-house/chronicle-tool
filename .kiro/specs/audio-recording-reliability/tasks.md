@@ -158,7 +158,7 @@
   - _Requirements: 6.1, 6.2, 6.3, 6.4_
   - _Boundary: docs/adr/ADR-0002_
 
-- [ ] 6.2 (P) Update STATUS.md  
+- [x] 6.2 (P) Update STATUS.md
   - Add audio-recording-reliability to phase board
   - Update P11 entry to note AVAudioFileALACSink retirement
   - Add repair-alac and gc to subcommand surface
