@@ -179,9 +179,10 @@ struct GarbageCollect: ParsableCommand {
     }
 
     /// Returns the first matching agent env var name, or nil if none set.
-    /// Exposed as `internal` for testing.
-    func detectsAgentEnv() -> String? {
-        let env = ProcessInfo.processInfo.environment
+    /// `environment` defaults to the process environment; pass a custom dict
+    /// in tests to avoid mutating the live process environment.
+    func detectsAgentEnv(environment env: [String: String]? = nil) -> String? {
+        let env = env ?? ProcessInfo.processInfo.environment
         let knownKeys = ["CODEX_SANDBOX", "CLAUDE_CODE", "PI_SESSION_ID", "CURSOR_SESSION_ID"]
         for key in knownKeys {
             if env[key] != nil { return key }

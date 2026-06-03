@@ -124,55 +124,58 @@ struct GarbageCollectTests {
     }
 
     // MARK: - Agent detection
+    //
+    // Use injectable `environment:` parameter to avoid mutating the live process
+    // environment (ProcessInfo.processInfo.environment is a cached snapshot and
+    // setenv/unsetenv don't affect it reliably in test contexts).
 
     @Test("agent detection: PI_SESSION_ID triggers refusal")
     func agentDetectionPISessionID() {
-        // GarbageCollect reads ProcessInfo.processInfo.environment.
-        // We test detectAgentEnv() via the public-facing logic by injecting
-        // a known key into the environment using setenv().
-        setenv("PI_SESSION_ID", "test-session", 1)
-        defer { unsetenv("PI_SESSION_ID") }
-
         let gc = GarbageCollect()
-        #expect(gc.detectsAgentEnv() == "PI_SESSION_ID")
+        let env = ["PI_SESSION_ID": "test-session"]
+        #expect(gc.detectsAgentEnv(environment: env) == "PI_SESSION_ID")
     }
 
     @Test("agent detection: CODEX_SANDBOX triggers refusal")
     func agentDetectionCodexSandbox() {
-        setenv("CODEX_SANDBOX", "1", 1)
-        defer { unsetenv("CODEX_SANDBOX") }
-
         let gc = GarbageCollect()
-        #expect(gc.detectsAgentEnv() == "CODEX_SANDBOX")
+        let env = ["CODEX_SANDBOX": "1"]
+        #expect(gc.detectsAgentEnv(environment: env) == "CODEX_SANDBOX")
+    }
+
+    @Test("agent detection: CLAUDE_CODE triggers refusal")
+    func agentDetectionClaudeCode() {
+        let gc = GarbageCollect()
+        let env = ["CLAUDE_CODE": "1"]
+        #expect(gc.detectsAgentEnv(environment: env) == "CLAUDE_CODE")
+    }
+
+    @Test("agent detection: CURSOR_SESSION_ID triggers refusal")
+    func agentDetectionCursorSession() {
+        let gc = GarbageCollect()
+        let env = ["CURSOR_SESSION_ID": "abc"]
+        #expect(gc.detectsAgentEnv(environment: env) == "CURSOR_SESSION_ID")
     }
 
     @Test("agent detection: AIDER_ prefix triggers refusal")
     func agentDetectionAiderPrefix() {
-        setenv("AIDER_SOME_VAR", "yes", 1)
-        defer { unsetenv("AIDER_SOME_VAR") }
-
         let gc = GarbageCollect()
-        let result = gc.detectsAgentEnv()
+        let env = ["AIDER_SOME_VAR": "yes"]
+        let result = gc.detectsAgentEnv(environment: env)
         #expect(result?.hasPrefix("AIDER_") == true)
     }
 
-    @Test("agent detection: no known env vars → nil")
-    func agentDetectionNoneSet() {
-        // Ensure none of the known vars are set for this test
-        for key in ["CODEX_SANDBOX", "CLAUDE_CODE", "PI_SESSION_ID", "CURSOR_SESSION_ID"] {
-            unsetenv(key)
-        }
-        // Note: AIDER_* vars from outer environment could theoretically be set,
-        // so we only assert the key result matches expectations given test isolation.
+    @Test("agent detection: empty env → nil")
+    func agentDetectionEmptyEnv() {
         let gc = GarbageCollect()
-        // If test runner doesn't inject any AIDER_ vars, this should be nil.
-        // We check the known fixed vars are not detected.
-        let result = gc.detectsAgentEnv()
-        let knownKeys = ["CODEX_SANDBOX", "CLAUDE_CODE", "PI_SESSION_ID", "CURSOR_SESSION_ID"]
-        if let r = result {
-            #expect(!knownKeys.contains(r), "Unexpected agent key detected: \(r)")
-        }
-        // nil is fine (desired), as is an AIDER_ key if the environment has one.
+        #expect(gc.detectsAgentEnv(environment: [:]) == nil)
+    }
+
+    @Test("agent detection: unrelated env vars → nil")
+    func agentDetectionUnrelatedVars() {
+        let gc = GarbageCollect()
+        let env = ["HOME": "/Users/test", "PATH": "/usr/bin"]
+        #expect(gc.detectsAgentEnv(environment: env) == nil)
     }
 
     // MARK: - Dry-run: does not delete
