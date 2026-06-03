@@ -38,8 +38,8 @@
   - _Requirements: 3, 7_
   - _Boundary: ChronicleApp/Core/AppSettings_
 
-- [ ] 4. Implement UITranscriptSink
-- [ ] 4.1 Implement TranscriptionSink conformance that buffers last N final transcript lines for UI consumption
+- [x] 4. Implement UITranscriptSink
+- [x] 4.1 Implement TranscriptionSink conformance that buffers last N final transcript lines for UI consumption
   - Conforms to `TranscriptionSink` protocol from ChronicleCore
   - Buffers last 50 final results as `TranscriptLine` values (configurable capacity)
   - Tracks distinct speaker IDs and exposes `speakerCount`

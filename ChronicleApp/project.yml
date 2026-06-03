@@ -18,6 +18,7 @@ targets:
         excludes:
           - project.yml
           - "*.xcodeproj"
+          - Tests
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.victor-software-house.chronicle
@@ -38,3 +39,17 @@ targets:
       path: ChronicleApp.entitlements
       properties:
         com.apple.security.device.audio-input: true
+
+  ChronicleAppTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - Tests
+    dependencies:
+      - target: ChronicleApp
+        embed: false
+    settings:
+      base:
+        SWIFT_VERSION: "6.0"
+        MACOSX_DEPLOYMENT_TARGET: "26.0"
+        GENERATE_INFOPLIST_FILE: YES
