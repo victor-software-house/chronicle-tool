@@ -159,3 +159,6 @@
   - _Depends: 8.2_
   - _Requirements: 11_
   - _Boundary: README.md, AGENTS.md, docs/STATUS.md_
+
+## Implementation Notes
+- **No external deps for ChronicleApp target** — evaluated Apple Swift Packages (swift-algorithms, swift-async-algorithms, swift-collections, swift-atomics, swift-system, swift-nio). None needed. App uses only ChronicleCore (local) + Apple system frameworks. `swift-async-algorithms` (debounce/throttle) is the only candidate worth revisiting if transcript update performance becomes an issue.

@@ -125,7 +125,7 @@ final class CaptureManager {
     case .mic:
       audioSource = try MicAudioSource(analyzerFormat: analyzerFormat)
     case .sysaudio:
-      audioSource = try CoreAudioTapSource(analyzerFormat: analyzerFormat)
+      audioSource = CoreAudioTapSource(analyzerFormat: analyzerFormat)
     }
 
     // 4. Compose sinks
@@ -257,7 +257,7 @@ final class CaptureManager {
       }
     } catch is TimeoutError {
       try? await withTimeout(seconds: 2.0, label: "analyzer.cancelAndFinishNow") {
-        try await analyzer.cancelAndFinishNow()
+        await analyzer.cancelAndFinishNow()
       }
     }
     _ = try? await consumeTask.value
