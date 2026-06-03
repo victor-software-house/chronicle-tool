@@ -139,7 +139,7 @@
   - _Boundary: ChronicleApp/Views/MenuBarView_
   - _Depends: 5.1_
 
-- [ ] 5.3 (P) Add audio integrity warning to session info
+- [x] 5.3 (P) Add audio integrity warning to session info
   - Add `audioHealthWarning: String?` observable property to `CaptureManager`
   - When ExtAudioFileALACSink logs an integrity warning, set the property
   - `SessionInfoView` displays warning text when non-nil

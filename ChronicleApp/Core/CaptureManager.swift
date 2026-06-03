@@ -36,6 +36,9 @@ final class CaptureManager {
     return []
   }
 
+  /// Non-nil when the audio integrity probe detects a problem.
+  private(set) var audioHealthWarning: String?
+
   // MARK: - Internal state
 
   private let settings: AppSettings

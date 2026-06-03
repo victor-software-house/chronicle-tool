@@ -34,7 +34,8 @@ struct MenuBarView: View {
         duration: manager.sessionDuration,
         activeSources: manager.activeSources,
         speakerCount: manager.speakerCount,
-        diarizationEnabled: settings.diarizationEnabled
+        diarizationEnabled: settings.diarizationEnabled,
+        audioHealthWarning: manager.audioHealthWarning
       )
 
       // Transcript preview

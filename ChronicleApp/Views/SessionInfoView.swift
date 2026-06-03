@@ -6,6 +6,7 @@ struct SessionInfoView: View {
   let activeSources: Set<CaptureSource>
   let speakerCount: Int
   let diarizationEnabled: Bool
+  var audioHealthWarning: String? = nil
 
   var body: some View {
     if !activeSources.isEmpty {
@@ -30,6 +31,16 @@ struct SessionInfoView: View {
               .foregroundStyle(.secondary)
             Text("\(speakerCount) speaker\(speakerCount == 1 ? "" : "s")")
               .font(.caption)
+          }
+        }
+
+        if let warning = audioHealthWarning {
+          HStack(alignment: .top, spacing: 4) {
+            Image(systemName: "exclamationmark.triangle.fill")
+              .foregroundStyle(.orange)
+            Text(warning)
+              .font(.caption)
+              .foregroundStyle(.orange)
           }
         }
       }
