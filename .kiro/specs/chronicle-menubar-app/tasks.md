@@ -8,8 +8,8 @@
   - _Requirements: 10_
   - _Boundary: Package.swift, Tests/ChronicleTests_
 
-- [ ] 2. Create Xcode macOS app project with MenuBarExtra skeleton
-- [ ] 2.1 Create the `ChronicleApp/` directory with Xcode project, SwiftUI App entry point, Info.plist, entitlements, and asset catalog
+- [x] 2. Create Xcode macOS app project with MenuBarExtra skeleton
+- [x] 2.1 Create the `ChronicleApp/` directory with Xcode project, SwiftUI App entry point, Info.plist, entitlements, and asset catalog
   - Info.plist includes `LSUIElement=true`, `NSMicrophoneUsageDescription`, `NSAudioCaptureUsageDescription`, `NSSpeechRecognitionUsageDescription`, bundle ID `com.victor-software-house.chronicle`
   - Entitlements include `com.apple.security.device.audio-input`; no App Sandbox (CoreAudio taps incompatible)
   - Xcode project references root `Package.swift` as a local Swift package and links `ChronicleCore`

@@ -9,4 +9,6 @@ out/
 *.txt
 *.json
 !.kiro/**/*.json
+!ChronicleApp/**/*.json
 !Package.resolved
+ChronicleApp.xcodeproj/

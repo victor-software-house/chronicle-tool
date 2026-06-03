@@ -1,0 +1,40 @@
+name: ChronicleApp
+options:
+  bundleIdPrefix: com.victor-software-house
+  deploymentTarget:
+    macOS: "26.0"
+  xcodeVersion: "26.0"
+
+packages:
+  ChronicleCore:
+    path: ..
+
+targets:
+  ChronicleApp:
+    type: application
+    platform: macOS
+    sources:
+      - path: .
+        excludes:
+          - project.yml
+          - "*.xcodeproj"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.victor-software-house.chronicle
+        PRODUCT_NAME: ChronicleApp
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        DEVELOPMENT_TEAM: CXLYTY8DMR
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: "Apple Development"
+        INFOPLIST_FILE: Info.plist
+        CODE_SIGN_ENTITLEMENTS: ChronicleApp.entitlements
+        SWIFT_VERSION: "6.0"
+        MACOSX_DEPLOYMENT_TARGET: "26.0"
+    dependencies:
+      - package: ChronicleCore
+        product: ChronicleCore
+    entitlements:
+      path: ChronicleApp.entitlements
+      properties:
+        com.apple.security.device.audio-input: true

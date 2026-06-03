@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Chronicle captures microphone audio to transcribe speech live, on-device, via Apple SpeechAnalyzer.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Chronicle captures system audio output to transcribe what is playing on this Mac, on-device, via Apple SpeechAnalyzer.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Chronicle uses on-device speech recognition to produce live transcripts.</string>
+</dict>
+</plist>
