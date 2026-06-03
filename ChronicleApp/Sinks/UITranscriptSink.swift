@@ -47,6 +47,12 @@ final class UITranscriptSink: TranscriptionSink {
     /// No-op: preserves lines across session boundary.
     nonisolated func finish() async {}
 
+    /// Clear lines and speaker state for a fresh session.
+    func clear() {
+        lines.removeAll()
+        speakerIds.removeAll()
+    }
+
     // MARK: - Private
 
     private func append(line: TranscriptLine) {

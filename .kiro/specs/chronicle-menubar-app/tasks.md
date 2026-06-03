@@ -50,8 +50,8 @@
   - _Requirements: 4_
   - _Boundary: ChronicleApp/Sinks/UITranscriptSink_
 
-- [ ] 5. Implement CaptureManager
-- [ ] 5.1 Implement the @Observable actor that wraps LiveCaptureSession and bridges capture lifecycle to SwiftUI state
+- [x] 5. Implement CaptureManager
+- [x] 5.1 Implement the @Observable actor that wraps LiveCaptureSession and bridges capture lifecycle to SwiftUI state
   - `startCapture(sources:)` builds a `LiveCaptureConfiguration` from `AppSettings`, injects `UITranscriptSink` alongside stock sinks, creates and starts a `LiveCaptureSession`; transitions state to `.recording`
   - `stopCapture()` calls `LiveCaptureSession.stop(reason: .clientRequest)`, waits for finalization, transitions to `.idle`
   - `toggleDiarization()` calls `LiveCaptureSession.reconfigure()` when active, or updates `AppSettings` when idle
