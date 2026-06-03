@@ -11,7 +11,7 @@ decision: "ALAC-in-CAF with rounded Int16 source PCM as default; rolling raw-PCM
 
 ## Status
 
-Accepted (amended 2026-05-13 — pre-implementation flip from Option 5 Ogg to Option 6 CAF; amended 2026-05-16 — default changed from Opus to ALAC-in-CAF after real-reference WER regression; see Amendment sections).
+Accepted (amended 2026-05-13 — pre-implementation flip from Option 5 Ogg to Option 6 CAF; amended 2026-05-16 — default changed from Opus to ALAC-in-CAF after real-reference WER regression; amended 2026-06-03 — AVAudioFile.close() Tahoe pakt regression, ExtAudioFile promoted to production; see Amendment sections).
 
 ## Date
 
@@ -426,10 +426,10 @@ and raw scratch repair tier; ADR-0005 keeps Apple-native APIs plus local policy.
 
 ### Neutral
 
-* `AVAudioFile(forWriting:)` is the production ALAC file path. It owns CAF
-  container writing, ALAC encoder setup, packet tables, finalization, and
-  readback compatibility. `ExtAudioFile` is fallback-only if future OS behavior
-  breaks the verified 16-bit-source ALAC output.
+* ~~`AVAudioFile(forWriting:)` is the production ALAC file path.~~ **Retired
+  2026-06-03.** `ExtAudioFile` is now the production ALAC writer after
+  `AVAudioFile.close()` on Tahoe was confirmed to not write the pakt chunk.
+  See the 2026-06-03 amendment above.
 * Existing offline subcommands (`chronicle transcribe`, `chronicle diarize`)
   require no changes — `AVAudioFile(forReading:)` decodes ALAC/CAF and the
   opt-in CAF/Opus artifacts.
@@ -439,6 +439,59 @@ and raw scratch repair tier; ADR-0005 keeps Apple-native APIs plus local policy.
 * `.opus` (Ogg) consumers remain supported via on-demand transcode/rewrap from
   the opt-in Opus path if needed; ffmpeg is a build-time fixture-generator dep
   already, not a runtime dep.
+
+## Amendment: 2026-06-03 — AVAudioFile.close() Tahoe pakt regression; ExtAudioFile promoted to production
+
+### Context
+
+On 2026-06-03, a weekly pod recording (mic 18 MB / 1046 s, sysaudio 6.5 MB /
+396 s) produced ALAC CAF files that every decoder rejected: `afinfo` reported
+0 duration / 0 packets, `ffprobe` returned "Missing packet table", and
+`afconvert` / `ffmpeg` could not decode any audio. Transcription sidecars
+(finals.md, trace.jsonl, live.log) were fully intact — the loss was audio only.
+
+Investigation confirmed that `AVAudioFile.close()` on macOS 26 Tahoe does **not**
+write the CAF `pakt` (packet table) chunk for ALAC VBR. The code comment in
+`AVAudioFileALACSink.finish()` stated "AVAudioFile finalizes container metadata
+on close/deinit" — this is false on Tahoe. Every recording session since P11
+shipped has produced undecodable audio files.
+
+External corroboration: GitHub `karansinghgit/speaktype#32` (2026-02-22) reports
+AVAudioFile/FigAssetWriter finalization failures on Tahoe; PR #41 fixes
+"recorder finalization handling." The `idanyekutiel/wispah` repo similarly
+committed an "ultimate recording reliability" fix for the same class of issue.
+
+### Recovery attempts (all failed)
+
+| Approach | Result |
+|---|---|
+| Fake uniform pakt (CBR approximation) | `afinfo` accepted metadata but decoders stopped after 1 packet (0.256 s) |
+| Heuristic ALAC frame boundary scanner | Found ~4086 packets but sizes misaligned → cascading decode failures |
+| AudioToolbox APIs (AudioFileReadPacketData, ExtAudioFile) | All require valid pakt to read — error `'pakt'` or `'bada'` |
+| Rebuilt CAF with pakt before data chunk | `afinfo` correct, but ffmpeg/afconvert can't decode (wrong packet sizes) |
+
+ALAC compressed frames have no inline length markers. Without the packet table,
+no decoder (Apple or ffmpeg) can find frame boundaries. Recovery requires either
+a full ALAC bitstream parser or `AudioConverter` trial-decode.
+
+### Decision
+
+`AVAudioFileALACSink` is **retired**. `ExtAudioFileALACSink` (AudioToolbox
+`ExtAudioFile`) is now the production ALAC writer. `ExtAudioFileDispose`
+reliably writes the pakt chunk, magic cookie, and data chunk size.
+
+This inverts the previous neutral-section note that "ExtAudioFile is
+fallback-only": `ExtAudioFile` is now primary; `AVAudioFile` is retired.
+
+A `chronicle repair-alac` subcommand is provided for recovering existing broken
+CAFs via `AudioConverter` trial-decode from the `kuki` magic cookie.
+
+### Affected sessions
+
+All sessions recorded with `AVAudioFileALACSink` since P11 shipped are affected.
+Known broken recordings include the 2026-06-03 weekly pod (mic + sysaudio) and
+the 2026-06-02 overnight session (391 MB). Transcription sidecars are intact in
+all cases.
 
 ## Related
 

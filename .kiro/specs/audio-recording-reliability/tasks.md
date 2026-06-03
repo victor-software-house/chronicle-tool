@@ -149,7 +149,7 @@
   - _Depends: 1.2, 2.3_
 
 - [ ] 6. Document and verify
-- [ ] 6.1 Write ADR-0002 amendment
+- [x] 6.1 Write ADR-0002 amendment
   - Add amendment section to `docs/adr/ADR-0002-audio-storage-format.md`
   - Date: 2026-06-03
   - Document: Tahoe `AVAudioFile.close()` does not write pakt for ALAC VBR; affected sessions; recovery attempts (heuristic scan, fake uniform pakt, AudioToolbox APIs — all failed); replacement with `ExtAudioFileALACSink`; retirement of `AVAudioFileALACSink`
@@ -158,7 +158,7 @@
   - _Requirements: 6.1, 6.2, 6.3, 6.4_
   - _Boundary: docs/adr/ADR-0002_
 
-- [ ] 6.2 (P) Update STATUS.md
+- [ ] 6.2 (P) Update STATUS.md  
   - Add audio-recording-reliability to phase board
   - Update P11 entry to note AVAudioFileALACSink retirement
   - Add repair-alac and gc to subcommand surface
