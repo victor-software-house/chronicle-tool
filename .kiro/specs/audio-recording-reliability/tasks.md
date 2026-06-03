@@ -1,7 +1,7 @@
 # Implementation Plan
 
 - [ ] 1. Implement ExtAudioFileALACSink
-- [ ] 1.1 Create ExtAudioFileALACSink with ExtAudioFile ALAC writing
+- [x] 1.1 Create ExtAudioFileALACSink with ExtAudioFile ALAC writing
   - Create `Sources/Chronicle/Core/Sinks/ExtAudioFileALACSink.swift` conforming to `AudioSidecarSink`
   - `init(url:sourceFormat:)` calls `ExtAudioFileCreateWithURL` with `kAudioFileCAFType`, ALAC ASBD with `kAppleLosslessFormatFlag_16BitSourceData`, then sets `kExtAudioFileProperty_ClientDataFormat` to Int16 PCM
   - `append(_:)` bridges `AVAudioPCMBuffer` to `AudioBufferList` and calls `ExtAudioFileWrite`; logs write errors to stderr without crashing
@@ -12,7 +12,7 @@
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5_
   - _Boundary: ExtAudioFileALACSink_
 
-- [ ] 1.2 Add write-time integrity probe
+- [x] 1.2 Add write-time integrity probe
   - Every 60s during active writing, read `kExtAudioFileProperty_FileLengthFrames` on the open `ExtAudioFileRef`
   - If frames == 0 or property read fails after ≥1 write, log `[audio.integrity] ...` warning to stderr
   - Track last probe time to avoid probing more than once per 60s
