@@ -30,7 +30,7 @@
   - _Requirements: 1, 2_
   - _Boundary: ChronicleApp/Core/CaptureState, ChronicleApp/Core/TranscriptLine_
 
-- [ ] 3.2 (P) Implement AppSettings with UserDefaults persistence and SMAppService login item
+- [x] 3.2 (P) Implement AppSettings with UserDefaults persistence and SMAppService login item
   - `@Observable` class with `diarizationEnabled` and `launchAtLogin` properties persisted to UserDefaults
   - `launchAtLogin` setter calls `SMAppService.mainApp.register()` / `.unregister()` and handles errors gracefully
   - Init reads current state from UserDefaults and syncs `launchAtLogin` with `SMAppService.mainApp.status`
