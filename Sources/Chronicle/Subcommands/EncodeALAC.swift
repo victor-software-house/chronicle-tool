@@ -5,14 +5,14 @@ import AVFAudio
 import ChronicleCore
 import Foundation
 
-/// Offline re-encoder: streams an input audio file through `AVAudioFileALACSink`
+/// Offline re-encoder: streams an input audio file through `ExtAudioFileALACSink`
 /// to produce a lossless Apple Lossless artefact that exercises chronicle's
 /// preferred high-level production sink path. Counterpart to `EncodeOpus`; used
 /// by the PRD-001 P11 verification parity sweep with `FORMAT=alac`.
 struct EncodeALAC: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
     commandName: "encode-alac",
-    abstract: "Re-encode an audio file to ALAC-in-CAF via AVAudioFileALACSink (PRD-001 P11 verification helper)."
+    abstract: "Re-encode an audio file to ALAC-in-CAF via ExtAudioFileALACSink (PRD-001 P11 verification helper)."
   )
 
   @Option(name: [.long, .customShort("i")], help: "Input audio file (wav/m4a/mp3/flac).")
@@ -41,7 +41,7 @@ struct EncodeALAC: AsyncParsableCommand {
     let totalFrames = audioFile.length
     let durationSeconds = Double(totalFrames) / sourceFormat.sampleRate
 
-    let sink = try AVAudioFileALACSink(url: outputURL, sourceFormat: sourceFormat)
+    let sink = try ExtAudioFileALACSink(url: outputURL, sourceFormat: sourceFormat)
 
     let started = Date()
     var framesProcessed: AVAudioFramePosition = 0

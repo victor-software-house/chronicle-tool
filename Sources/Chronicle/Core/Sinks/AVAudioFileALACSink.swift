@@ -1,6 +1,10 @@
 import Foundation
 @preconcurrency import AVFoundation
 
+// RETIRED: Tahoe AVAudioFile.close() does not write the pakt chunk for ALAC VBR,
+// producing undecodable CAFs. See ADR-0002 amendment (2026-06-03).
+// Replaced by ExtAudioFileALACSink. Kept for historical reference only.
+
 /// Apple Lossless (ALAC) sidecar writer using the highest-level Apple file API.
 ///
 /// This is the preferred P11 implementation path from ADR-0002's 2026-05-16

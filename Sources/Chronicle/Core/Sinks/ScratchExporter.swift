@@ -145,7 +145,7 @@ public enum ScratchExporter {
       }
 
     case .alac:
-      let sink = try AVAudioFileALACSink(url: outputURL, sourceFormat: format)
+      let sink = try ExtAudioFileALACSink(url: outputURL, sourceFormat: format)
       do {
         for url in segmentURLs {
           let result = try makeBuffer(from: url, format: format, bytesPerFrame: bytesPerFrame)

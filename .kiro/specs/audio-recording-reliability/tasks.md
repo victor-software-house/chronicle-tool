@@ -32,7 +32,7 @@
   - _Depends: 1.1_
 
 - [ ] 2. Swap all call sites to ExtAudioFileALACSink
-- [ ] 2.1 (P) Swap in Mic.swift
+- [x] 2.1 (P) Swap in Mic.swift
   - Replace `AVAudioFileALACSink` with `ExtAudioFileALACSink` in the `maybeRotating` factory closure
   - Update the label string from `"AVAudioFileALACSink"` to `"ExtAudioFileALACSink"`
   - Observable completion: `swift build` succeeds; `chronicle mic --help` lists expected flags
@@ -40,28 +40,28 @@
   - _Boundary: Subcommands/Mic_
   - _Depends: 1.1_
 
-- [ ] 2.2 (P) Swap in SysAudio.swift
+- [x] 2.2 (P) Swap in SysAudio.swift
   - Same swap as Mic.swift if SysAudio has an ALAC sink path
   - Observable completion: `swift build` succeeds
   - _Requirements: 1.1, 7.1_
   - _Boundary: Subcommands/SysAudio_
   - _Depends: 1.1_
 
-- [ ] 2.3 (P) Swap in CaptureManager.swift
+- [x] 2.3 (P) Swap in CaptureManager.swift
   - Replace `AVAudioFileALACSink` with `ExtAudioFileALACSink` in the ChronicleApp capture pipeline
   - Observable completion: Xcode build succeeds
   - _Requirements: 1.1_
   - _Boundary: ChronicleApp/Core/CaptureManager_
   - _Depends: 1.1_
 
-- [ ] 2.4 (P) Swap in EncodeALAC.swift and ScratchExporter.swift
+- [x] 2.4 (P) Swap in EncodeALAC.swift and ScratchExporter.swift
   - Replace `AVAudioFileALACSink` in offline re-encoder and scratch-to-ALAC export
   - Observable completion: `swift build` succeeds
   - _Requirements: 1.1_
   - _Boundary: Subcommands/EncodeALAC, Core/Sinks/ScratchExporter_
   - _Depends: 1.1_
 
-- [ ] 2.5 Retire AVAudioFileALACSink
+- [x] 2.5 Retire AVAudioFileALACSink
   - Add deprecation comment to `AVAudioFileALACSink.swift` header: "RETIRED: Tahoe AVAudioFile.close() does not write pakt chunk. See ADR-0002 amendment. Replaced by ExtAudioFileALACSink."
   - Verify no remaining imports of `AVAudioFileALACSink` in non-test code
   - Observable completion: `rg AVAudioFileALACSink Sources/ ChronicleApp/` shows only the retired file + deprecation references

@@ -185,7 +185,7 @@ final class CaptureManager {
     // 6. Audio sidecar (ALAC default)
     let audioSink: AudioSidecarSink?
     let audioPath = paths.sessionDir.appendingPathComponent("audio.caf").path
-    audioSink = try? AVAudioFileALACSink(
+    audioSink = try? ExtAudioFileALACSink(
       url: URL(fileURLWithPath: audioPath),
       sourceFormat: analyzerFormat
     )

@@ -554,9 +554,9 @@ func makeAudioSidecarSink(
 
   switch kind {
   case "alac":
-    let primary = try maybeRotating(label: "AVAudioFileALACSink") { segmentURL in
-      FileHandle.standardError.write(Data("[audio] AVAudioFileALACSink -> \(segmentURL.path) (source=\(analyzerFormat))\n".utf8))
-      return try AVAudioFileALACSink(url: segmentURL, sourceFormat: analyzerFormat)
+    let primary = try maybeRotating(label: "ExtAudioFileALACSink") { segmentURL in
+      FileHandle.standardError.write(Data("[audio] ExtAudioFileALACSink -> \(segmentURL.path) (source=\(analyzerFormat))\n".utf8))
+      return try ExtAudioFileALACSink(url: segmentURL, sourceFormat: analyzerFormat)
     }
     let scratchURL = scratchBase(for: url)
     FileHandle.standardError.write(Data("[audio] RollingPCMScratchSink -> \(scratchURL.path)/ (ttl=\(scratchTtl)s rotate=\(scratchRotate)s)\n".utf8))
