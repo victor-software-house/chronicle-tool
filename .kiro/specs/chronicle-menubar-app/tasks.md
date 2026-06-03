@@ -64,8 +64,8 @@
   - _Requirements: 2, 3, 4, 5, 8_
   - _Boundary: ChronicleApp/Core/CaptureManager_
 
-- [ ] 6. Implement menu bar UI views
-- [ ] 6.1 Implement MenuBarView as the window-style dropdown content
+- [x] 6. Implement menu bar UI views
+- [x] 6.1 Implement MenuBarView as the window-style dropdown content
   - Start buttons for mic, sysaudio, and both; stop button per source when recording
   - Diarization toggle bound to `AppSettings.diarizationEnabled` via `Bindable`
   - Embeds `TranscriptPreview` and `SessionInfoView`
@@ -77,7 +77,7 @@
   - _Requirements: 1, 2, 3, 6, 7, 8_
   - _Boundary: ChronicleApp/Views/MenuBarView_
 
-- [ ] 6.2 (P) Implement TranscriptPreview showing last N transcript lines with speaker labels
+- [x] 6.2 (P) Implement TranscriptPreview showing last N transcript lines with speaker labels
   - ScrollView with VStack of Text items from `CaptureManager.transcriptLines`
   - Speaker labels rendered as `[S0]` prefix when present
   - Shows "No active session" placeholder when `transcriptLines` is empty and state is idle
@@ -85,7 +85,7 @@
   - _Requirements: 4_
   - _Boundary: ChronicleApp/Views/TranscriptPreview_
 
-- [ ] 6.3 (P) Implement SessionInfoView showing duration, sources, and speaker count
+- [x] 6.3 (P) Implement SessionInfoView showing duration, sources, and speaker count
   - Elapsed duration formatted as `HH:MM:SS` from `CaptureManager.sessionDuration`
   - Active sources listed (mic, sysaudio, or both)
   - Speaker count displayed when diarization is enabled and speakers detected
@@ -94,8 +94,8 @@
   - _Requirements: 5_
   - _Boundary: ChronicleApp/Views/SessionInfoView_
 
-- [ ] 7. Wire ChronicleApp entry point and single-instance enforcement
-- [ ] 7.1 Wire the @main App struct with MenuBarExtra scene, dynamic icon, and single-instance guard
+- [x] 7. Wire ChronicleApp entry point and single-instance enforcement
+- [x] 7.1 Wire the @main App struct with MenuBarExtra scene, dynamic icon, and single-instance guard
   - `@main struct ChronicleApp: App` with `MenuBarExtra` using `.menuBarExtraStyle(.window)`
   - Label uses computed SF Symbol name: `waveform` (idle), `record.circle.fill` (recording), `exclamationmark.triangle.fill` (error)
   - `@State` properties for `CaptureManager` and `AppSettings` injected into `MenuBarView`
