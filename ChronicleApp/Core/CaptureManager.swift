@@ -17,7 +17,17 @@ final class CaptureManager {
 
   private(set) var state: CaptureState = .idle
   private(set) var sessionDuration: Duration?
-  private(set) var sessionOutputURL: URL?
+  private(set) var sessionOutputURLs: [CaptureSource: URL] = [:]
+
+  /// Parent dir when multi-source, source dir when single.
+  var sessionOutputURL: URL? {
+    guard !sessionOutputURLs.isEmpty else { return nil }
+    if sessionOutputURLs.count == 1 {
+      return sessionOutputURLs.values.first
+    }
+    // Multi-source → open common parent (~/Documents/chronicle/)
+    return sessionOutputURLs.values.first?.deletingLastPathComponent()
+  }
 
   var transcriptLines: [TranscriptLine] { transcriptSink.lines }
   var speakerCount: Int { transcriptSink.speakerCount }
@@ -46,6 +56,7 @@ final class CaptureManager {
     sessionDuration = .zero
     durationStart = .now
     transcriptSink.clear()
+    sessionOutputURLs.removeAll()
 
     durationTask = Task { [weak self] in
       while !Task.isCancelled {
@@ -113,7 +124,7 @@ final class CaptureManager {
 
     // 1. Output paths
     let paths = try SessionOutputPaths.defaults(source: sourceTag)
-    await MainActor.run { sessionOutputURL = paths.sessionDir }
+    await MainActor.run { sessionOutputURLs[source] = paths.sessionDir }
 
     // 2. Transcription engine
     let requestedLocale = Locale.current
