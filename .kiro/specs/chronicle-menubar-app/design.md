@@ -111,7 +111,7 @@ graph TB
 ```
 
 **Architecture Integration**:
-- Selected pattern: **Direct library consumption** — app embeds `ChronicleCore` in-process, no IPC
+- Selected pattern: **Direct library consumption** — app embeds `ChronicleCore` in-process, no IPC. Window-style `MenuBarExtra` for rich transcript preview.
 - Domain boundaries: `ChronicleCore` owns capture/transcription; `ChronicleApp` owns UI and app lifecycle
 - Existing patterns preserved: sink composition, actor-based session lifecycle, protocol-oriented audio sources
 - New components: `CaptureManager` (app-side orchestrator), `UITranscriptSink` (pipeline → UI bridge), `AppSettings` (preference persistence)
@@ -121,7 +121,7 @@ graph TB
 
 | Layer | Choice | Role | Notes |
 |-------|--------|------|-------|
-| UI | SwiftUI MenuBarExtra (menu style) | Menu bar dropdown | macOS 13+; native NSMenu integration |
+| UI | SwiftUI MenuBarExtra (window style) | Menu bar dropdown | macOS 13+; `.menuBarExtraStyle(.window)` for rich SwiftUI content |
 | State | @Observable macro (Observation framework) | Reactive UI state | Swift 5.9+ / macOS 14+ |
 | Capture | ChronicleCore (LiveCaptureSession) | Audio capture + transcription + diarization | Existing Core/ extracted as library |
 | Persistence | UserDefaults | Diarization default, launch-at-login | Standard macOS preference storage |

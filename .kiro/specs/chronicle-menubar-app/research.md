@@ -106,3 +106,47 @@
 - [Observation framework — Apple Developer](https://developer.apple.com/documentation/observation) — @Observable macro
 - ADR-0001 (modular pipeline architecture) — existing Core/ protocol boundaries
 - ADR-0004 (Tahoe system audio capture) — CoreAudio tap as sysaudio backend
+
+## Verified API Surface (macOS 26 Tahoe, Xcode 26, arm64)
+
+All findings below verified by compiling test code against the macOS 26 SDK on this machine.
+
+### MenuBarExtra
+- **Menu style** (default): content closure returns `Button`, `Toggle`, `Divider`, `Text` — native NSMenu items
+- **Window style** (`.menuBarExtraStyle(.window)`): content closure returns arbitrary SwiftUI views (`VStack`, `ScrollView`, etc.)
+- **Dynamic icon**: computed `systemName` in label closure updates reactively with `@Observable` state
+- **@Observable**: `@State private var manager = CaptureManager()` with `@Observable` class works — no need for `ObservableObject`
+- **Bindable**: `Bindable(settings).diarizationEnabled` produces `Binding<Bool>` for `Toggle`
+- **No AppDelegate needed**: pure SwiftUI `@main struct App` with `MenuBarExtra` scene suffices
+- **Window style chosen over menu style**: transcript preview needs `ScrollView` + rich layout; menu style limited to menu items
+
+### SMAppService
+- `SMAppService.mainApp` — static property, no allocation
+- `.register()` — synchronous, throws on failure
+- `.unregister()` — synchronous, throws on failure
+- `.status` — returns `SMAppService.Status` enum: `.notRegistered`, `.enabled`, `.requiresApproval`, `.notFound`
+- Login item state persists across app quits and reboots via LaunchServices
+
+### TCC and Signing
+- **Microphone**: auto-prompt on first access when `NSMicrophoneUsageDescription` + `com.apple.security.device.audio-input` present
+- **System Audio Recording**: must be manually added via System Settings → Privacy & Security → Screen & System Audio Recording (no auto-prompt for CoreAudio taps)
+- **App Sandbox**: incompatible with CoreAudio process taps → app must be non-sandboxed (matches existing chronicle.app)
+- **Xcode rebuilds**: CDHash changes but TCC grants keyed by `(team-id, bundle-id)` tuple — grants survive rebuilds with same signing identity
+- **LSUIElement=true**: no special TCC exemption; prompts appear same as regular app
+- **Existing entitlements**: only `com.apple.security.device.audio-input` (no sandbox)
+- **Info.plist keys needed**: `NSMicrophoneUsageDescription`, `NSAudioCaptureUsageDescription`, `NSSpeechRecognitionUsageDescription`, `LSUIElement=true`
+
+### Xcode Project Structure
+- Xcode app does NOT need its own Package.swift — imports root Package.swift as local package
+- `File > Add Package Dependencies > Add Local` → Xcode stores relative path in `.pbxproj`
+- Signing: Target → Signing & Capabilities → Team dropdown → auto-generates provisioning profile
+- CLI build: `xcodebuild -project ChronicleApp.xcodeproj -scheme ChronicleApp -configuration Release build`
+
+### Design Decision Update: Window Style (not Menu Style)
+Based on verified API surface, **window style** is the right choice:
+- Transcript preview needs `ScrollView` with `VStack` of `Text` items — not possible in menu style
+- `Toggle` with `Bindable` works in window style
+- Dynamic icon reactivity works with both styles
+- Window style auto-dismisses on focus loss (no manual handling needed)
+
+Full prototype (CaptureManager + AppSettings + ChronicleApp + MenuBarContent) compiled clean against macOS 26 SDK.
