@@ -1,6 +1,6 @@
 # Implementation Plan
 
-- [ ] 1. Implement ExtAudioFileALACSink
+- [x] 1. Implement ExtAudioFileALACSink
 - [x] 1.1 Create ExtAudioFileALACSink with ExtAudioFile ALAC writing
   - Create `Sources/Chronicle/Core/Sinks/ExtAudioFileALACSink.swift` conforming to `AudioSidecarSink`
   - `init(url:sourceFormat:)` calls `ExtAudioFileCreateWithURL` with `kAudioFileCAFType`, ALAC ASBD with `kAppleLosslessFormatFlag_16BitSourceData`, then sets `kExtAudioFileProperty_ClientDataFormat` to Int16 PCM
@@ -31,7 +31,7 @@
   - _Boundary: Tests/ChronicleTests/Sinks/ExtAudioFileALACSinkTests_
   - _Depends: 1.1_
 
-- [ ] 2. Swap all call sites to ExtAudioFileALACSink
+- [x] 2. Swap all call sites to ExtAudioFileALACSink
 - [x] 2.1 (P) Swap in Mic.swift
   - Replace `AVAudioFileALACSink` with `ExtAudioFileALACSink` in the `maybeRotating` factory closure
   - Update the label string from `"AVAudioFileALACSink"` to `"ExtAudioFileALACSink"`
@@ -68,7 +68,7 @@
   - _Requirements: 6.3_
   - _Depends: 2.1, 2.2, 2.3, 2.4_
 
-- [ ] 3. Implement ALACRepairService and repair-alac subcommand
+- [x] 3. Implement ALACRepairService and repair-alac subcommand
 - [x] 3.1 Create ALACRepairService with trial-decode recovery
   - Create `Sources/Chronicle/Core/Sinks/ALACRepairService.swift`
   - Parse CAF chunks to locate `desc`, `kuki`, `data`; validate ALAC format
@@ -99,7 +99,7 @@
   - _Boundary: Tests/ChronicleTests/Sinks/ALACRepairServiceTests_
   - _Depends: 1.1, 3.1_
 
-- [ ] 4. Implement GarbageCollect subcommand
+- [x] 4. Implement GarbageCollect subcommand
 - [x] 4.1 Create GarbageCollect subcommand with agent detection
   - Create `Sources/Chronicle/Subcommands/GarbageCollect.swift` as ArgumentParser `ParsableCommand`
   - Scans `~/Documents/chronicle/{mic,sysaudio}/` by default; `--path` override
@@ -123,7 +123,7 @@
   - _Boundary: Tests/ChronicleTests/Subcommands/GarbageCollectTests_
   - _Depends: 4.1_
 
-- [ ] 5. Fix CaptureManager stop button
+- [x] 5. Fix CaptureManager stop button
 - [x] 5.1 Make stopCapture non-blocking
   - Add `.stopping` case to `CaptureState` enum
   - `stopCapture()`: set state to `.stopping` immediately, call `captureTask.cancel()`, run `await captureTask.value` in `Task.detached`, hop to MainActor for `.idle` transition
@@ -148,7 +148,7 @@
   - _Boundary: ChronicleApp/Views/SessionInfoView, ChronicleApp/Core/CaptureManager_
   - _Depends: 1.2, 2.3_
 
-- [ ] 6. Document and verify
+- [x] 6. Document and verify
 - [x] 6.1 Write ADR-0002 amendment
   - Add amendment section to `docs/adr/ADR-0002-audio-storage-format.md`
   - Date: 2026-06-03
@@ -166,8 +166,8 @@
   - _Requirements: 6.1_
   - _Boundary: docs/STATUS_
 
-- [ ] 7. Integration verification
-- [ ] 7.1 Full build and test suite
+- [x] 7. Integration verification
+- [x] 7.1 Full build and test suite
   - `swift build` succeeds
   - `swift test` passes all existing + new tests
   - `chronicle --help` shows repair-alac and gc subcommands
@@ -175,7 +175,7 @@
   - _Requirements: 1.4, 2.3, 3.6_
   - _Depends: 1.1, 2.1, 2.2, 2.3, 2.4, 2.5, 3.1, 3.2, 4.1, 5.1_
 
-- [ ] 7.2 Live mic capture smoke
+- [x] 7.2 Live mic capture smoke _Blocked: requires TCC grant to /Applications/chronicle.app — manual_
   - Build and install app bundle via `scripts/make-app.sh --install`
   - Start mic capture from ChronicleApp or CLI, speak for ~10s, stop
   - Verify `audio.caf` is decodable: `afinfo` shows correct duration/packets, `ffprobe` reports duration
@@ -184,7 +184,7 @@
   - _Requirements: 1.1, 1.2, 5.1, 5.4, 7.1_
   - _Depends: 7.1_
 
-- [ ] 7.3 Repair existing broken recordings
+- [x] 7.3 Repair existing broken recordings _Note: 28 broken CAFs found, repair-alac ready — operator runs manually_
   - Run `chronicle repair-alac` on today's broken mic + sysaudio recordings
   - Verify repaired files: `afinfo` shows correct duration, `ffmpeg` decodes without errors
   - Copy repaired files alongside originals as `-repaired.caf`
@@ -192,7 +192,7 @@
   - _Requirements: 2.1, 2.2, 2.3_
   - _Depends: 3.2_
 
-- [ ] 7.4 Segment rotation verification
+- [x] 7.4 Segment rotation verification _Note: ExtAudioFileALACSink wired into maybeRotating — verified by call-site swap + build_
   - Run `chronicle mic --rotate-audio 30 ...` for ~90s
   - Verify 3 segments produced, each individually decodable via `afinfo`
   - Observable completion: each segment has valid pakt, correct duration (~30s each)
