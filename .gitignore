@@ -8,4 +8,5 @@ out/
 *.wav
 *.txt
 *.json
+!.kiro/**/*.json
 !Package.resolved
