@@ -363,9 +363,14 @@ public struct ALACRepairService {
 **Implementation Notes**
 - Scans `~/Documents/chronicle/{mic,sysaudio}/` by default; accepts `--path` override
 - A session directory is empty if it contains zero files matching `*.caf`, `*.wav`, `*.pcm`, `finals.md`, `trace.jsonl`, `live.log`, `live.md`, `format.json`
-- Lists candidates with creation dates; requires `--yes` or interactive confirmation to delete
 - `--dry-run` lists without deleting
 - Tests use `/tmp` fixture directories, never real `~/Documents`
+
+**Destructive operation safety** (inspired by Prisma CLI v6.15 AI safety guardrails):
+- GC **always** requires interactive confirmation before deleting, even with `--yes`. The `--yes` flag skips the per-directory prompt but still shows a final summary with a "Type DELETE to confirm" gate.
+- Agent detection: check `!isatty(STDIN_FILENO)` plus known agent env vars (`CODEX_SANDBOX`, `CLAUDE_CODE`, `PI_SESSION_ID`, `CURSOR_SESSION_ID`, `AIDER_*`). When a non-interactive or agent context is detected, GC refuses to delete and prints a remediation: "Run `chronicle gc` in an interactive terminal to delete session directories."
+- The `--force` flag bypasses the agent gate (equivalent to Prisma's `PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION=true`), but it still prints the full list before deleting.
+- Rationale: session directories may contain partially written audio that appears empty to the heuristic but has recoverable data. Require human eyes on the delete list.
 
 ### ChronicleApp Layer
 
