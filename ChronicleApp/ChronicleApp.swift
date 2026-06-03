@@ -39,11 +39,12 @@ struct ChronicleApp: App {
 
   var body: some Scene {
     MenuBarExtra {
-      MenuBarView(manager: manager, settings: settings)
+      MenuBarMenuContent(manager: manager, settings: settings)
     } label: {
       Image(systemName: menuBarIcon)
     }
-    .menuBarExtraStyle(.window)
+    // .menuBarExtraStyle(.window)  // TODO: restore once popover positioning is verified
+    .menuBarExtraStyle(.menu)
   }
 
   private var menuBarIcon: String {

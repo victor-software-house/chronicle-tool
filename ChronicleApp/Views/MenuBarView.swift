@@ -56,7 +56,10 @@ struct MenuBarView: View {
       // Actions
       if let url = manager.sessionOutputURL {
         Button {
-          NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: url.path)
+          let task = Process()
+          task.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/code")
+          task.arguments = [url.path]
+          try? task.run()
         } label: {
           Label("Open Session Folder", systemImage: "folder")
         }

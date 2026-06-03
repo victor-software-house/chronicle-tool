@@ -55,20 +55,29 @@ final class CaptureManager {
       }
     }
 
-    // For v1, run the first requested source only.
-    // Multi-source (mic+sysaudio) requires separate transcription engines
-    // per source to preserve source isolation. Deferred to P12 daemon.
-    let primarySource = sources.first ?? .mic
-    captureTask = Task { [weak self] in
-      guard let self else { return }
-      do {
-        try await self.runSource(primarySource)
-        self.state = .idle
-      } catch is CancellationError {
-        self.state = .idle
-      } catch {
-        self.state = .error(message: error.localizedDescription)
+    // Each source gets its own independent pipeline (transcription engine,
+    // sinks, optional diarizer) — preserving one-source-per-transcriber
+    // isolation per AGENTS.md. Separate Tasks avoid Swift 6.2 TaskGroup
+    // region-isolation checker limitations.
+    var sourceTasks: [Task<Void, Never>] = []
+    for source in sources {
+      let s = source
+      let task = Task { [weak self] in
+        guard let self else { return }
+        do {
+          try await self.runSource(s)
+        } catch is CancellationError {
+          // normal stop
+        } catch {
+          self.state = .error(message: error.localizedDescription)
+        }
       }
+      sourceTasks.append(task)
+    }
+    captureTask = Task { [weak self] in
+      for t in sourceTasks { await t.value }
+      guard let self else { return }
+      if case .recording = self.state { self.state = .idle }
     }
   }
 
