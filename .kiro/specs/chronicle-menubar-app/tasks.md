@@ -22,7 +22,7 @@
   - _Boundary: ChronicleApp_
 
 - [ ] 3. Implement core app state and settings
-- [ ] 3.1 (P) Implement CaptureState enum and TranscriptLine value type
+- [x] 3.1 (P) Implement CaptureState enum and TranscriptLine value type
   - `CaptureState` with cases `idle`, `recording(sources: Set<CaptureSource>)`, `error(message: String)`
   - `CaptureSource` enum with `mic` and `sysaudio` cases
   - `TranscriptLine` with `id: UUID`, `text: String`, `speakerId: String?`, `timestamp: Date`
