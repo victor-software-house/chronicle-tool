@@ -55,6 +55,7 @@ The recurring single `E5RT encountered an STL exception. msg = unordered_map::at
 | P1 | WAV transitional rotation | FR-1 | ✘ skipped | Superseded by P11; was meant as a stepping stone toward Opus. |
 | P9 | End-to-end verification | — | ⏳ pending | Run PRD-001 §15 appendix on a fresh session; capture receipts. |
 | P10 | Post-impl documentation | — | ⏳ pending | Update README + research-notes + a verification spike doc with the final numbers. |
+| **P13** | **Menu bar app (ChronicleApp)** | — | ✔ **done** | Xcode app target with `MenuBarExtra` (window style). `ChronicleCore` library extracted from `Core/`. `CaptureManager` orchestrates full capture pipeline. Start/stop mic + sysaudio, diarization toggle, live transcript preview, session info, open folder, launch-at-login, clean shutdown. 14 UITranscriptSink tests + 208 CLI tests pass. |
 | P12 | Agent-safe daemon control plane | PRD-003 | ⏳ next | One daemon per physical source; thin RPC clients; Unix socket JSON-RPC; OpenRPC `meta.schema`; leases + idempotency; subscribe API; JSONL v1 with epoch, sequence, monotonic + wall clocks; kill -9 recovery gate. |
 
 ## Functional batch checkpoint

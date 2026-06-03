@@ -89,6 +89,56 @@ data, commit style), see [`AGENTS.md`](AGENTS.md).
   grant, stale signing identity, output routing, or CoreAudio state.
 - **Xcode 26 or Swift 6.2+**.
 
+## Menu bar app (ChronicleApp)
+
+The primary interface for live capture is the **ChronicleApp** menu bar
+application. It provides two-click access to mic and system audio capture
+with optional streaming diarization, live transcript preview, and session
+management — all from a persistent menu bar icon.
+
+### Build from Xcode
+
+```sh
+cd ChronicleApp
+xcodegen generate          # regenerate .xcodeproj from project.yml
+open ChronicleApp.xcodeproj
+# ⌘R to build and run
+```
+
+Or from the command line:
+
+```sh
+cd ChronicleApp && xcodegen generate
+xcodebuild -project ChronicleApp.xcodeproj -scheme ChronicleApp -configuration Release build
+```
+
+The app is signed automatically with Apple Development (team `CXLYTY8DMR`),
+bundle ID `com.victor-software-house.chronicle`. No dock icon (`LSUIElement`).
+
+### TCC grants for ChronicleApp
+
+1. Build and run from Xcode (⌘R).
+2. System Settings → Privacy & Security → Microphone → grant ChronicleApp.
+3. System Settings → Privacy & Security → Screen & System Audio Recording → grant ChronicleApp.
+4. TCC grants survive Xcode rebuilds (same team ID + bundle ID).
+
+### Features
+
+- **Status icon**: waveform (idle), record circle (recording), warning triangle (error).
+- **Capture controls**: start mic, sysaudio, or both; stop per source.
+- **Diarization toggle**: streaming Sortformer speaker labels in transcript.
+- **Live transcript preview**: last 50 lines with `[S0]`/`[S1]` speaker prefixes.
+- **Session info**: elapsed duration, active sources, speaker count.
+- **Open session folder**: reveals output directory in Finder.
+- **Launch at login**: via `SMAppService` (persists across reboots).
+- **Clean shutdown**: finalizes capture on quit (bounded 5s + 2s timeout).
+
+### CLI remains available
+
+The `chronicle` CLI continues to work for offline subcommands (`transcribe`,
+`diarize`, `merge`, etc.) via `swift build`. The CLI's `make-app.sh` path
+for live capture is superseded by ChronicleApp but remains functional.
+
 ## Install / build
 
 ```sh

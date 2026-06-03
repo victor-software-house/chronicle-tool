@@ -58,6 +58,27 @@ swift test                        # Swift Testing target (ChronicleTests)
 .build/debug/chronicle --help     # subcommand surface
 ```
 
+### Menu bar app (ChronicleApp)
+
+The Xcode-managed `ChronicleApp/` project is the production path for live
+capture. It imports `ChronicleCore` as a local Swift package and provides a
+SwiftUI `MenuBarExtra` interface.
+
+```sh
+cd ChronicleApp
+xcodegen generate                 # regenerate .xcodeproj from project.yml
+xcodebuild -project ChronicleApp.xcodeproj -scheme ChronicleApp build
+```
+
+**Dual build system**: SwiftPM owns `ChronicleCore` library + `Chronicle` CLI.
+Xcode owns the `ChronicleApp` menu bar app. Both share `ChronicleCore` via
+local package dependency. `swift build && swift test` must always pass
+regardless of Xcode project changes.
+
+**xcodegen**: The `.xcodeproj` is generated from `ChronicleApp/project.yml` —
+never edit the `.xcodeproj` directly. Regenerate after adding/removing source
+files: `cd ChronicleApp && xcodegen generate`.
+
 `Package.swift` embeds `Info.plist` via `-sectcreate -Xlinker __info_plist`
 so the binary carries the TCC strings (`NSMicrophoneUsageDescription`,
 `NSSpeechRecognitionUsageDescription`, `NSAudioCaptureUsageDescription`).

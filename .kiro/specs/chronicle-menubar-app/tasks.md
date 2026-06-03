@@ -108,7 +108,7 @@
   - _Boundary: ChronicleApp/ChronicleApp.swift_
 
 - [ ] 8. Integration verification
-- [ ] 8.1 Verify CLI continuity after library extraction
+- [x] 8.1 Verify CLI continuity after library extraction
   - `swift build` from repo root succeeds
   - `swift test` passes all existing tests
   - `.build/debug/chronicle --help` shows all 16 subcommands
@@ -151,8 +151,8 @@
   - _Depends: 8.2_
   - _Requirements: 7, 8_
 
-- [ ] 9. Update project documentation
-- [ ] 9.1 Update README, AGENTS.md, and docs/STATUS.md to reflect the menu bar app
+- [x] 9. Update project documentation
+- [x] 9.1 Update README, AGENTS.md, and docs/STATUS.md to reflect the menu bar app
   - README.md documents the Xcode build and launch workflow, TCC grant for the app, and removes `make-app.sh` as the primary live capture path
   - AGENTS.md adds "Build menu bar app from Xcode" section and documents the dual build system (SwiftPM CLI + Xcode app)
   - docs/STATUS.md adds the menu bar app phase as delivered
