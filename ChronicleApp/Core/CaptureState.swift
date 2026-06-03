@@ -8,5 +8,6 @@ enum CaptureSource: String, CaseIterable, Hashable, Sendable {
 enum CaptureState: Equatable {
     case idle
     case recording(sources: Set<CaptureSource>)
+    case stopping
     case error(message: String)
 }

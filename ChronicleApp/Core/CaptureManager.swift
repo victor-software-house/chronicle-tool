@@ -88,18 +88,26 @@ final class CaptureManager {
     captureTask = Task { [weak self] in
       for t in sourceTasks { await t.value }
       guard let self else { return }
+      // Natural completion (no explicit stop): transition to idle from recording only.
+      // .stopping is handled by the detached task in stopCapture().
       if case .recording = self.state { self.state = .idle }
     }
   }
 
   func stopCapture() async {
     guard case .recording = state else { return }
+    state = .stopping                    // immediate UI feedback
     captureTask?.cancel()
-    await captureTask?.value
+    let task = captureTask
     captureTask = nil
     durationTask?.cancel()
     durationTask = nil
-    state = .idle
+    Task.detached { [weak self] in
+      await task?.value                  // finalization off main thread
+      await MainActor.run {
+        self?.state = .idle
+      }
+    }
   }
 
   func toggleDiarization() async {
@@ -109,6 +117,8 @@ final class CaptureManager {
   func shutdown() async {
     if case .recording = state {
       await stopCapture()
+    } else if case .stopping = state {
+      // Already stopping; detached task will finalize.
     }
   }
 

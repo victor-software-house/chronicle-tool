@@ -104,6 +104,15 @@ struct MenuBarView: View {
           .font(.caption)
           .foregroundStyle(.red)
       }
+    case .stopping:
+      HStack(spacing: 4) {
+        Circle()
+          .fill(.orange)
+          .frame(width: 8, height: 8)
+        Text("Stopping…")
+          .font(.caption)
+          .foregroundStyle(.orange)
+      }
     case .error:
       Image(systemName: "exclamationmark.triangle.fill")
         .foregroundStyle(.orange)

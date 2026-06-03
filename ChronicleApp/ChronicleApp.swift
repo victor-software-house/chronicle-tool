@@ -51,6 +51,7 @@ struct ChronicleApp: App {
     switch manager.state {
     case .idle: "waveform"
     case .recording: "record.circle.fill"
+    case .stopping: "stop.circle"
     case .error: "exclamationmark.triangle.fill"
     }
   }
