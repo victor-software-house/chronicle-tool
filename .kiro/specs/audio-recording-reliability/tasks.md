@@ -100,7 +100,7 @@
   - _Depends: 1.1, 3.1_
 
 - [ ] 4. Implement GarbageCollect subcommand
-- [ ] 4.1 Create GarbageCollect subcommand with agent detection
+- [x] 4.1 Create GarbageCollect subcommand with agent detection
   - Create `Sources/Chronicle/Subcommands/GarbageCollect.swift` as ArgumentParser `ParsableCommand`
   - Scans `~/Documents/chronicle/{mic,sysaudio}/` by default; `--path` override
   - Session dir is empty when it contains zero files matching: `*.caf`, `*.wav`, `*.pcm`, `finals.md`, `trace.jsonl`, `live.log`, `live.md`, `format.json`
@@ -113,7 +113,7 @@
   - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6_
   - _Boundary: Subcommands/GarbageCollect_
 
-- [ ] 4.2 Add GarbageCollect tests
+- [x] 4.2 Add GarbageCollect tests
   - Create /tmp fixture with 3 empty dirs + 2 dirs containing dummy files
   - Verify empty dirs correctly identified; non-empty dirs preserved
   - Verify agent detection logic: set `PI_SESSION_ID` env → GC refuses deletion

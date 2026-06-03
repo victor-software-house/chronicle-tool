@@ -18,6 +18,9 @@ struct MenuBarMenuContent: View {
         Text("\(manager.speakerCount) speaker\(manager.speakerCount == 1 ? "" : "s")")
       }
       Divider()
+    } else if case .stopping = manager.state {
+      Text("Stopping\u{2026}")
+      Divider()
     }
 
     // Last transcript line
@@ -34,6 +37,8 @@ struct MenuBarMenuContent: View {
     // Capture controls
     if case .recording = manager.state {
       Button("Stop") { Task { await manager.stopCapture() } }
+    } else if case .stopping = manager.state {
+      Button("Stopping\u{2026}") { }.disabled(true)
     } else {
       Button("Start Mic") { Task { await manager.startCapture(sources: [.mic]) } }
       Button("Start System Audio") { Task { await manager.startCapture(sources: [.sysaudio]) } }
