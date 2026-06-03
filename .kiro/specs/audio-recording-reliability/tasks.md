@@ -69,7 +69,7 @@
   - _Depends: 2.1, 2.2, 2.3, 2.4_
 
 - [ ] 3. Implement ALACRepairService and repair-alac subcommand
-- [ ] 3.1 Create ALACRepairService with trial-decode recovery
+- [x] 3.1 Create ALACRepairService with trial-decode recovery
   - Create `Sources/Chronicle/Core/Sinks/ALACRepairService.swift`
   - Parse CAF chunks to locate `desc`, `kuki`, `data`; validate ALAC format
   - Extract magic cookie from `kuki`; setup `AudioConverter` with `kAudioConverterDecompressionMagicCookie`
@@ -80,7 +80,7 @@
   - _Requirements: 2.1, 2.2, 2.3, 2.4_
   - _Boundary: ALACRepairService_
 
-- [ ] 3.2 Create RepairALAC subcommand
+- [x] 3.2 Create RepairALAC subcommand
   - Create `Sources/Chronicle/Subcommands/RepairALAC.swift` as ArgumentParser `ParsableCommand`
   - Arguments: one or more CAF file paths; `--output-dir` (default: same dir with `-repaired.caf` suffix); `--in-place` flag
   - For each input: validate it's a broken ALAC CAF, call `ALACRepairService.repair`, report result or skip
@@ -90,7 +90,7 @@
   - _Boundary: Subcommands/RepairALAC_
   - _Depends: 3.1_
 
-- [ ] 3.3 Add ALACRepairService tests
+- [x] 3.3 Add ALACRepairService tests
   - Create a valid ALAC CAF (via ExtAudioFileALACSink), strip its pakt chunk in memory, write broken CAF to /tmp, repair, verify
   - Test skip behavior for non-ALAC files (WAV, PCM)
   - Test skip behavior for already-valid ALAC CAF (pakt present)

@@ -27,6 +27,7 @@ struct Chronicle: AsyncParsableCommand {
       Merge.self,
       DaemonGroup.self,
       GarbageCollect.self,
+      RepairALAC.self,
     ],
     defaultSubcommand: nil
   )
