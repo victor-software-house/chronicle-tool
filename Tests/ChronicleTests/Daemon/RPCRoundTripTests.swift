@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Chronicle
+@testable import ChronicleCore
 
 @Suite("RPC round trip against running daemon")
 struct RPCRoundTripTests {

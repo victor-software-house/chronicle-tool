@@ -1,6 +1,10 @@
+import ChronicleCore
 import ArgumentParser
+import ChronicleCore
 import AVFAudio
+import ChronicleCore
 import Foundation
+import ChronicleCore
 import Speech
 
 /// Offline file transcription using Apple's `SpeechAnalyzer` + `SpeechTranscriber`

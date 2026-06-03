@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Chronicle
+@testable import ChronicleCore
 
 @Suite("Daemon recovery")
 struct DaemonRecoveryTests {

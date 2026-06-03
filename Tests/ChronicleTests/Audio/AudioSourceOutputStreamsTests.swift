@@ -1,7 +1,7 @@
 import AVFoundation
 import Speech
 import Testing
-@testable import Chronicle
+@testable import ChronicleCore
 
 @Suite("AudioSource output streams")
 struct AudioSourceOutputStreamsTests {

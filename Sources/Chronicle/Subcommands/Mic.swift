@@ -1,9 +1,14 @@
+import ChronicleCore
 import ArgumentParser
+import ChronicleCore
 import AVFoundation
+import ChronicleCore
 import Foundation
+import ChronicleCore
 import Speech
 
 #if canImport(Darwin)
+import ChronicleCore
 import Darwin
 #endif
 

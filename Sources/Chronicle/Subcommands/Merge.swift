@@ -1,4 +1,6 @@
+import ChronicleCore
 import ArgumentParser
+import ChronicleCore
 import Foundation
 
 /// `chronicle merge` reads one or more source-aware `trace.jsonl` files

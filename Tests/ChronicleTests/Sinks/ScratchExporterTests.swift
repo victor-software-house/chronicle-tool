@@ -1,7 +1,7 @@
 import Testing
 import Foundation
 import AVFoundation
-@testable import Chronicle
+@testable import ChronicleCore
 
 @Suite("ScratchExporter")
 struct ScratchExporterTests {

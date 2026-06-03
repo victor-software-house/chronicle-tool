@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Chronicle
+@testable import ChronicleCore
 
 /// Requirements covered:
 /// - 1.4: `sysaudio` and `mic` maintain independent source state.

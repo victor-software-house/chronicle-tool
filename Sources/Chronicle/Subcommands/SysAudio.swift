@@ -1,6 +1,10 @@
+import ChronicleCore
 import ArgumentParser
+import ChronicleCore
 import AVFoundation
+import ChronicleCore
 import Foundation
+import ChronicleCore
 import Speech
 
 /// Live system-audio transcription via CoreAudio process tap +

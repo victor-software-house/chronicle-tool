@@ -1,4 +1,6 @@
+import ChronicleCore
 import ArgumentParser
+import ChronicleCore
 import Foundation
 
 /// Content tagging via Apple's on-device Foundation Models framework using

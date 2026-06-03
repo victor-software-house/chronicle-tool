@@ -1,4 +1,6 @@
+import ChronicleCore
 import ArgumentParser
+import ChronicleCore
 import Foundation
 
 /// Speaker diarization CLI veneer over `Core/Diarize/OfflineDiarizer`.

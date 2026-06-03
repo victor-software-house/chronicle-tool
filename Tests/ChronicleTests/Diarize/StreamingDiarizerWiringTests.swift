@@ -1,7 +1,7 @@
 import AVFoundation
 import Foundation
 import Testing
-@testable import Chronicle
+@testable import ChronicleCore
 
 /// Stub backend that records every call. Used to drive
 /// `SortformerStreamingDiarizer` without loading any CoreML model.

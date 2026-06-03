@@ -1,4 +1,6 @@
+import ChronicleCore
 import ArgumentParser
+import ChronicleCore
 import Foundation
 
 /// Transcript / text summarization via Apple's on-device Foundation Models.

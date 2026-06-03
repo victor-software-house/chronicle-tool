@@ -1,8 +1,14 @@
+import ChronicleCore
 import ArgumentParser
+import ChronicleCore
 import CoreGraphics
+import ChronicleCore
 import Foundation
+import ChronicleCore
 import FoundationModels
+import ChronicleCore
 import ImageIO
+import ChronicleCore
 import Vision
 
 /// Image description via Vision multi-request extraction + Foundation Models

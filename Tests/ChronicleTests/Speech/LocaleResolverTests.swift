@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Chronicle
+@testable import ChronicleCore
 
 /// Thread-safe shared mock clock so Sendable `now:` closures can advance time deterministically.
 final class MutableClock: @unchecked Sendable {

@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import Chronicle
+@testable import ChronicleCore
 
 @Suite("TCCPreflight")
 struct TCCPreflightTests {

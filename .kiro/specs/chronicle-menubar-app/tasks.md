@@ -1,7 +1,7 @@
 # Implementation Plan
 
-- [ ] 1. Extract ChronicleCore library target from Package.swift
-- [ ] 1.1 Add a library product and target for ChronicleCore pointing at `Sources/Chronicle/Core`; update the Chronicle executable target to depend on ChronicleCore and exclude `Core/` from its own source paths
+- [x] 1. Extract ChronicleCore library target from Package.swift
+- [x] 1.1 Add a library product and target for ChronicleCore pointing at `Sources/Chronicle/Core`; update the Chronicle executable target to depend on ChronicleCore and exclude `Core/` from its own source paths
   - The existing `unsafeFlags` linker settings for Info.plist embedding stay on the CLI target only
   - `swift build` produces both the CLI executable and the ChronicleCore library without errors
   - `swift test` passes all 108+ existing tests (update `@testable import Chronicle` to `@testable import ChronicleCore` for Core-targeting tests)

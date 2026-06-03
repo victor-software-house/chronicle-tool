@@ -1,7 +1,7 @@
 import AVFoundation
 import Foundation
 import Testing
-@testable import Chronicle
+@testable import ChronicleCore
 
 @Suite("PCMFloatConverter")
 struct PCMFloatConverterTests {

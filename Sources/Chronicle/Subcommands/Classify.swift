@@ -1,6 +1,10 @@
+import ChronicleCore
 import ArgumentParser
+import ChronicleCore
 import AVFoundation
+import ChronicleCore
 import Foundation
+import ChronicleCore
 import SoundAnalysis
 
 /// Non-speech sound classifier built on Apple's `SoundAnalysis` framework using

@@ -1,6 +1,6 @@
 import AVFoundation
 import Testing
-@testable import Chronicle
+@testable import ChronicleCore
 
 @Suite("BufferConverter")
 struct BufferConverterTests {

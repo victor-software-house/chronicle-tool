@@ -1,6 +1,10 @@
+import ChronicleCore
 import ArgumentParser
+import ChronicleCore
 import Foundation
+import ChronicleCore
 import NaturalLanguage
+import ChronicleCore
 import Translation
 
 /// On-device translation via Apple's `Translation` framework. Uses

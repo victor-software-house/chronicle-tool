@@ -2,7 +2,7 @@ import Testing
 import Foundation
 import AVFoundation
 import AudioToolbox
-@testable import Chronicle
+@testable import ChronicleCore
 
 @Suite("OpusCAFSink")
 struct OpusCAFSinkTests {

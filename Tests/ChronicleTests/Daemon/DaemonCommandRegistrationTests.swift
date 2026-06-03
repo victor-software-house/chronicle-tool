@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import Chronicle
+@testable import ChronicleCore
 
 @Suite("Daemon command registration")
 struct DaemonCommandRegistrationTests {

@@ -1,6 +1,6 @@
 import CoreAudio
 import Testing
-@testable import Chronicle
+@testable import ChronicleCore
 
 @Suite("CoreAudioTapSource")
 struct CoreAudioTapSourceTests {

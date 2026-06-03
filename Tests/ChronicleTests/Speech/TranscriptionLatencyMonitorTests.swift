@@ -1,5 +1,5 @@
 import Testing
-@testable import Chronicle
+@testable import ChronicleCore
 
 struct TranscriptionLatencyMonitorTests {
   @Test("latency is receipt offset minus audio range end")

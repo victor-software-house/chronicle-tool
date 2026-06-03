@@ -1,7 +1,12 @@
+import ChronicleCore
 import ArgumentParser
+import ChronicleCore
 import CoreGraphics
+import ChronicleCore
 import Foundation
+import ChronicleCore
 import ImageIO
+import ChronicleCore
 import Vision
 
 /// Document-aware OCR using Tahoe's `RecognizeDocumentsRequest` (new in macOS 26 / iOS 26).

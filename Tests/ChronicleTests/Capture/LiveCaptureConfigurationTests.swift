@@ -1,5 +1,5 @@
 import Testing
-@testable import Chronicle
+@testable import ChronicleCore
 
 @Suite("LiveCaptureConfiguration")
 struct LiveCaptureConfigurationTests {
