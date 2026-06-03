@@ -21,7 +21,7 @@
   - _Boundary: ExtAudioFileALACSink_
   - _Depends: 1.1_
 
-- [ ] 1.3 Add ExtAudioFileALACSink tests
+- [x] 1.3 Add ExtAudioFileALACSink tests
   - Write single buffer → finish → verify CAF decodable via `afinfo` subprocess (duration, packet count)
   - Write 10 buffers (40960 frames) → finish → verify total frame count matches
   - Write → finish → reopen with ExtAudioFile and read back → verify frame count
@@ -124,7 +124,7 @@
   - _Depends: 4.1_
 
 - [ ] 5. Fix CaptureManager stop button
-- [ ] 5.1 Make stopCapture non-blocking
+- [x] 5.1 Make stopCapture non-blocking
   - Add `.stopping` case to `CaptureState` enum
   - `stopCapture()`: set state to `.stopping` immediately, call `captureTask.cancel()`, run `await captureTask.value` in `Task.detached`, hop to MainActor for `.idle` transition
   - `shutdown()`: same non-blocking pattern with bounded finalization
@@ -132,7 +132,7 @@
   - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5_
   - _Boundary: ChronicleApp/Core/CaptureManager, ChronicleApp/Core/CaptureState_
 
-- [ ] 5.2 (P) Update MenuBarView for stopping state
+- [x] 5.2 (P) Update MenuBarView for stopping state
   - When state == `.stopping`: show spinner/progress indicator, disable stop button, display "Stopping..." label
   - Observable completion: UI shows distinct stopping state when `CaptureManager.state == .stopping`
   - _Requirements: 5.3_
